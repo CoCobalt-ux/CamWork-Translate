@@ -7,6 +7,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType
+import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
@@ -39,7 +40,12 @@ import com.github.ahatem.qtranslate.ui.swing.shared.util.scaledEditorFont
 import com.github.ahatem.qtranslate.ui.swing.shared.util.toImageData
 import java.awt.BorderLayout
 import java.awt.Dimension
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
+import javax.swing.AbstractAction
+import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.KeyStroke
 import javax.swing.UIManager
 
 class MainContentView(
@@ -100,6 +106,7 @@ class MainContentView(
             dispatch(MainIntent.Translate(text))
         },
         onFindInDictionary = { word -> showDictionaryWithWord(word, currentTargetLanguage) },
+        onEscapePressed = { inputTextPanel.requestFocusOnText() },
     )
 
     private val extraOutputPanel = ExtraOutputPanel(
@@ -111,6 +118,7 @@ class MainContentView(
             dispatch(MainIntent.Translate(text))
         },
         onFindInDictionary = { word -> showDictionaryWithWord(word, currentExtraOutputLanguage) },
+        onEscapePressed = { inputTextPanel.requestFocusOnText() },
     )
 
     val statusBar: StatusBar = StatusBar(
@@ -164,6 +172,7 @@ class MainContentView(
 
     private var lastState: Pair<MainState, SettingsState>? = null
     private var lastDictionaryKey: DictionaryKey? = null
+    private var currentTranslateKeyStroke: KeyStroke? = null
 
     private data class DictionaryKey(
         val isVisible: Boolean,
@@ -179,6 +188,17 @@ class MainContentView(
 
     init {
         add(splitPane, BorderLayout.CENTER)
+
+        // Direct panel focus shortcuts — work from anywhere in the window.
+        // Alt+1 → input, Alt+2 → output, Alt+3 → extra-output.
+        val im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+        val am = actionMap
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_1, InputEvent.ALT_DOWN_MASK), "focus-panel-input")
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_2, InputEvent.ALT_DOWN_MASK), "focus-panel-output")
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_3, InputEvent.ALT_DOWN_MASK), "focus-panel-extra")
+        am.put("focus-panel-input",  object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { inputTextPanel.requestFocusOnText() } })
+        am.put("focus-panel-output", object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { outputTextPanel.requestFocusOnText() } })
+        am.put("focus-panel-extra",  object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { extraOutputPanel.requestFocusOnText() } })
     }
 
     fun render(mainState: MainState, settingsState: SettingsState) {
@@ -195,9 +215,26 @@ class MainContentView(
             layoutManager.updateVisibility(config)
         }
 
+        updateTranslateKeyStroke(config)
         renderDictionaryPanel(mainState, config)
         renderComponents(mainState, config)
         lastState = mainState to settingsState
+    }
+
+    /**
+     * Keeps the per-pane translate keystroke in sync with the user's configured binding.
+     * Binding lives on each AdvancedTextPane (WHEN_FOCUSED) so the pane can pass selected
+     * text to onTranslateRequest rather than always using the full input text.
+     */
+    private fun updateTranslateKeyStroke(config: Configuration) {
+        val binding = config.hotkeys.find { it.action == HotkeyAction.TRANSLATE }
+        val newStroke = binding?.takeIf { it.isEnabled }?.toKeyStroke()
+        if (newStroke == currentTranslateKeyStroke) return
+        val old = currentTranslateKeyStroke
+        currentTranslateKeyStroke = newStroke
+        inputTextPanel.setTranslateKeyStroke(old, newStroke)
+        outputTextPanel.setTranslateKeyStroke(old, newStroke)
+        extraOutputPanel.setTranslateKeyStroke(old, newStroke)
     }
 
     private fun renderDictionaryPanel(mainState: MainState, config: Configuration) {

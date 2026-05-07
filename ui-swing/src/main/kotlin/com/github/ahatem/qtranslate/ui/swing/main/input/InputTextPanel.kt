@@ -39,7 +39,7 @@ class InputTextPanel(
     private var currentState: InputTextState? = null
 
     init {
-        val scrollPane = JScrollPane(textPane)
+        val scrollPane = JScrollPane(textPane).apply { isFocusable = false }
 
         val actionsWrapper = JPanel(BorderLayout()).apply {
             border = BorderFactory.createEmptyBorder(0, 4, 0, 0)
@@ -78,6 +78,8 @@ class InputTextPanel(
     }
 
     fun requestFocusOnText() = textPane.requestFocusInWindow()
+    fun setTranslateKeyStroke(old: javax.swing.KeyStroke?, new: javax.swing.KeyStroke?) =
+        textPane.setTranslateKeyStroke(old, new)
 
     private fun customizeContextMenu(menu: JPopupMenu, clickPosition: Point) {
         spellingMenu?.let { menu.remove(it) }
