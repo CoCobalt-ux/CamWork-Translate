@@ -48,10 +48,16 @@ class MainStore(
     private val swapLanguagesUseCase: SwapLanguagesUseCase,
     private val ocrAndTranslateUseCase: OcrAndTranslateUseCase,
     private val summarizeUseCase: SummarizeUseCase,
-    private val rewriteUseCase: RewriteUseCase
+    private val rewriteUseCase: RewriteUseCase,
+    private val lookupWordUseCase: LookupWordUseCase
 ) : Store<MainState, MainIntent, MainEvent> {
 
-    private val _state = MutableStateFlow(MainState())
+    private val _state = MutableStateFlow(
+        MainState(
+            isDictionaryPanelVisible = settingsState.value.showDictionaryPanel,
+            isQuickDictionaryPinned  = settingsState.value.isQuickDictionaryPinned
+        )
+    )
     override val state: StateFlow<MainState> = _state.asStateFlow()
 
     private val _eventChannel = Channel<MainEvent>(Channel.BUFFERED)
@@ -212,6 +218,35 @@ class MainStore(
             is MainIntent.ShowQuickTranslate -> scope.launch {
                 handleShowQuickTranslate(intent)
             }
+
+            is MainIntent.LookupWord -> scope.launch { handleLookupWord(intent) }
+
+            is MainIntent.ToggleDictionaryPanel -> _state.update {
+                it.copy(isDictionaryPanelVisible = !it.isDictionaryPanelVisible)
+            }
+
+            is MainIntent.ShowQuickDictionary -> scope.launch {
+                // Pre-set dictionaryWord so the dialog's search field is already populated
+                // on the very first render — before handleLookupWord emits its own update.
+                _state.update {
+                    it.copy(
+                        isQuickDictionaryVisible = true,
+                        dictionaryWord   = if (intent.selectedText.isNotBlank()) intent.selectedText else it.dictionaryWord,
+                        isDictionaryLoading = intent.selectedText.isNotBlank()
+                    )
+                }
+                if (intent.selectedText.isNotBlank()) {
+                    handleLookupWord(MainIntent.LookupWord(intent.selectedText, intent.language))
+                }
+            }
+
+            is MainIntent.HideQuickDictionary -> _state.update {
+                it.copy(isQuickDictionaryVisible = false)
+            }
+
+            is MainIntent.ToggleQuickDictionaryPin -> _state.update {
+                it.copy(isQuickDictionaryPinned = !it.isQuickDictionaryPinned)
+            }
         }
     }
 
@@ -263,6 +298,15 @@ class MainStore(
             updateState = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar,
             textOverride = textOverride
+        )
+    }
+
+    private suspend fun handleLookupWord(intent: MainIntent.LookupWord) {
+        lookupWordUseCase(
+            word = intent.word,
+            language = intent.language,
+            updateState = { transform -> _state.update(transform) },
+            onStatusUpdate = ::updateStatusBar
         )
     }
 

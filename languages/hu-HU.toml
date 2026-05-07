@@ -1,4 +1,4 @@
-# ===================================================================
+﻿# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -76,6 +76,7 @@ paste = "@common.paste"
 translate = "@main_window_language_bar.translate_button"
 listen = "@common.listen"
 spell_check = "Helyesírás-ellenőrzés"
+find_in_dictionary = "Keresés a szótárban"
 
 
 [main_window_main_menu]
@@ -86,11 +87,13 @@ layout_preset_compact = "Kompakt"
 instant_translation = "Azonnali fordítás"
 show_extra_output = "Extra kimenet megjelenítése"
 spell_check = "Helyesírás-ellenőrzés"
+find_in_dictionary = "Keresés a szótárban"
 options_submenu = "Beállítások"
 show_history_bar = "Előzmények sáv megjelenítése"
 show_language_bar = "Nyelvsáv megjelenítése"
 show_services_panel = "Szolgáltatások panel megjelenítése"
 show_status_bar = "Állapotsor megjelenítése"
+show_dictionary_panel = "Szótárpanel megjelenítése"
 settings = "Beállítások…"
 help_submenu = "Súgó"
 how_to_use = "Hogyan kell használni"
@@ -240,6 +243,7 @@ action_listen = "Kijelölés meghallgatása"
 action_ocr = "OCR a képernyőről"
 action_replace = "A kiválasztás lecserélése fordításra (kísérleti)"
 action_cycle_language = "Célnyelv váltása"
+action_show_dictionary = "Szótár megjelenítése"
 scope_toggle_hint = "Kattintson a Globális és a Helyi közötti váltáshoz"
 
 # Default Actions Descriptions
@@ -277,6 +281,14 @@ source_use_translated = "Használja a lefordított szöveget"
 source_use_input = "Használja a bemeneti szöveget"
 remove_line_breaks = "Törölje a sortöréseket a bemenetből"
 remove_line_breaks_hint = "Hasznos PDF-ekből másoláskor, ahol minden sor új sorral ér véget"
+
+dict_auto_lookup_group = "Dictionary Auto-Lookup"
+dict_auto_lookup_source = "Auto-lookup source:"
+dict_auto_source_off = "Off"
+dict_auto_source_translated = "Translated text"
+dict_auto_source_source = "Source text"
+dict_auto_lookup_hint = "Automatically look up single words in the dictionary while translating."
+dict_auto_popup_enabled = "Show floating popup for single words"
 pinned_languages_group = "Nyelvi szűrő"
 pinned_languages_hint = "Válassza ki azokat a nyelveket, amelyek megjelenjenek a cél nyelv kiválasztójában. Ha mindet kihagyja, minden elérhető nyelv megjelenik."
 pinned_languages_clear = "Szűrő törlése (Mindet megjeleníti)"
@@ -320,6 +332,7 @@ show_history_bar = "Előzmények navigációs sávjának megjelenítése"
 show_language_bar = "Mutassa a nyelvválasztó sávot"
 show_services_panel = "Szolgáltatások panel megjelenítése"
 show_status_bar = "Mutassa az állapotsort"
+show_dictionary_panel = "Szótárpanel megjelenítése"
 popup_group = "Gyorsfordítás felugró ablak"
 auto_size = "Állítsa a felugró ablak méretét a tartalomhoz"
 auto_position = "A felugró ablak automatikus elhelyezése a kurzor közelében"
@@ -347,6 +360,24 @@ required_fields_error_msg = "Kérjük, töltse ki a szükséges mezőket:"
 title = "QTranslate névjegye"
 description = "Az eredeti QTranslate-et már nem fejlesztik tovább. Ez egy teljesen újratervezett változat — ugyanaz az alapelv, de bővítményalapú, így az alkalmazás mindig naprakész marad."
 
+# Dictionary
+no_word_to_lookup = "Kérjük, adjon meg egy szót a kereséshez."
+no_dictionary_active = "Nincs aktív szótárszolgáltatás."
+looking_up_word = "Keresés…"
+dictionary_ready = "Meghatározás megtalálva."
+dictionary_not_found = "Nem találtunk meghatározást a következőre: ""%s""."
+dictionary_timeout = "A szótárkeresés túllépte az időkorlátot."
+dictionary_failed = "A szótárkeresés sikertelen: %s"
+
+# Dictionary
+no_word_to_lookup = "Kérjük, adjon meg egy szót a kereséshez."
+no_dictionary_active = "Nincs aktív szótárszolgáltatás."
+looking_up_word = "Keresés…"
+dictionary_ready = "Meghatározás megtalálva."
+dictionary_not_found = "Nem találtunk meghatározást a következőre: ""%s""."
+dictionary_timeout = "A szótárkeresés túllépte az időkorlátot."
+dictionary_failed = "A szótárkeresés sikertelen: %s"
+
 [history_dialog]
 title = "Fordítási előzmények"
 column_date = "Dátum és idő"
@@ -356,6 +387,30 @@ column_languages = "Nyelvek"
 column_service = "Szolgáltatás"
 empty_message = "Még nincsenek fordítások az előzményekben."
 restore_tooltip = "Dupla kattintás a fordítás visszaállításához"
+
+[dictionary_dialog]
+title = "Szótár"
+search_placeholder = "Írjon be egy szót…"
+lookup_button = "Keresés"
+hint_message = "Írjon be egy szót fent a kereséshez."
+not_found_message = "Nem találtunk meghatározást a következőre: ""%s""."
+loading_message = "Keresés…"
+error_message = "A keresés sikertelen. Kérjük, próbálja újra."
+synonyms_label = "Szinonimák"
+
+[dictionary_dialog]
+title = "Szótár"
+search_placeholder = "Írjon be egy szót…"
+lookup_button = "Keresés"
+hint_message = "Írjon be egy szót fent a kereséshez."
+not_found_message = "Nem találtunk meghatározást a következőre: ""%s""."
+loading_message = "Keresés…"
+error_message = "A keresés sikertelen. Kérjük, próbálja újra."
+synonyms_label = "Szinonimák"
+
+auto_source_off = "Auto: Off"
+auto_source_translated = "Translated"
+auto_source_source = "Source"
 
 [update_dialog]
 title = "Frissítés elérhető"

@@ -104,4 +104,34 @@ sealed interface MainIntent : UiIntent {
 
     /** User toggled the pin state of the quick translate popup. */
     data object ToggleQuickTranslateDialogPin : MainIntent
+
+    // ---- Dictionary ----
+
+    /**
+     * User requested a dictionary lookup for [word].
+     * @property language The language of [word]. Defaults to English.
+     */
+    data class LookupWord(
+        val word: String,
+        val language: LanguageCode = LanguageCode("en")
+    ) : MainIntent
+
+    /** User toggled the inline dictionary panel open or closed. */
+    data object ToggleDictionaryPanel : MainIntent
+
+    /**
+     * User triggered the floating dictionary popup (e.g. via global hotkey or auto-lookup).
+     * @property selectedText The text that was selected / resolved for lookup.
+     * @property language     The language to look the word up in. Defaults to English.
+     */
+    data class ShowQuickDictionary(
+        val selectedText: String,
+        val language: LanguageCode = LanguageCode("en")
+    ) : MainIntent
+
+    /** User dismissed the floating dictionary popup. */
+    data object HideQuickDictionary : MainIntent
+
+    /** User toggled the pin state of the floating dictionary popup. */
+    data object ToggleQuickDictionaryPin : MainIntent
 }
