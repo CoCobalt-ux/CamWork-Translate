@@ -35,7 +35,9 @@ class KeyboardPanel(
         HotkeyAction.TRANSLATE
     )
 
-    private val nonEditableActions = setOf(HotkeyAction.SHOW_MAIN_WINDOW)
+    // SHOW_MAIN_WINDOW can now have a custom keystroke — only its scope is locked to GLOBAL.
+    private val nonEditableActions    = emptySet<HotkeyAction>()
+    private val nonScopeToggleActions = setOf(HotkeyAction.SHOW_MAIN_WINDOW)
 
     private val COL_ACTION = 0
     private val COL_HOTKEY = 1
@@ -87,9 +89,8 @@ class KeyboardPanel(
                 cellRenderer   = HotkeyColumnRenderer()
             }
             columnModel.getColumn(COL_SCOPE).apply {
-                preferredWidth = 90
+                preferredWidth = 130
                 minWidth       = 80
-                maxWidth       = 110
                 cellRenderer   = ScopeColumnRenderer()
             }
 
@@ -178,7 +179,15 @@ class KeyboardPanel(
 
     private fun onToggleScope(row: Int) {
         val action = actionOrder[row]
-        if (action in nonEditableActions) return  // SHOW_MAIN_WINDOW always GLOBAL
+        if (action == HotkeyAction.SHOW_MAIN_WINDOW) {
+            // For SHOW_MAIN_WINDOW the scope is locked to GLOBAL, but the cell
+            // acts as a "Double Ctrl" on/off toggle instead.
+            val current = store.state.value.workingConfiguration.hotkeys
+                .find { it.action == action } ?: return
+            saveBinding(current.copy(isDoubleCtrlEnabled = !current.isDoubleCtrlEnabled))
+            return
+        }
+        if (action in nonScopeToggleActions) return
         val current = store.state.value.workingConfiguration.hotkeys.find { it.action == action }
             ?: return
         val newScope = if (current.scope == HotkeyScope.GLOBAL) HotkeyScope.LOCAL else HotkeyScope.GLOBAL
@@ -261,22 +270,28 @@ class KeyboardPanel(
             val action  = actionOrder.getOrNull(row)
             val binding = value as? HotkeyBinding
 
+            val showMainTooltip = localizationManager.getString("settings_hotkeys.show_main_tooltip")
             when {
-                action in nonEditableActions -> {
-                    text       = localizationManager.getString("settings_hotkeys.double_ctrl")
-                    foreground = UIManager.getColor("Label.disabledForeground")
-                    font       = font.deriveFont(Font.ITALIC)
+                // SHOW_MAIN_WINDOW with no custom key → show the built-in double-Ctrl as a hint
+                action == HotkeyAction.SHOW_MAIN_WINDOW && (binding == null || !binding.hasBinding) -> {
+                    text        = localizationManager.getString("settings_hotkeys.double_ctrl")
+                    foreground  = UIManager.getColor("Label.disabledForeground")
+                    font        = font.deriveFont(Font.ITALIC)
+                    toolTipText = showMainTooltip
                 }
                 binding == null || !binding.hasBinding -> {
-                    text       = localizationManager.getString("settings_hotkeys.no_binding")
-                    foreground = UIManager.getColor("Label.disabledForeground")
-                    font       = font.deriveFont(Font.PLAIN)
+                    text        = localizationManager.getString("settings_hotkeys.no_binding")
+                    foreground  = UIManager.getColor("Label.disabledForeground")
+                    font        = font.deriveFont(Font.PLAIN)
+                    toolTipText = null
                 }
                 else -> {
-                    text       = formatBinding(binding)
-                    foreground = if (sel) UIManager.getColor("Table.selectionForeground")
-                    else     UIManager.getColor("Table.foreground")
-                    font       = font.deriveFont(Font.BOLD)
+                    text        = formatBinding(binding)
+                    foreground  = if (sel) UIManager.getColor("Table.selectionForeground")
+                                  else     UIManager.getColor("Table.foreground")
+                    font        = font.deriveFont(Font.BOLD)
+                    // Remind user that double-Ctrl still works alongside their custom key
+                    toolTipText = if (action == HotkeyAction.SHOW_MAIN_WINDOW) showMainTooltip else null
                 }
             }
             return this
@@ -291,12 +306,31 @@ class KeyboardPanel(
         ): Component {
             super.getTableCellRendererComponent(t, value, sel, focus, row, col)
             val action = actionOrder.getOrNull(row)
-            val label  = value as? String ?: ""
 
-            if (action in nonEditableActions) {
-                text       = label
-                foreground = UIManager.getColor("Label.disabledForeground")
-                font       = font.deriveFont(Font.ITALIC)
+            if (action == HotkeyAction.SHOW_MAIN_WINDOW) {
+                // Repurpose scope cell as a "Double Ctrl" on/off toggle.
+                val binding = store.state.value.workingConfiguration.hotkeys
+                    .find { it.action == action }
+                val enabled = binding?.isDoubleCtrlEnabled ?: true
+                text        = if (enabled)
+                    localizationManager.getString("settings_hotkeys.double_ctrl_on")
+                else
+                    localizationManager.getString("settings_hotkeys.double_ctrl_off")
+                foreground  = if (enabled)
+                    (UIManager.getColor("Component.accentColor") ?: UIManager.getColor("Table.foreground"))
+                else
+                    UIManager.getColor("Label.disabledForeground")
+                font        = font.deriveFont(Font.PLAIN)
+                toolTipText = localizationManager.getString("settings_hotkeys.double_ctrl_toggle_hint")
+                return this
+            }
+
+            val label = value as? String ?: ""
+            if (action in nonScopeToggleActions) {
+                text        = label
+                foreground  = UIManager.getColor("Label.disabledForeground")
+                font        = font.deriveFont(Font.ITALIC)
+                toolTipText = null
             } else {
                 text       = label
                 foreground = if (sel) UIManager.getColor("Table.selectionForeground")
