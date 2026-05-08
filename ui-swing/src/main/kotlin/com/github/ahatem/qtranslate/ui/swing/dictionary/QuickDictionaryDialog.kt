@@ -12,7 +12,6 @@ import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ComponentResizer
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import java.awt.*
 import java.awt.event.*
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.border.EmptyBorder
 import kotlin.math.abs
@@ -125,10 +124,10 @@ class QuickDictionaryDialog(
     private var currentState: QuickDictionaryDialogState? = null
 
     // Timers
-    private val fadeLock = AtomicBoolean(false)
     private var fadeTimer: Timer? = null
     private var idleHideTimer: Timer? = null
     private var resizeSaveTimer: Timer? = null
+    private var mouseExitDebounceTimer: Timer? = null
 
     // Mouse over detection
     private var awtMouseListener: AWTEventListener? = null
@@ -411,6 +410,7 @@ class QuickDictionaryDialog(
             stopIdleHide()
             fadeTo(1f, FADE_MS)
         } else {
+            applyTransparency()
             startIdleHide()
         }
     }
@@ -441,8 +441,16 @@ class QuickDictionaryDialog(
     // Show / hide / fade
     // -----------------------------------------------------------------------
 
+    private fun applyTransparency() {
+        val pct = currentState?.config?.transparencyPercentage ?: 0
+        val target = (100f - pct) / 100f
+        fadeTo(target, FADE_MS)
+    }
+
     private fun showDialog() {
-        opacity = 1f
+        // set initial opacity from config before making visible (no animation on first show)
+        val pct = currentState?.config?.transparencyPercentage ?: 0
+        opacity = (100f - pct) / 100f
         isVisible = true
         focusableWindowState = true
         installAwtMouseListener()
@@ -463,7 +471,8 @@ class QuickDictionaryDialog(
 
     private fun startIdleHide() {
         idleHideTimer?.stop()
-        idleHideTimer = Timer(IDLE_HIDE_MS) { event ->
+        val idleMs = (currentState?.config?.idleTimeoutSeconds ?: 8) * 1000
+        idleHideTimer = Timer(idleMs) { event ->
             if (!isPinned) {
                 fadeTo(0f, FADE_MS)
                 Timer(FADE_MS + 20) {
@@ -480,8 +489,11 @@ class QuickDictionaryDialog(
     }
 
     private fun fadeTo(targetOpacity: Float, durationMs: Int) {
-        if (fadeLock.get()) return
-        fadeLock.set(true)
+        // Always cancel any in-progress fade and restart — both callers run on EDT
+        // so there is no threading race to protect against. The old fadeLock guard
+        // was placed before fadeTimer?.stop(), which caused the fade-back-to-
+        // transparency to be silently dropped whenever a fade-to-opaque was still
+        // animating (e.g. quick mouse-in then mouse-out within 160 ms).
         fadeTimer?.stop()
         val start = opacity
         val steps = FADE_STEPS.coerceAtLeast(1)
@@ -492,10 +504,7 @@ class QuickDictionaryDialog(
             val t = step.toFloat() / steps
             val value = start + (targetOpacity - start) * t
             if (abs(opacity - value) > 0.01f) opacity = value
-            if (step >= steps) {
-                (it.source as Timer).stop()
-                fadeLock.set(false)
-            }
+            if (step >= steps) (it.source as Timer).stop()
         }.apply { isRepeats = true; start() }
     }
 
@@ -507,22 +516,35 @@ class QuickDictionaryDialog(
         if (awtMouseListener != null) return
         awtMouseListener = AWTEventListener { ev ->
             val me = ev as? MouseEvent ?: return@AWTEventListener
-            if (me.id != MouseEvent.MOUSE_MOVED && me.id != MouseEvent.MOUSE_ENTERED && me.id != MouseEvent.MOUSE_EXITED) return@AWTEventListener
+            if (me.id != MouseEvent.MOUSE_MOVED &&
+                me.id != MouseEvent.MOUSE_ENTERED &&
+                me.id != MouseEvent.MOUSE_EXITED) return@AWTEventListener
             SwingUtilities.invokeLater {
+                if (!isVisible) return@invokeLater
                 val p = MouseInfo.getPointerInfo()?.location ?: return@invokeLater
-                val cp = Point(p)
-                SwingUtilities.convertPointFromScreen(cp, contentPane)
-                val over = contentPane.contains(cp)
-                if (over != isMouseOver) {
-                    isMouseOver = over
-                    if (isMouseOver) {
-                        stopIdleHide()
-                        fadeTo(1f, FADE_MS)
-                    } else {
-                        if (!isPinned) startIdleHide()
-                    }
+                // Use dialog screen bounds directly — more reliable than coordinate conversion
+                // and avoids edge-case oscillation from rounding in convertPointFromScreen.
+                val over = bounds.contains(p)
+                if (over == isMouseOver) return@invokeLater  // no state change — do nothing
+
+                isMouseOver = over
+                if (over) {
+                    // Mouse entered: cancel any pending exit-debounce, stop idle, fade to full opacity.
+                    mouseExitDebounceTimer?.stop()
+                    stopIdleHide()
+                    fadeTo(1f, FADE_MS)
                 } else {
-                    if (isMouseOver && !isPinned) startIdleHide()
+                    // Mouse exited: debounce before fading so that brief exits at the window
+                    // border (mouse wiggle) don't cause flickering. If the mouse comes back
+                    // within the debounce window the timer is cancelled by the enter-branch above.
+                    mouseExitDebounceTimer?.stop()
+                    mouseExitDebounceTimer = Timer(120) {
+                        if (!isMouseOver && !isPinned) {
+                            applyTransparency()
+                            startIdleHide()
+                        }
+                        (it.source as Timer).stop()
+                    }.apply { isRepeats = false; start() }
                 }
             }
         }
@@ -533,6 +555,8 @@ class QuickDictionaryDialog(
     }
 
     private fun uninstallAwtMouseListener() {
+        mouseExitDebounceTimer?.stop()
+        mouseExitDebounceTimer = null
         awtMouseListener?.let {
             Toolkit.getDefaultToolkit().removeAWTEventListener(it)
             awtMouseListener = null

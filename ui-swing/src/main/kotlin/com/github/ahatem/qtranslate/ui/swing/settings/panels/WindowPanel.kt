@@ -6,7 +6,6 @@ import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.core.settings.data.CloseButtonBehavior
 import com.github.ahatem.qtranslate.ui.swing.main.layout.LayoutManager
 import java.awt.BorderLayout
-import java.awt.Dimension
 import javax.swing.*
 
 class WindowPanel(
@@ -26,8 +25,10 @@ class WindowPanel(
     private lateinit var dictionaryPanelCheck: JCheckBox
     private lateinit var autoSizeCheck: JCheckBox
     private lateinit var autoPositionCheck: JCheckBox
-    private lateinit var transparencySlider: JSlider
-    private lateinit var transparencyLabel: JLabel
+    private lateinit var transparencySpinner: JSpinner
+    private lateinit var popupIdleSpinner: JSpinner
+    private lateinit var dictTransparencySpinner: JSpinner
+    private lateinit var dictIdleSpinner: JSpinner
     private lateinit var closeButtonCombo: JComboBox<CloseButtonBehaviorInfo>
 
     init { buildUI() }
@@ -123,29 +124,69 @@ class WindowPanel(
             applyDraft(store) { it.copy(isPopupAutoPositionEnabled = enabled) }
         }
 
-        transparencyLabel = JLabel("0%").apply {
-            preferredSize = Dimension(48, preferredSize.height)
-            horizontalAlignment = SwingConstants.RIGHT
-        }
-
-        transparencySlider = JSlider(0, 100, 0).apply {
-            majorTickSpacing = 25
-            minorTickSpacing = 5
-            paintTicks = true
+        transparencySpinner = JSpinner(SpinnerNumberModel(5, 0, 50, 5)).apply {
             addChangeListener {
-                transparencyLabel.text = "${value}%"
-                if (!valueIsAdjusting && !isUpdatingFromState) {
-                    applyDraft(store) { it.copy(popupTransparencyPercentage = value) }
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(popupTransparencyPercentage = value as Int) }
                 }
             }
         }
-
         addRow(
             localizationManager.getString("settings_window.transparency"),
+            JPanel(BorderLayout(4, 0)).apply {
+                isOpaque = false
+                add(transparencySpinner, BorderLayout.LINE_START)
+                add(JLabel("%"), BorderLayout.CENTER)
+            }
+        )
+
+        popupIdleSpinner = JSpinner(SpinnerNumberModel(3, 1, 60, 1)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(popupIdleTimeoutSeconds = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.popup_idle_timeout"),
             JPanel(BorderLayout(8, 0)).apply {
                 isOpaque = false
-                add(transparencySlider, BorderLayout.CENTER)
-                add(transparencyLabel, BorderLayout.LINE_END)
+                add(popupIdleSpinner, BorderLayout.LINE_START)
+                add(JLabel(localizationManager.getString("settings_window.seconds_unit")), BorderLayout.CENTER)
+            }
+        )
+
+        addSeparator(localizationManager.getString("settings_window.dict_popup_group"))
+
+        dictTransparencySpinner = JSpinner(SpinnerNumberModel(5, 0, 50, 5)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(quickDictionaryTransparencyPercentage = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.transparency"),
+            JPanel(BorderLayout(4, 0)).apply {
+                isOpaque = false
+                add(dictTransparencySpinner, BorderLayout.LINE_START)
+                add(JLabel("%"), BorderLayout.CENTER)
+            }
+        )
+
+        dictIdleSpinner = JSpinner(SpinnerNumberModel(8, 1, 60, 1)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(quickDictionaryIdleTimeoutSeconds = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.popup_idle_timeout"),
+            JPanel(BorderLayout(8, 0)).apply {
+                isOpaque = false
+                add(dictIdleSpinner, BorderLayout.LINE_START)
+                add(JLabel(localizationManager.getString("settings_window.seconds_unit")), BorderLayout.CENTER)
             }
         )
 
@@ -183,8 +224,10 @@ class WindowPanel(
             dictionaryPanelCheck.isSelected = c.showDictionaryPanel
             autoSizeCheck.isSelected = c.isPopupAutoSizeEnabled
             autoPositionCheck.isSelected = c.isPopupAutoPositionEnabled
-            transparencySlider.value = c.popupTransparencyPercentage
-            transparencyLabel.text = "${c.popupTransparencyPercentage}%"
+            transparencySpinner.value = c.popupTransparencyPercentage.coerceIn(0, 50)
+            popupIdleSpinner.value = c.popupIdleTimeoutSeconds
+            dictTransparencySpinner.value = c.quickDictionaryTransparencyPercentage.coerceIn(0, 50)
+            dictIdleSpinner.value = c.quickDictionaryIdleTimeoutSeconds
             closeButtonCombo.selectedItem = (0 until closeButtonCombo.itemCount)
                 .map { closeButtonCombo.getItemAt(it) }
                 .find { it.behavior == c.closeButtonBehavior }
