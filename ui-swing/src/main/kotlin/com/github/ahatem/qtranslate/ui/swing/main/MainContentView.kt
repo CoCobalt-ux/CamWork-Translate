@@ -7,6 +7,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType
+import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
@@ -27,6 +28,8 @@ import com.github.ahatem.qtranslate.ui.swing.main.output.OutputTextPanel
 import com.github.ahatem.qtranslate.ui.swing.main.output.OutputTextState
 import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorSelector
 import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorSelectorState
+import com.github.ahatem.qtranslate.ui.swing.dictionary.DictionaryPanel
+import com.github.ahatem.qtranslate.ui.swing.dictionary.DictionaryPanelState
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.StatusBar
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.Action
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.TextActionsState
@@ -36,7 +39,14 @@ import com.github.ahatem.qtranslate.ui.swing.shared.util.scaledEditorFallbackFon
 import com.github.ahatem.qtranslate.ui.swing.shared.util.scaledEditorFont
 import com.github.ahatem.qtranslate.ui.swing.shared.util.toImageData
 import java.awt.BorderLayout
+import java.awt.Dimension
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
+import javax.swing.AbstractAction
+import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.KeyStroke
+import javax.swing.UIManager
 
 class MainContentView(
     private val iconManager: IconManager,
@@ -44,7 +54,8 @@ class MainContentView(
     private val dispatch: (MainIntent) -> Unit,
     private val dispatchSettings: (SettingsIntent) -> Unit,
     private val onOpenSnippingTool: () -> Unit,
-) : JPanel(BorderLayout()) {
+    private val onNotificationsClicked: () -> Unit,
+) : JPanel(BorderLayout(0, 0)) {
 
     private val translationHistoryBar: TranslationHistoryBar = TranslationHistoryBar(
         iconManager = iconManager,
@@ -70,7 +81,8 @@ class MainContentView(
         onSourceLanguageSelected = { lang -> dispatch(MainIntent.SelectSourceLanguage(lang)) },
         onSwap = { dispatch(MainIntent.SwapLanguages) },
         onTargetLanguageSelected = { lang -> dispatch(MainIntent.SelectTargetLanguage(lang)) },
-        onTranslate = { dispatch(MainIntent.Translate()) }
+        onTranslate = { dispatch(MainIntent.Translate()) },
+        onCancel = { dispatch(MainIntent.CancelTranslation) }
     )
 
     private val inputTextPanel = InputTextPanel(
@@ -83,30 +95,66 @@ class MainContentView(
             dispatch(MainIntent.ApplyCorrection(original, suggestion))
         },
         onImageDropped = { image -> dispatch(MainIntent.OcrAndTranslateImage(image.toImageData("png"))) },
+        onFindInDictionary = { word -> showDictionaryWithWord(word) },
     )
 
     private val outputTextPanel = OutputTextPanel(
         iconManager = iconManager,
+        localizationManager = localizer,
         onListen = { text -> dispatch(MainIntent.ListenToText(TextSource.Output, text)) },
         onTranslateRequest = { text ->
             dispatch(MainIntent.UpdateInputText(text))
             dispatch(MainIntent.Translate(text))
         },
+        onFindInDictionary = { word -> showDictionaryWithWord(word, currentTargetLanguage) },
+        onSetAsInput = { text ->
+            dispatch(MainIntent.UpdateInputText(text))
+            inputTextPanel.requestFocusOnText()
+        },
+        onEscapePressed = { inputTextPanel.requestFocusOnText() },
     )
 
     private val extraOutputPanel = ExtraOutputPanel(
         iconManager = iconManager,
+        localizationManager = localizer,
         onListen = { text -> dispatch(MainIntent.ListenToText(TextSource.ExtraOutput, text)) },
         onTranslateRequest = { text ->
             dispatch(MainIntent.UpdateInputText(text))
             dispatch(MainIntent.Translate(text))
         },
+        onFindInDictionary = { word -> showDictionaryWithWord(word, currentExtraOutputLanguage) },
+        onSetAsInput = { text ->
+            dispatch(MainIntent.UpdateInputText(text))
+            inputTextPanel.requestFocusOnText()
+        },
+        onEscapePressed = { inputTextPanel.requestFocusOnText() },
     )
 
     val statusBar: StatusBar = StatusBar(
         iconManager = iconManager,
-        onNotificationsClicked = { TODO() },
+        onNotificationsClicked = { onNotificationsClicked() },
     )
+
+    // Resolved at render time; captured by lambdas so every lookup uses the current language.
+    private var currentLookupLanguage: LanguageCode = LanguageCode("en")
+    private var currentTargetLanguage: LanguageCode = LanguageCode("en")
+    private var currentExtraOutputLanguage: LanguageCode = LanguageCode("en")
+
+    private val dictionaryPanel = DictionaryPanel(
+        iconManager = iconManager,
+        onLookup = { word -> dispatch(MainIntent.LookupWord(word, currentLookupLanguage)) },
+        onServiceSelected = { serviceId ->
+            dispatchSettings(SettingsIntent.UpdateServiceInActivePreset(ServiceType.DICTIONARY, serviceId))
+            val word = lastDictionaryKey?.word ?: ""
+            if (word.isNotBlank()) dispatch(MainIntent.LookupWord(word, currentLookupLanguage))
+        },
+        onClose  = { dispatch(MainIntent.ToggleDictionaryPanel) },
+    ).apply {
+        minimumSize = Dimension(220, 0)
+    }
+
+    // Separate wrapper so LayoutManager.switchLayout()'s removeAll() never touches dictionaryPanel.
+    private val contentWrapper = JPanel(BorderLayout())
 
     private val layoutManager = LayoutManager(
         ComponentRegistry(
@@ -117,10 +165,61 @@ class MainContentView(
             outputPanel = outputTextPanel,
             extraOutputPanel = extraOutputPanel,
             statusBar = statusBar
-        ), this
+        ), contentWrapper
     )
 
+    private val splitPane = javax.swing.JSplitPane(
+        javax.swing.JSplitPane.HORIZONTAL_SPLIT, true, contentWrapper, dictionaryPanel
+    ).apply {
+        resizeWeight = 1.0   // main content gets all extra space when window is resized
+        dividerSize  = 0     // collapsed until panel is first shown
+        border       = null
+        dictionaryPanel.isVisible = false
+    }
+
+    private var savedDividerLocation: Int = -1
+
     private var lastState: Pair<MainState, SettingsState>? = null
+    private var lastDictionaryKey: DictionaryKey? = null
+    private var currentTranslateKeyStroke: KeyStroke? = null
+    /** Tracks whether a translation is in-flight so the Escape binding knows when to cancel. */
+    private var isTranslating = false
+
+    private data class DictionaryKey(
+        val isVisible: Boolean,
+        val isLoading: Boolean,
+        val entries: List<com.github.ahatem.qtranslate.api.dictionary.DictionaryEntry>,
+        val word: String,
+        val hasFailed: Boolean,
+        val lookupLanguage: LanguageCode,
+        val selectedDictionaryId: String?,
+        val dictionaryCount: Int,
+        val autoSource: com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource,
+    )
+
+    init {
+        add(splitPane, BorderLayout.CENTER)
+
+        // Direct panel focus shortcuts — work from anywhere in the window.
+        // Alt+1 → input, Alt+2 → output, Alt+3 → extra-output.
+        val im = getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW)
+        val am = actionMap
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_1, InputEvent.ALT_DOWN_MASK), "focus-panel-input")
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_2, InputEvent.ALT_DOWN_MASK), "focus-panel-output")
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_3, InputEvent.ALT_DOWN_MASK), "focus-panel-extra")
+        am.put("focus-panel-input",  object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { inputTextPanel.requestFocusOnText() } })
+        am.put("focus-panel-output", object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { outputTextPanel.requestFocusOnText() } })
+        am.put("focus-panel-extra",  object : AbstractAction() { override fun actionPerformed(e: java.awt.event.ActionEvent) { extraOutputPanel.requestFocusOnText() } })
+
+        // Escape cancels an in-flight translation — only fires when isTranslating is true
+        // so it doesn't interfere with dialogs or normal Escape usage in other contexts.
+        im.put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "cancel-translation")
+        am.put("cancel-translation", object : AbstractAction() {
+            override fun actionPerformed(e: java.awt.event.ActionEvent) {
+                if (isTranslating) dispatch(MainIntent.CancelTranslation)
+            }
+        })
+    }
 
     fun render(mainState: MainState, settingsState: SettingsState) {
         val config = settingsState.workingConfiguration
@@ -136,11 +235,124 @@ class MainContentView(
             layoutManager.updateVisibility(config)
         }
 
+        updateTranslateKeyStroke(config)
+        renderDictionaryPanel(mainState, config)
         renderComponents(mainState, config)
         lastState = mainState to settingsState
     }
 
+    /**
+     * Keeps the per-pane translate keystroke in sync with the user's configured binding.
+     * Binding lives on each AdvancedTextPane (WHEN_FOCUSED) so the pane can pass selected
+     * text to onTranslateRequest rather than always using the full input text.
+     */
+    private fun updateTranslateKeyStroke(config: Configuration) {
+        val binding = config.hotkeys.find { it.action == HotkeyAction.TRANSLATE }
+        val newStroke = binding?.takeIf { it.isEnabled }?.toKeyStroke()
+        if (newStroke == currentTranslateKeyStroke) return
+        val old = currentTranslateKeyStroke
+        currentTranslateKeyStroke = newStroke
+        inputTextPanel.setTranslateKeyStroke(old, newStroke)
+        outputTextPanel.setTranslateKeyStroke(old, newStroke)
+        extraOutputPanel.setTranslateKeyStroke(old, newStroke)
+    }
+
+    private fun renderDictionaryPanel(mainState: MainState, config: Configuration) {
+        // Resolve source language — never pass AUTO to the dictionary API.
+        val resolvedLang = when {
+            mainState.sourceLanguage != LanguageCode.AUTO -> mainState.sourceLanguage
+            mainState.detectedSourceLanguage != null      -> mainState.detectedSourceLanguage!!
+            else                                          -> LanguageCode("en")
+        }
+        currentLookupLanguage = resolvedLang
+
+        val availableDicts = mainState.getAvailableServicesFor(
+            com.github.ahatem.qtranslate.core.shared.arch.ServiceType.DICTIONARY
+        )
+        val selectedDictId = lastState?.second?.workingConfiguration
+            ?.getActivePreset()?.selectedServices
+            ?.get(com.github.ahatem.qtranslate.core.shared.arch.ServiceType.DICTIONARY)
+
+        val key = DictionaryKey(
+            isVisible         = mainState.isDictionaryPanelVisible,
+            isLoading         = mainState.isDictionaryLoading,
+            entries           = mainState.dictionaryEntries,
+            word              = mainState.dictionaryWord,
+            hasFailed         = mainState.dictionaryFailed,
+            lookupLanguage    = resolvedLang,
+            selectedDictionaryId = selectedDictId,
+            dictionaryCount   = availableDicts.size,
+            autoSource        = config.dictionaryAutoSource,
+        )
+        if (key == lastDictionaryKey) return
+        lastDictionaryKey = key
+
+        if (dictionaryPanel.isVisible != key.isVisible) {
+            if (key.isVisible) {
+                dictionaryPanel.isVisible = true
+                val dividerPx = UIManager.getInt("SplitPane.dividerSize").coerceAtLeast(4)
+                splitPane.dividerSize = dividerPx
+                val loc = if (savedDividerLocation > 0) savedDividerLocation else -1
+                if (loc > 0 && loc < splitPane.width - dictionaryPanel.minimumSize.width) {
+                    splitPane.dividerLocation = loc
+                } else {
+                    // setDividerLocation(double) requires the pane to have a real pixel width.
+                    // Defer via invokeLater so it fires after the layout pass — otherwise
+                    // splitPane.width is still 0 and the panel opens with the wrong size.
+                    javax.swing.SwingUtilities.invokeLater {
+                        splitPane.setDividerLocation(0.65)
+                    }
+                }
+            } else {
+                savedDividerLocation = splitPane.dividerLocation
+                dictionaryPanel.isVisible = false
+                splitPane.dividerSize = 0
+            }
+            revalidate()
+            repaint()
+        }
+        if (key.isVisible) {
+            dictionaryPanel.render(
+                DictionaryPanelState(
+                    title                 = localizer.getString("dictionary_dialog.title"),
+                    lookupButtonLabel     = localizer.getString("dictionary_dialog.lookup_button"),
+                    closeLabel            = localizer.getString("common.close"),
+                    hintMessage           = localizer.getString("dictionary_dialog.hint_message"),
+                    notFoundMessage       = localizer.getString("dictionary_dialog.not_found_message", key.word),
+                    loadingMessage        = localizer.getString("dictionary_dialog.loading_message"),
+                    errorMessage          = localizer.getString("dictionary_dialog.error_message"),
+                    synonymsLabel         = localizer.getString("dictionary_dialog.synonyms_label"),
+                    isLoading             = key.isLoading,
+                    entries               = key.entries,
+                    lookedUpWord          = key.word,
+                    hasFailed             = key.hasFailed,
+                    availableDictionaries = availableDicts,
+                    selectedDictionaryId  = key.selectedDictionaryId,
+                    autoSource            = key.autoSource,
+                    autoSourceOffLabel        = localizer.getString("dictionary_dialog.auto_source_off"),
+                    autoSourceTranslatedLabel = localizer.getString("dictionary_dialog.auto_source_translated"),
+                    autoSourceSourceLabel     = localizer.getString("dictionary_dialog.auto_source_source"),
+                    onAutoSourceChanged   = { newSource ->
+                        dispatchSettings(
+                            SettingsIntent.ToggleSetting { it.copy(dictionaryAutoSource = newSource) }
+                        )
+                    },
+                )
+            )
+        }
+    }
+
     private fun renderComponents(mainState: MainState, config: Configuration) {
+        isTranslating = mainState.isLoading
+        currentTargetLanguage = mainState.targetLanguage
+
+        // BackwardTranslate output is in the source language; all other extra output types are in target.
+        currentExtraOutputLanguage = if (config.extraOutputType == ExtraOutputType.BackwardTranslate) {
+            currentLookupLanguage
+        } else {
+            mainState.targetLanguage
+        }
+
         val allLanguages = mainState.availableLanguages
 
         val activePreset = config.getActivePreset()
@@ -188,13 +400,18 @@ class MainContentView(
                 selectedTargetLanguage = mainState.targetLanguage,
                 strings = LanguageSelectionBarStrings(
                     translateButtonText = localizer.getString("main_window_language_bar.translate_button"),
-                    clearTooltip = localizer.getString("main_window_language_bar.clear_tooltip"),
-                    swapTooltip = localizer.getString("main_window_language_bar.swap_languages_tooltip")
+                    cancelButtonText    = localizer.getString("main_window_language_bar.cancel_button"),
+                    clearTooltip        = localizer.getString("main_window_language_bar.clear_tooltip"),
+                    swapTooltip         = localizer.getString("main_window_language_bar.swap_languages_tooltip")
                 )
             )
         )
 
         val hasInputText = mainState.inputText.isNotBlank()
+        val isTtsPlaying = mainState.isTtsPlaying
+        val listenStopTooltip = if (isTtsPlaying)
+            localizer.getString("common.stop") else localizer.getString("main_window_editor_context_menu.listen")
+        val listenStopIcon = if (isTtsPlaying) "icons/lucide/close.svg" else "icons/lucide/volume.svg"
         val inputActionsState = TextActionsState(
             actions = listOf(
                 Action(
@@ -206,12 +423,15 @@ class MainContentView(
                     onClick = { mainState.inputText.copyToClipboard() }
                 ),
                 Action(
-                    id = "listen_input",
-                    iconPath = "icons/lucide/volume.svg",
-                    tooltip = localizer.getString("main_window_editor_context_menu.listen"),
-                    isEnabled = hasInputText && !mainState.isLoading,
+                    id = if (isTtsPlaying) "stop_tts_input" else "listen_input",
+                    iconPath = listenStopIcon,
+                    tooltip = listenStopTooltip,
+                    isEnabled = if (isTtsPlaying) true else hasInputText && !mainState.isLoading,
                     isVisible = true,
-                    onClick = { dispatch(MainIntent.ListenToText(textSource = TextSource.Input)) }
+                    onClick = {
+                        if (isTtsPlaying) dispatch(MainIntent.StopTTS)
+                        else dispatch(MainIntent.ListenToText(textSource = TextSource.Input))
+                    }
                 ),
             )
         )
@@ -222,7 +442,7 @@ class MainContentView(
                 corrections = mainState.spellCheckCorrections,
                 fontConfig = config.scaledEditorFont,
                 fallbackFontConfig = config.scaledEditorFallbackFont,
-                isEditable = !mainState.isLoading,
+                isEditable = true,
                 isLoading = mainState.isLoading,
                 actionsState = inputActionsState
             )
@@ -248,12 +468,15 @@ class MainContentView(
                             onClick = { mainState.translatedText.copyToClipboard() }
                         ),
                         Action(
-                            id = "listen_output",
-                            iconPath = "icons/lucide/volume.svg",
-                            tooltip = localizer.getString("main_window_editor_context_menu.listen"),
-                            isEnabled = hasOutputText && !mainState.isLoading,
+                            id = if (isTtsPlaying) "stop_tts_output" else "listen_output",
+                            iconPath = listenStopIcon,
+                            tooltip = listenStopTooltip,
+                            isEnabled = if (isTtsPlaying) true else hasOutputText && !mainState.isLoading,
                             isVisible = true,
-                            onClick = { dispatch(MainIntent.ListenToText(textSource = TextSource.Output)) }
+                            onClick = {
+                                if (isTtsPlaying) dispatch(MainIntent.StopTTS)
+                                else dispatch(MainIntent.ListenToText(textSource = TextSource.Output))
+                            }
                         )
                     )
                 )
@@ -326,12 +549,15 @@ class MainContentView(
                             onClick = { mainState.extraOutputText.copyToClipboard() }
                         ),
                         Action(
-                            id = "listen_extra",
-                            iconPath = "icons/lucide/volume.svg",
-                            tooltip = localizer.getString("main_window_editor_context_menu.listen"),
-                            isEnabled = hasExtraText && !mainState.isLoading,
+                            id = if (isTtsPlaying) "stop_tts_extra" else "listen_extra",
+                            iconPath = listenStopIcon,
+                            tooltip = listenStopTooltip,
+                            isEnabled = if (isTtsPlaying) true else hasExtraText && !mainState.isLoading,
                             isVisible = true,
-                            onClick = { dispatch(MainIntent.ListenToText(textSource = TextSource.ExtraOutput)) }
+                            onClick = {
+                                if (isTtsPlaying) dispatch(MainIntent.StopTTS)
+                                else dispatch(MainIntent.ListenToText(textSource = TextSource.ExtraOutput))
+                            }
                         )
                     )
                 )
@@ -341,5 +567,17 @@ class MainContentView(
 
     fun requestFocusOnInput() {
         inputTextPanel.requestFocusInWindow()
+    }
+
+    fun setDictionarySearchWord(word: String) {
+        dictionaryPanel.setSearchWord(word)
+    }
+
+    private fun showDictionaryWithWord(word: String, language: LanguageCode = currentLookupLanguage) {
+        dictionaryPanel.setSearchWord(word)
+        if (!dictionaryPanel.isVisible) {
+            dispatch(MainIntent.ToggleDictionaryPanel)
+        }
+        dispatch(MainIntent.LookupWord(word, language))
     }
 }

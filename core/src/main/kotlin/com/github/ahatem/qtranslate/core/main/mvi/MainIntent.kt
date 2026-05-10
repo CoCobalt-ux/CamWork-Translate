@@ -2,6 +2,7 @@ package com.github.ahatem.qtranslate.core.main.mvi
 
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.ocr.ImageData
+import com.github.ahatem.qtranslate.core.history.HistorySnapshot
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.shared.arch.UiIntent
 
@@ -32,8 +33,27 @@ sealed interface MainIntent : UiIntent {
      */
     data class Translate(val text: String? = null) : MainIntent
 
+    /**
+     * User cancelled an in-flight translation.
+     * Clears [MainState.isLoading] and shows a brief status bar message.
+     * No-op if no translation is running.
+     */
+    data object CancelTranslation : MainIntent
+
+    /**
+     * User stopped TTS playback that is currently in progress.
+     * No-op if nothing is playing.
+     */
+    data object StopTTS : MainIntent
+
     /** User requested OCR on an image followed by translation of the detected text. */
     data class OcrAndTranslateImage(val image: ImageData) : MainIntent
+
+    /**
+     * User requested OCR on an image to extract text and copy it to the clipboard —
+     * without triggering a translation. Emits [MainEvent.CopyToClipboard] on success.
+     */
+    data class OcrAndCopyText(val image: ImageData) : MainIntent
 
     /**
      * User requested text-to-speech for a specific text panel.
@@ -69,6 +89,16 @@ sealed interface MainIntent : UiIntent {
      */
     data object RedoTranslation : MainIntent
 
+    /**
+     * User selected a specific entry in the History dialog to restore.
+     * Restores [snapshot] into the editor and moves [MainState.historyIndex]
+     * to the matching position so undo/redo continues to work correctly.
+     */
+    data class RestoreHistoryEntry(val snapshot: HistorySnapshot) : MainIntent
+
+    /** User clicked "Clear All" in the History dialog. */
+    data object ClearHistory : MainIntent
+
     // ---- Application actions ----
 
     /** User requested a check for application updates. */
@@ -93,4 +123,34 @@ sealed interface MainIntent : UiIntent {
 
     /** User toggled the pin state of the quick translate popup. */
     data object ToggleQuickTranslateDialogPin : MainIntent
+
+    // ---- Dictionary ----
+
+    /**
+     * User requested a dictionary lookup for [word].
+     * @property language The language of [word]. Defaults to English.
+     */
+    data class LookupWord(
+        val word: String,
+        val language: LanguageCode = LanguageCode("en")
+    ) : MainIntent
+
+    /** User toggled the inline dictionary panel open or closed. */
+    data object ToggleDictionaryPanel : MainIntent
+
+    /**
+     * User triggered the floating dictionary popup (e.g. via global hotkey or auto-lookup).
+     * @property selectedText The text that was selected / resolved for lookup.
+     * @property language     The language to look the word up in. Defaults to English.
+     */
+    data class ShowQuickDictionary(
+        val selectedText: String,
+        val language: LanguageCode = LanguageCode("en")
+    ) : MainIntent
+
+    /** User dismissed the floating dictionary popup. */
+    data object HideQuickDictionary : MainIntent
+
+    /** User toggled the pin state of the floating dictionary popup. */
+    data object ToggleQuickDictionaryPin : MainIntent
 }

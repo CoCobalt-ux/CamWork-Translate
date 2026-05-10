@@ -12,7 +12,8 @@ data class OutputTextState(
     val fontConfig: FontConfig,
     val fallbackFontConfig: FontConfig,
     val isLoading: Boolean,
-    val actionsState: TextActionsState
+    val actionsState: TextActionsState,
+    val isEditable: Boolean = false
 ) : UiState
 
 data class ExtraOutputState(
@@ -22,6 +23,7 @@ data class ExtraOutputState(
     val isLoading: Boolean,
     val isVisible: Boolean,
     val actionsState: TextActionsState,
+    val isEditable: Boolean = false,
 
     val activeType: ExtraOutputType = ExtraOutputType.None,
     val summaryLength: SummaryLength = SummaryLength.MEDIUM,

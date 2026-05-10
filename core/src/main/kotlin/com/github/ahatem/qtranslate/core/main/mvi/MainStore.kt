@@ -8,6 +8,7 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.*
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.shared.AppConstants
+import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.core.shared.arch.Store
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.FlowPreview
@@ -47,10 +48,16 @@ class MainStore(
     private val swapLanguagesUseCase: SwapLanguagesUseCase,
     private val ocrAndTranslateUseCase: OcrAndTranslateUseCase,
     private val summarizeUseCase: SummarizeUseCase,
-    private val rewriteUseCase: RewriteUseCase
+    private val rewriteUseCase: RewriteUseCase,
+    private val lookupWordUseCase: LookupWordUseCase
 ) : Store<MainState, MainIntent, MainEvent> {
 
-    private val _state = MutableStateFlow(MainState())
+    private val _state = MutableStateFlow(
+        MainState(
+            isDictionaryPanelVisible = settingsState.value.showDictionaryPanel,
+            isQuickDictionaryPinned  = settingsState.value.isQuickDictionaryPinned
+        )
+    )
     override val state: StateFlow<MainState> = _state.asStateFlow()
 
     private val _eventChannel = Channel<MainEvent>(Channel.BUFFERED)
@@ -61,6 +68,7 @@ class MainStore(
         observeAvailableServices()
         observeInstantTranslation()
         observeSpellChecking()
+        observeTtsPlayback()
         checkForUpdates()
     }
 
@@ -93,15 +101,47 @@ class MainStore(
 
     @OptIn(FlowPreview::class)
     private fun observeInstantTranslation() {
+        // Immediately clear output when the user erases all input — no debounce.
+        scope.launch {
+            state.map { it.inputText }
+                .distinctUntilChanged()
+                .collect { text ->
+                    if (settingsState.value.isInstantTranslationEnabled && text.isBlank()) {
+                        translateTextUseCase.cancel()
+                        _state.update {
+                            it.copy(
+                                translatedText = "",
+                                extraOutputText = "",
+                                detectedSourceLanguage = null,
+                                isLoading = false
+                            )
+                        }
+                    }
+                }
+        }
+
+        // Debounced translation — only fires when there is enough text to translate.
         scope.launch {
             state.map { it.inputText }
                 .debounce(AppConstants.INSTANT_TRANSLATION_DEBOUNCE_MS)
                 .distinctUntilChanged()
                 .collect { text ->
-                    if (settingsState.value.isInstantTranslationEnabled && text.isNotBlank()) {
+                    if (settingsState.value.isInstantTranslationEnabled
+                        && text.length >= AppConstants.INSTANT_TRANSLATE_MIN_CHARS
+                    ) {
                         translateText()
                     }
                 }
+        }
+    }
+
+    /** Mirrors [HandleTextToSpeechUseCase.isPlaying] into [MainState.isTtsPlaying]
+     *  so the UI can reactively toggle listen ↔ stop buttons. */
+    private fun observeTtsPlayback() {
+        scope.launch {
+            handleTextToSpeechUseCase.isPlaying.collect { playing ->
+                _state.update { it.copy(isTtsPlaying = playing) }
+            }
         }
     }
 
@@ -139,6 +179,16 @@ class MainStore(
                     intent.text.replace("\n", " ").replace("\r", "").replace("  ", " ").trim()
                 else intent.text
                 _state.update { it.copy(inputText = cleaned, detectedSourceLanguage = null) }
+                // With instant translate enabled, cancel any in-flight translation immediately
+                // so the loading indicator clears and the debounce can queue the next request.
+                // Without this, the collect coroutine in observeInstantTranslation stays
+                // suspended at join() until the current translation finishes — the user's new
+                // text effectively waits in line behind the old result.
+                // Capture state once to avoid reading _state.value twice (TOCTOU race).
+                if (settingsState.value.isInstantTranslationEnabled && _state.value.isLoading) {
+                    translateTextUseCase.cancel()
+                    _state.update { s -> s.copy(isLoading = false) }
+                }
             }
 
             is MainIntent.SelectSourceLanguage ->
@@ -161,6 +211,8 @@ class MainStore(
             MainIntent.UndoTranslation -> handleUndo()
             MainIntent.RedoTranslation -> handleRedo()
             MainIntent.CycleTargetLanguage -> handleCycleTargetLanguage()
+            is MainIntent.RestoreHistoryEntry -> handleRestoreHistoryEntry(intent)
+            MainIntent.ClearHistory -> scope.launch { handleClearHistory() }
 
             // ---- Async operations — launched on scope ----
 
@@ -171,6 +223,16 @@ class MainStore(
             }
 
             is MainIntent.Translate -> scope.launch { translateText(intent.text) }
+
+            MainIntent.CancelTranslation -> {
+                translateTextUseCase.cancel()
+                _state.update { it.copy(isLoading = false) }
+                scope.launch {
+                    updateStatusBar(StatusCode.TranslationCancelled, NotificationType.INFO, true)
+                }
+            }
+
+            MainIntent.StopTTS -> handleTextToSpeechUseCase.stop()
 
             is MainIntent.ReplaceWithTranslation -> scope.launch {
                 handleReplaceWithTranslation(intent.selectedText)
@@ -184,8 +246,41 @@ class MainStore(
                 handleOcrAndTranslate(intent)
             }
 
+            is MainIntent.OcrAndCopyText -> scope.launch {
+                handleOcrAndCopyText(intent)
+            }
+
             is MainIntent.ShowQuickTranslate -> scope.launch {
                 handleShowQuickTranslate(intent)
+            }
+
+            is MainIntent.LookupWord -> scope.launch { handleLookupWord(intent) }
+
+            is MainIntent.ToggleDictionaryPanel -> _state.update {
+                it.copy(isDictionaryPanelVisible = !it.isDictionaryPanelVisible)
+            }
+
+            is MainIntent.ShowQuickDictionary -> scope.launch {
+                // Pre-set dictionaryWord so the dialog's search field is already populated
+                // on the very first render — before handleLookupWord emits its own update.
+                _state.update {
+                    it.copy(
+                        isQuickDictionaryVisible = true,
+                        dictionaryWord   = if (intent.selectedText.isNotBlank()) intent.selectedText else it.dictionaryWord,
+                        isDictionaryLoading = intent.selectedText.isNotBlank()
+                    )
+                }
+                if (intent.selectedText.isNotBlank()) {
+                    handleLookupWord(MainIntent.LookupWord(intent.selectedText, intent.language))
+                }
+            }
+
+            is MainIntent.HideQuickDictionary -> _state.update {
+                it.copy(isQuickDictionaryVisible = false)
+            }
+
+            is MainIntent.ToggleQuickDictionaryPin -> _state.update {
+                it.copy(isQuickDictionaryPinned = !it.isQuickDictionaryPinned)
             }
         }
     }
@@ -206,6 +301,22 @@ class MainStore(
         // Write extracted text into input then translate — same path as manual typing.
         _state.update { it.copy(inputText = extractedText) }
         translateText()
+    }
+
+    /**
+     * OCR-only path: extracts text from [intent.image] and emits [MainEvent.CopyToClipboard]
+     * so the UI layer can write it to the system clipboard.
+     * Does NOT translate — the user chose "Copy Text", not "Translate".
+     */
+    private suspend fun handleOcrAndCopyText(intent: MainIntent.OcrAndCopyText) {
+        val extractedText = ocrAndTranslateUseCase(
+            image = intent.image,
+            currentState = _state.value,
+            onStatusUpdate = ::updateStatusBar
+        )
+        if (extractedText.isBlank()) return
+        _eventChannel.send(MainEvent.CopyToClipboard(extractedText))
+        updateStatusBar(StatusCode.OcrTextCopied, NotificationType.INFO, true)
     }
 
     private suspend fun handleShowQuickTranslate(intent: MainIntent.ShowQuickTranslate) {
@@ -238,6 +349,15 @@ class MainStore(
             updateState = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar,
             textOverride = textOverride
+        )
+    }
+
+    private suspend fun handleLookupWord(intent: MainIntent.LookupWord) {
+        lookupWordUseCase(
+            word = intent.word,
+            language = intent.language,
+            updateState = { transform -> _state.update(transform) },
+            onStatusUpdate = ::updateStatusBar
         )
     }
 
@@ -290,8 +410,8 @@ class MainStore(
                 targetLanguage         = LanguageCode(snapshot.targetLanguage),
                 historyIndex           = newIndex,
                 isLoading              = false,
-                extraOutputText        = "",
-                detectedSourceLanguage = null,
+                extraOutputText        = snapshot.extraOutputText,
+                detectedSourceLanguage = snapshot.detectedSourceLanguage?.let { tag -> LanguageCode(tag) },
                 spellCheckCorrections  = emptyList()
             )
         }
@@ -330,12 +450,35 @@ class MainStore(
                     targetLanguage         = LanguageCode(snapshot.targetLanguage),
                     historyIndex           = newIndex,
                     isLoading              = false,
-                    extraOutputText        = "",
-                    detectedSourceLanguage = null,
+                    extraOutputText        = snapshot.extraOutputText,
+                    detectedSourceLanguage = snapshot.detectedSourceLanguage?.let { tag -> LanguageCode(tag) },
                     spellCheckCorrections  = emptyList()
                 )
             }
         }
+    }
+
+    private fun handleRestoreHistoryEntry(intent: MainIntent.RestoreHistoryEntry) {
+        val snapshot = intent.snapshot
+        val idx = _state.value.history.indexOf(snapshot)
+        _state.update {
+            it.copy(
+                inputText              = snapshot.inputText,
+                translatedText         = snapshot.translatedText,
+                sourceLanguage         = LanguageCode(snapshot.sourceLanguage),
+                targetLanguage         = LanguageCode(snapshot.targetLanguage),
+                historyIndex           = if (idx >= 0) idx + 1 else it.historyIndex,
+                isLoading              = false,
+                extraOutputText        = snapshot.extraOutputText,
+                detectedSourceLanguage = snapshot.detectedSourceLanguage?.let { tag -> LanguageCode(tag) },
+                spellCheckCorrections  = emptyList()
+            )
+        }
+    }
+
+    private suspend fun handleClearHistory() {
+        historyRepository.clearHistory()
+        _state.update { it.copy(history = emptyList(), historyIndex = 0) }
     }
 
     private suspend fun handleReplaceWithTranslation(selectedText: String) {
@@ -374,10 +517,10 @@ class MainStore(
     }
 
     private suspend fun updateStatusBar(
-        text: String,
+        code: StatusCode,
         type: NotificationType,
         isTemporary: Boolean
     ) {
-        _eventChannel.send(MainEvent.UpdateStatusBar(text, type, isTemporary))
+        _eventChannel.send(MainEvent.UpdateStatusBar(code, type, isTemporary))
     }
 }

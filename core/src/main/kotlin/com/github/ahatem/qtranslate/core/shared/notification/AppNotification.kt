@@ -4,7 +4,8 @@ import com.github.ahatem.qtranslate.api.plugin.NotificationType
 
 data class AppNotification(
     val type: NotificationType,
-    val title: String,
-    val body: String,
-    val sourcePluginId: String? = null
+    val code: NotificationCode,
+    val sourcePluginId: String? = null,
+    /** Wall-clock time when this notification was posted, used to discard stale replays. */
+    val timestamp: Long = System.currentTimeMillis()
 )

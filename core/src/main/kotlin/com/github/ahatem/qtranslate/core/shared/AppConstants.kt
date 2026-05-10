@@ -15,14 +15,17 @@ object AppConstants {
      * Used by [com.github.ahatem.qtranslate.core.main.domain.usecase.CheckForUpdatesUseCase]
      * to compare against the latest release.
      */
-    const val APP_VERSION = "1.1.0"
+    const val APP_VERSION = "1.2.0"
 
     // ============================================================
     // Timing
     // ============================================================
 
     /** Debounce delay for instant translation. */
-    const val INSTANT_TRANSLATION_DEBOUNCE_MS = 500L
+    const val INSTANT_TRANSLATION_DEBOUNCE_MS = 700L
+
+    /** Minimum input length before instant translation fires. */
+    const val INSTANT_TRANSLATE_MIN_CHARS = 2
 
     /** Debounce delay for spell checking. */
     const val SPELL_CHECK_DEBOUNCE_MS = 750L

@@ -1,12 +1,11 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.settings.data.CloseButtonBehavior
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
-import com.github.ahatem.qtranslate.core.settings.data.CloseButtonBehavior
 import com.github.ahatem.qtranslate.ui.swing.main.layout.LayoutManager
 import java.awt.BorderLayout
-import java.awt.Dimension
 import javax.swing.*
 
 class WindowPanel(
@@ -15,7 +14,7 @@ class WindowPanel(
 ) : SettingsPanel() {
 
     private val layouts = LayoutManager.getAvailableLayouts().map {
-        LayoutInfo(it.id, localizationManager.getString(it.localizeId))
+        LayoutInfo(it.id, localizationManager.getString("main_window_main_menu.${it.localizeId}"))
     }
 
     private lateinit var layoutCombo: JComboBox<LayoutInfo>
@@ -23,15 +22,22 @@ class WindowPanel(
     private lateinit var languageCheck: JCheckBox
     private lateinit var servicesCheck: JCheckBox
     private lateinit var statusCheck: JCheckBox
+    private lateinit var dictionaryPanelCheck: JCheckBox
     private lateinit var autoSizeCheck: JCheckBox
     private lateinit var autoPositionCheck: JCheckBox
-    private lateinit var transparencySlider: JSlider
-    private lateinit var transparencyLabel: JLabel
+    private lateinit var transparencySpinner: JSpinner
+    private lateinit var popupIdleSpinner: JSpinner
+    private lateinit var dictTransparencySpinner: JSpinner
+    private lateinit var dictIdleSpinner: JSpinner
     private lateinit var closeButtonCombo: JComboBox<CloseButtonBehaviorInfo>
 
-    init { buildUI() }
+    init {
+        buildUI()
+    }
 
     private fun buildUI() {
+
+        // ── Layout ───────────────────────────────────────────────────────────
         addSeparator(localizationManager.getString("settings_window.layout_group"))
 
         layoutCombo = JComboBox<LayoutInfo>(layouts.toTypedArray()).apply {
@@ -45,6 +51,7 @@ class WindowPanel(
         }
         addRow(localizationManager.getString("settings_window.layout_preset"), layoutCombo)
 
+        // ── Toolbars ─────────────────────────────────────────────────────────
         addSeparator(localizationManager.getString("settings_window.toolbars_group"))
 
         historyCheck = addCheckbox(
@@ -52,11 +59,7 @@ class WindowPanel(
             false
         ) { enabled ->
             applyDraft(store) {
-                it.copy(
-                    toolbarVisibility = it.toolbarVisibility.copy(
-                        isHistoryBarVisible = enabled
-                    )
-                )
+                it.copy(toolbarVisibility = it.toolbarVisibility.copy(isHistoryBarVisible = enabled))
             }
         }
 
@@ -65,11 +68,7 @@ class WindowPanel(
             false
         ) { enabled ->
             applyDraft(store) {
-                it.copy(
-                    toolbarVisibility = it.toolbarVisibility.copy(
-                        isLanguageBarVisible = enabled
-                    )
-                )
+                it.copy(toolbarVisibility = it.toolbarVisibility.copy(isLanguageBarVisible = enabled))
             }
         }
 
@@ -78,11 +77,7 @@ class WindowPanel(
             false
         ) { enabled ->
             applyDraft(store) {
-                it.copy(
-                    toolbarVisibility = it.toolbarVisibility.copy(
-                        isServicesPanelVisible = enabled
-                    )
-                )
+                it.copy(toolbarVisibility = it.toolbarVisibility.copy(isServicesPanelVisible = enabled))
             }
         }
 
@@ -91,15 +86,22 @@ class WindowPanel(
             false
         ) { enabled ->
             applyDraft(store) {
-                it.copy(
-                    toolbarVisibility = it.toolbarVisibility.copy(
-                        isStatusBarVisible = enabled
-                    )
-                )
+                it.copy(toolbarVisibility = it.toolbarVisibility.copy(isStatusBarVisible = enabled))
             }
         }
 
+        dictionaryPanelCheck = addCheckbox(
+            localizationManager.getString("settings_window.show_dictionary_panel"),
+            false
+        ) { enabled ->
+            applyDraft(store) { it.copy(showDictionaryPanel = enabled) }
+        }
+
+        // ── Popup Windows (translation popup + dictionary popup under one header) ──
         addSeparator(localizationManager.getString("settings_window.popup_group"))
+
+        // Translation Popup sub-section
+        addSubSeparator(localizationManager.getString("settings_window.translation_popup_sub"))
 
         autoSizeCheck = addCheckbox(
             localizationManager.getString("settings_window.auto_size"),
@@ -115,38 +117,91 @@ class WindowPanel(
             applyDraft(store) { it.copy(isPopupAutoPositionEnabled = enabled) }
         }
 
-        transparencyLabel = JLabel("0%").apply {
-            preferredSize = Dimension(48, preferredSize.height)
-            horizontalAlignment = SwingConstants.RIGHT
-        }
-
-        transparencySlider = JSlider(0, 100, 0).apply {
-            majorTickSpacing = 25
-            minorTickSpacing = 5
-            paintTicks = true
+        transparencySpinner = JSpinner(SpinnerNumberModel(5, 5, 50, 5)).apply {
             addChangeListener {
-                transparencyLabel.text = "${value}%"
-                if (!valueIsAdjusting && !isUpdatingFromState) {
-                    applyDraft(store) { it.copy(popupTransparencyPercentage = value) }
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(popupTransparencyPercentage = value as Int) }
                 }
             }
         }
-
         addRow(
             localizationManager.getString("settings_window.transparency"),
-            JPanel(BorderLayout(8, 0)).apply {
+            JPanel(BorderLayout(4, 0)).apply {
                 isOpaque = false
-                add(transparencySlider, BorderLayout.CENTER)
-                add(transparencyLabel, BorderLayout.LINE_END)
+                add(transparencySpinner, BorderLayout.LINE_START)
+                add(JLabel("%"), BorderLayout.CENTER)
             }
         )
 
+        popupIdleSpinner = JSpinner(SpinnerNumberModel(3, 2, 60, 1)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(popupIdleTimeoutSeconds = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.popup_idle_timeout"),
+            JPanel(BorderLayout(8, 0)).apply {
+                isOpaque = false
+                add(popupIdleSpinner, BorderLayout.LINE_START)
+                add(JLabel(localizationManager.getString("settings_window.seconds_unit")), BorderLayout.CENTER)
+            }
+        )
+        addHint(localizationManager.getString("settings_window.popup_idle_hint"))
+
+        // Dictionary Popup sub-section
+        addSubSeparator(localizationManager.getString("settings_window.dict_popup_sub"))
+
+        dictTransparencySpinner = JSpinner(SpinnerNumberModel(5, 5, 50, 5)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(quickDictionaryTransparencyPercentage = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.transparency"),
+            JPanel(BorderLayout(4, 0)).apply {
+                isOpaque = false
+                add(dictTransparencySpinner, BorderLayout.LINE_START)
+                add(JLabel("%"), BorderLayout.CENTER)
+            }
+        )
+
+        dictIdleSpinner = JSpinner(SpinnerNumberModel(8, 2, 60, 1)).apply {
+            addChangeListener {
+                if (!isUpdatingFromState) {
+                    applyDraft(store) { it.copy(quickDictionaryIdleTimeoutSeconds = value as Int) }
+                }
+            }
+        }
+        addRow(
+            localizationManager.getString("settings_window.popup_idle_timeout"),
+            JPanel(BorderLayout(8, 0)).apply {
+                isOpaque = false
+                add(dictIdleSpinner, BorderLayout.LINE_START)
+                add(JLabel(localizationManager.getString("settings_window.seconds_unit")), BorderLayout.CENTER)
+            }
+        )
+        addHint(localizationManager.getString("settings_window.popup_idle_hint"))
+
+        // ── Close Button Behavior ─────────────────────────────────────────────
         addSeparator(localizationManager.getString("settings_window.close_behavior_group"))
 
         val behaviorOptions = listOf(
-            CloseButtonBehaviorInfo(CloseButtonBehavior.ASK,              localizationManager.getString("settings_window.close_behavior_ask")),
-            CloseButtonBehaviorInfo(CloseButtonBehavior.MINIMIZE_TO_TRAY, localizationManager.getString("settings_window.close_behavior_minimize")),
-            CloseButtonBehaviorInfo(CloseButtonBehavior.EXIT,             localizationManager.getString("settings_window.close_behavior_exit"))
+            CloseButtonBehaviorInfo(
+                CloseButtonBehavior.ASK,
+                localizationManager.getString("settings_window.close_behavior_ask")
+            ),
+            CloseButtonBehaviorInfo(
+                CloseButtonBehavior.MINIMIZE_TO_TRAY,
+                localizationManager.getString("settings_window.close_behavior_minimize")
+            ),
+            CloseButtonBehaviorInfo(
+                CloseButtonBehavior.EXIT,
+                localizationManager.getString("settings_window.close_behavior_exit")
+            )
         )
 
         closeButtonCombo = JComboBox(behaviorOptions.toTypedArray()).apply {
@@ -172,10 +227,13 @@ class WindowPanel(
             languageCheck.isSelected = c.toolbarVisibility.isLanguageBarVisible
             servicesCheck.isSelected = c.toolbarVisibility.isServicesPanelVisible
             statusCheck.isSelected = c.toolbarVisibility.isStatusBarVisible
+            dictionaryPanelCheck.isSelected = c.showDictionaryPanel
             autoSizeCheck.isSelected = c.isPopupAutoSizeEnabled
             autoPositionCheck.isSelected = c.isPopupAutoPositionEnabled
-            transparencySlider.value = c.popupTransparencyPercentage
-            transparencyLabel.text = "${c.popupTransparencyPercentage}%"
+            transparencySpinner.value = c.popupTransparencyPercentage.coerceIn(5, 50)
+            popupIdleSpinner.value = c.popupIdleTimeoutSeconds
+            dictTransparencySpinner.value = c.quickDictionaryTransparencyPercentage.coerceIn(5, 50)
+            dictIdleSpinner.value = c.quickDictionaryIdleTimeoutSeconds
             closeButtonCombo.selectedItem = (0 until closeButtonCombo.itemCount)
                 .map { closeButtonCombo.getItemAt(it) }
                 .find { it.behavior == c.closeButtonBehavior }

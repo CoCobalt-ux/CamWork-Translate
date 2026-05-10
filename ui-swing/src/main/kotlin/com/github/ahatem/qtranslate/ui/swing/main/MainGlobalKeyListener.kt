@@ -45,7 +45,9 @@ class MainGlobalKeyListener(
     private val onListenToText: (String) -> Unit,
     private val onOpenSnippingTool: () -> Unit,
     private val onReplaceWithTranslation: (String) -> Unit,
-    private val onCycleTargetLanguage: () -> Unit
+    private val onCycleTargetLanguage: () -> Unit,
+    private val onShowDictionary: (String) -> Unit = {},
+    private val onTranslate: () -> Unit = {}
 ) {
 
     private var provider: Provider? = null
@@ -53,17 +55,19 @@ class MainGlobalKeyListener(
     private val sequenceListener = CustomSequenceListener()
     private val clipboardLock = AtomicBoolean(false)
     private val hotkeysEnabled = AtomicBoolean(true)
-    private var initialized = false
+    // AtomicBoolean.compareAndSet prevents double-initialization if initialize()
+    // is called concurrently (e.g. from two rapid lifecycle events).
+    private val initialized = AtomicBoolean(false)
 
     @Volatile private var bindings: List<HotkeyBinding> = HotkeyBinding.DEFAULTS
 
     fun initialize() {
-        if (initialized) return
+        if (!initialized.compareAndSet(false, true)) return
         try {
             initJKeyMaster()
             initJNativeHook()
-            initialized = true
         } catch (e: Exception) {
+            initialized.set(false)   // allow retry if initialization itself failed
             System.err.println("Hotkey initialization failed: ${e.message}")
             e.printStackTrace()
         }
@@ -71,7 +75,7 @@ class MainGlobalKeyListener(
 
     fun updateBindings(newBindings: List<HotkeyBinding>) {
         bindings = newBindings
-        if (!initialized) return
+        if (!initialized.get()) return
         try {
             provider?.reset()
             registerGlobalHotkeys()
@@ -81,7 +85,7 @@ class MainGlobalKeyListener(
     }
 
     fun setHotkeysEnabled(enabled: Boolean) {
-        if (!initialized) return
+        if (!initialized.get()) return
         if (hotkeysEnabled.getAndSet(enabled) == enabled) return
         if (enabled) enableHotkeys() else disableHotkeys()
     }
@@ -96,7 +100,7 @@ class MainGlobalKeyListener(
         bindings.filter { it.scope == HotkeyScope.LOCAL && it.isEnabled && it.hasBinding }
 
     fun shutdown() {
-        if (!initialized) return
+        if (!initialized.get()) return
         try {
             provider?.reset()
             provider?.stop()
@@ -109,7 +113,7 @@ class MainGlobalKeyListener(
         } catch (e: Exception) {
             System.err.println("Hotkey manager shutdown error: ${e.message}")
         } finally {
-            initialized = false
+            initialized.set(false)
         }
     }
 
@@ -122,6 +126,10 @@ class MainGlobalKeyListener(
     /**
      * Registers only [HotkeyScope.GLOBAL] bindings with jKeymaster.
      * LOCAL bindings are handled by MainAppFrame via Swing InputMap.
+     *
+     * Each binding is wrapped in its own try-catch so a single failure
+     * (e.g. OS refuses to grant a reserved key combination) does not
+     * silently abort registration of the remaining bindings.
      */
     private fun registerGlobalHotkeys() {
         val p = provider ?: return
@@ -131,9 +139,16 @@ class MainGlobalKeyListener(
             .forEach { binding ->
                 val keyStroke = binding.toKeyStroke() ?: return@forEach
                 val action = binding.action
-                p.register(keyStroke) {
-                    if (!hotkeysEnabled.get()) return@register
-                    dispatchAction(action)
+                runCatching {
+                    p.register(keyStroke) {
+                        if (!hotkeysEnabled.get()) return@register
+                        dispatchAction(action)
+                    }
+                    println("[Hotkeys] Registered GLOBAL ${action.name}: $keyStroke")
+                }.onFailure { ex ->
+                    System.err.println(
+                        "[Hotkeys] Failed to register GLOBAL ${action.name} ($keyStroke): ${ex.message}"
+                    )
                 }
             }
     }
@@ -156,6 +171,10 @@ class MainGlobalKeyListener(
                 scope.launch { handleSelectedText(onReplaceWithTranslation) }
             HotkeyAction.CYCLE_TARGET_LANGUAGE ->
                 onCycleTargetLanguage()
+            HotkeyAction.SHOW_DICTIONARY ->
+                scope.launch { handleSelectedText(onShowDictionary) }
+            HotkeyAction.TRANSLATE ->
+                onTranslate()
         }
     }
 
@@ -198,10 +217,10 @@ class MainGlobalKeyListener(
             if (!hotkeysEnabled.get()) return
             if (e.keyCode != NativeKeyEvent.VC_CONTROL) return
 
-            // Only fire if the binding exists and is explicitly enabled.
-            // If binding is missing from the list entirely, don't fire.
+            // Only fire if the binding exists, is enabled, AND the user
+            // has not opted out of the double-Ctrl mechanism specifically.
             val binding = bindings.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
-            if (binding == null || !binding.isEnabled) return
+            if (binding == null || !binding.isEnabled || !binding.isDoubleCtrlEnabled) return
 
             val now = System.currentTimeMillis()
             if (now - lastCtrlTime < threshold) {

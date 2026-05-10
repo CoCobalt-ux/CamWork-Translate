@@ -79,7 +79,24 @@ enum class HotkeyAction {
     LISTEN_TO_TEXT,
     OPEN_OCR,
     REPLACE_WITH_TRANSLATION,  // Rob #2 / Davide — translate and replace selected text
-    CYCLE_TARGET_LANGUAGE      // Yan #3 — cycle through available target languages
+    CYCLE_TARGET_LANGUAGE,     // Yan #3 — cycle through available target languages
+    SHOW_DICTIONARY,           // open floating dictionary popup
+    TRANSLATE                  // trigger translation (default: Ctrl+Enter, LOCAL)
+}
+
+/**
+ * Controls which word is used for automatic dictionary lookups when a
+ * single word is translated.
+ *
+ * [OFF]        — no automatic lookup; user searches manually.
+ * [TRANSLATED] — looks up the translated (target-language) word.
+ * [SOURCE]     — looks up the source (input) word.
+ */
+@Serializable
+enum class DictionaryAutoSource {
+    OFF,
+    TRANSLATED,
+    SOURCE
 }
 
 /**
@@ -107,6 +124,10 @@ enum class HotkeyScope {
  * Reconstruct: `KeyStroke.getKeyStroke(keyCode, modifiers)`
  *
  * [keyCode] = 0 means "no binding" (SHOW_MAIN_WINDOW uses double-Ctrl via JNativeHook).
+ *
+ * [isDoubleCtrlEnabled] only applies to [HotkeyAction.SHOW_MAIN_WINDOW].
+ * When false the double-tap Ctrl sequence is suppressed so other applications
+ * that react to Ctrl-key events are not accidentally triggered.
  */
 @Serializable
 data class HotkeyBinding(
@@ -114,7 +135,8 @@ data class HotkeyBinding(
     val keyCode: Int = 0,
     val modifiers: Int = 0,
     val isEnabled: Boolean = true,
-    val scope: HotkeyScope = HotkeyScope.GLOBAL
+    val scope: HotkeyScope = HotkeyScope.GLOBAL,
+    val isDoubleCtrlEnabled: Boolean = true   // SHOW_MAIN_WINDOW only
 ) {
     val hasBinding: Boolean get() = keyCode != 0
 
@@ -124,12 +146,14 @@ data class HotkeyBinding(
     companion object {
         val DEFAULTS: List<HotkeyBinding> = listOf(
             // SHOW_MAIN_WINDOW: double-Ctrl via JNativeHook — no KeyStroke, always GLOBAL
-            HotkeyBinding(HotkeyAction.SHOW_MAIN_WINDOW,         keyCode = 0,                                          modifiers = 0,                                         scope = HotkeyScope.GLOBAL),
+            HotkeyBinding(HotkeyAction.SHOW_MAIN_WINDOW,         keyCode = 0,                                          modifiers = 0,                                         scope = HotkeyScope.GLOBAL, isDoubleCtrlEnabled = true),
             HotkeyBinding(HotkeyAction.SHOW_QUICK_TRANSLATE,     keyCode = java.awt.event.KeyEvent.VK_Q,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.LISTEN_TO_TEXT,           keyCode = java.awt.event.KeyEvent.VK_E,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.OPEN_OCR,                 keyCode = java.awt.event.KeyEvent.VK_I,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.REPLACE_WITH_TRANSLATION, keyCode = java.awt.event.KeyEvent.VK_T,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK or java.awt.event.InputEvent.SHIFT_DOWN_MASK, scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.CYCLE_TARGET_LANGUAGE,    keyCode = java.awt.event.KeyEvent.VK_L,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.LOCAL),
+            HotkeyBinding(HotkeyAction.SHOW_DICTIONARY,          keyCode = java.awt.event.KeyEvent.VK_D,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
+            HotkeyBinding(HotkeyAction.TRANSLATE,                keyCode = java.awt.event.KeyEvent.VK_ENTER,            modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.LOCAL),
         )
     }
 }
@@ -182,23 +206,31 @@ data class TranslationRule(
 
 @Serializable
 data class Configuration(
+    // ---- Schema version — increment when a breaking change is made ----
+    /**
+     * Incremented whenever a breaking change requires a config migration.
+     * Old configs that predate this field deserialise as version 1 (the default).
+     * The [ConfigMigrator] upgrades older versions to the current schema.
+     */
+    val configVersion: Int = 1,
+
     // ---- Presets & Services ----
-    val servicePresets: List<ServicePreset>,
-    val activeServicePresetId: String?,
-    val disabledServices: Set<String>,
+    val servicePresets: List<ServicePreset> = emptyList(),
+    val activeServicePresetId: String? = null,
+    val disabledServices: Set<String> = emptySet(),
 
     // ---- Hotkeys ----
     val hotkeys: List<HotkeyBinding> = HotkeyBinding.DEFAULTS,
 
     // ---- General Behaviour ----
-    val launchOnSystemStartup: Boolean,
-    val autoCheckForUpdates: Boolean,
-    val isGlobalHotkeysEnabled: Boolean,
-    val interfaceLanguage: String,
-    val isInstantTranslationEnabled: Boolean,
-    val isSpellCheckingEnabled: Boolean,
-    val extraOutputType: ExtraOutputType,
-    val extraOutputSource: ExtraOutputSource,
+    val launchOnSystemStartup: Boolean = false,
+    val autoCheckForUpdates: Boolean = true,
+    val isGlobalHotkeysEnabled: Boolean = true,
+    val interfaceLanguage: String = "en",
+    val isInstantTranslationEnabled: Boolean = false,
+    val isSpellCheckingEnabled: Boolean = true,
+    val extraOutputType: ExtraOutputType = ExtraOutputType.None,
+    val extraOutputSource: ExtraOutputSource = ExtraOutputSource.Output,
     val summaryLength: SummaryLength = SummaryLength.MEDIUM,
     val rewriteStyle: RewriteStyle = RewriteStyle.FORMAL,
 
@@ -223,27 +255,46 @@ data class Configuration(
     val closeButtonBehavior: CloseButtonBehavior = CloseButtonBehavior.ASK,
 
     // ---- History ----
-    val isHistoryEnabled: Boolean,
-    val clearHistoryOnExit: Boolean,
+    val isHistoryEnabled: Boolean = true,
+    val clearHistoryOnExit: Boolean = false,
 
     // ---- UI — Main Window ----
+    val showDictionaryPanel: Boolean = false,
+    val dictionaryAutoSource: DictionaryAutoSource = DictionaryAutoSource.TRANSLATED,
+    val isDictionaryAutoPopupEnabled: Boolean = true,
     val mainWindowSize: Size? = null,
     val mainWindowPosition: Position? = null,
-    val uiFontConfig: FontConfig,
-    val uiScale: Int,
-    val themeId: String,
-    val editorFontConfig: FontConfig,
-    val editorFallbackFontConfig: FontConfig,
-    val useUnifiedTitleBar: Boolean,
-    val layoutPresetId: String,
-    val toolbarVisibility: ToolbarVisibility,
+    val uiFontConfig: FontConfig = FontConfig(name = "Rubik", size = 13),
+    val uiScale: Int = 100,
+    val themeId: String = "os_default",
+    val editorFontConfig: FontConfig = FontConfig(name = "Rubik", size = 15),
+    val editorFallbackFontConfig: FontConfig = FontConfig(name = "Rubik", size = 15),
+    val useUnifiedTitleBar: Boolean = true,
+    val layoutPresetId: String = "classic",
+    val toolbarVisibility: ToolbarVisibility = ToolbarVisibility.DEFAULT,
 
     // ---- UI — Quick Panel (Popup) ----
-    val isPopupAutoSizeEnabled: Boolean,
-    val isPopupAutoPositionEnabled: Boolean,
-    val popupTransparencyPercentage: Int,
-    val popupLastKnownSize: Size,
-    val popupLastKnownPosition: Position
+    val isPopupAutoSizeEnabled: Boolean = true,
+    val isPopupAutoPositionEnabled: Boolean = true,
+    val popupTransparencyPercentage: Int = 5,
+    val popupIdleTimeoutSeconds: Int = 3,
+    val popupLastKnownSize: Size = Size(width = 450, height = 250),
+    val popupLastKnownPosition: Position = Position(x = 0, y = 0),
+
+    // ---- UI — Quick Dictionary Popup ----
+    val quickDictionaryLastKnownSize: Size = Size(width = 420, height = 400),
+    val quickDictionaryLastKnownPosition: Position = Position(x = 0, y = 0),
+    val isQuickDictionaryPinned: Boolean = false,
+    val isQuickDictionaryAutoPositionEnabled: Boolean = true,
+    val quickDictionaryIdleTimeoutSeconds: Int = 8,
+    val quickDictionaryTransparencyPercentage: Int = 5,
+
+    // ---- Donation nudge ----
+    /**
+     * Set to `true` the first time the one-time donation nudge is shown.
+     * Prevents the nudge from ever appearing again after it has been displayed once.
+     */
+    val donationNudgeShown: Boolean = false
 ) {
     fun getActivePreset(): ServicePreset? =
         servicePresets.find { it.id == activeServicePresetId }
@@ -272,7 +323,7 @@ data class Configuration(
                 isHistoryEnabled             = true,
                 clearHistoryOnExit           = false,
                 uiScale                      = 100,
-                themeId                      = "builtin:hiberbee_dark",
+                themeId                      = "os_default",
                 uiFontConfig                 = FontConfig(name = "Rubik", size = 13),
                 editorFontConfig             = FontConfig(name = "Rubik", size = 15),
                 editorFallbackFontConfig     = FontConfig(name = "Rubik", size = 15),

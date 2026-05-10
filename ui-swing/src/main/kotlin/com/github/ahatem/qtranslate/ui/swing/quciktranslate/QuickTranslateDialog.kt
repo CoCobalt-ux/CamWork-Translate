@@ -92,7 +92,6 @@ class QuickTranslateDialog(
 
     // idle/auto-hide manager (single timer)
     private var idleHideTimer: Timer? = null
-    private var idleHideDelayMs = IDLE_HIDE_MS_DEFAULT
 
     // flags
     private var isDragging = false
@@ -139,12 +138,6 @@ class QuickTranslateDialog(
         mainPanel.add(textScrollPane, BorderLayout.CENTER)
 
         setupWindowBehavior(topPanel)
-
-        idleHideTimer = Timer(idleHideDelayMs) {
-            if (!isPinned) hideDialog()
-            (it.source as Timer).stop()
-        }.apply { isRepeats = false }
-
         updatePinButtonStyle(isPinned)
     }
 
@@ -207,7 +200,7 @@ class QuickTranslateDialog(
             )
         )
 
-        pinButton.toolTipText = if (state.isPinned) "Pinned — window will stay visible" else "Pin window"
+        pinButton.toolTipText = if (state.isPinned) state.strings.unpinTooltip else state.strings.pinTooltip
         listenButton.toolTipText = state.strings.listenTooltip
         copyButton.toolTipText = state.strings.copyTooltip
 
@@ -320,7 +313,8 @@ class QuickTranslateDialog(
     }
 
     private fun startIdleHide() {
-        // restart single idle timer
+        // restart single idle timer — reads live config each call so changes take effect immediately
+        val idleHideDelayMs = (currentConfig?.idleTimeoutSeconds ?: 3) * 1000
         idleHideTimer?.stop()
         idleHideTimer = Timer(idleHideDelayMs) { event ->
             if (!isPinned) fadeTo(0f, FADE_MS) // fade out visually
@@ -394,7 +388,10 @@ class QuickTranslateDialog(
             return
         }
 
-        val screenBounds = graphicsConfiguration.bounds
+        // Use the monitor where the mouse cursor currently lives, not where the dialog
+        // happens to be placed — prevents wrong-monitor bounds on multi-monitor setups.
+        val gc = MouseInfo.getPointerInfo()?.device?.defaultConfiguration ?: graphicsConfiguration
+        val screenBounds = gc.bounds
         val maxWidth = (screenBounds.width * MAX_WIDTH_SCALE).toInt()
         val maxHeight = (screenBounds.height * MAX_HEIGHT_SCALE).toInt()
 
@@ -431,7 +428,10 @@ class QuickTranslateDialog(
                 return
             }
 
-            val screenBounds = graphicsConfiguration.bounds
+            // Derive screen bounds from the monitor the mouse is on, not the dialog's current
+            // monitor — ensures correct clamping on multi-monitor setups (A-10).
+            val gc = MouseInfo.getPointerInfo()?.device?.defaultConfiguration ?: graphicsConfiguration
+            val screenBounds = gc.bounds
             val dialogWidth = width
             val dialogHeight = height
             val offsetX = 10

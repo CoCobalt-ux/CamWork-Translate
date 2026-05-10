@@ -12,6 +12,7 @@ import java.awt.event.*
 import javax.swing.*
 import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
+import javax.swing.table.TableCellRenderer
 
 class KeyboardPanel(
     private val store: SettingsStore,
@@ -30,10 +31,14 @@ class KeyboardPanel(
         HotkeyAction.LISTEN_TO_TEXT,
         HotkeyAction.OPEN_OCR,
         HotkeyAction.REPLACE_WITH_TRANSLATION,
-        HotkeyAction.CYCLE_TARGET_LANGUAGE
+        HotkeyAction.CYCLE_TARGET_LANGUAGE,
+        HotkeyAction.SHOW_DICTIONARY,
+        HotkeyAction.TRANSLATE
     )
 
-    private val nonEditableActions = setOf(HotkeyAction.SHOW_MAIN_WINDOW)
+    // SHOW_MAIN_WINDOW can now have a custom keystroke — only its scope is locked to GLOBAL.
+    private val nonEditableActions    = emptySet<HotkeyAction>()
+    private val nonScopeToggleActions = setOf(HotkeyAction.SHOW_MAIN_WINDOW)
 
     private val COL_ACTION = 0
     private val COL_HOTKEY = 1
@@ -85,9 +90,8 @@ class KeyboardPanel(
                 cellRenderer   = HotkeyColumnRenderer()
             }
             columnModel.getColumn(COL_SCOPE).apply {
-                preferredWidth = 90
+                preferredWidth = 130
                 minWidth       = 80
-                maxWidth       = 110
                 cellRenderer   = ScopeColumnRenderer()
             }
 
@@ -118,9 +122,7 @@ class KeyboardPanel(
             .insets(4, 0, 0, 0)
             .add(JScrollPane(table).apply {
                 preferredSize = Dimension(580, actionOrder.size * 34 + 4)
-                border = BorderFactory.createLineBorder(
-                    UIManager.getColor("Component.borderColor") ?: Color.GRAY
-                )
+                border = themeAwareBorder()
             })
 
         editButton  = JButton(localizationManager.getString("settings_hotkeys.edit_button"))
@@ -176,7 +178,15 @@ class KeyboardPanel(
 
     private fun onToggleScope(row: Int) {
         val action = actionOrder[row]
-        if (action in nonEditableActions) return  // SHOW_MAIN_WINDOW always GLOBAL
+        if (action == HotkeyAction.SHOW_MAIN_WINDOW) {
+            // For SHOW_MAIN_WINDOW the scope is locked to GLOBAL, but the cell
+            // acts as a "Double Ctrl" on/off toggle instead.
+            val current = store.state.value.workingConfiguration.hotkeys
+                .find { it.action == action } ?: return
+            saveBinding(current.copy(isDoubleCtrlEnabled = !current.isDoubleCtrlEnabled))
+            return
+        }
+        if (action in nonScopeToggleActions) return
         val current = store.state.value.workingConfiguration.hotkeys.find { it.action == action }
             ?: return
         val newScope = if (current.scope == HotkeyScope.GLOBAL) HotkeyScope.LOCAL else HotkeyScope.GLOBAL
@@ -240,6 +250,8 @@ class KeyboardPanel(
         HotkeyAction.OPEN_OCR                 -> localizationManager.getString("settings_hotkeys.action_ocr")
         HotkeyAction.REPLACE_WITH_TRANSLATION -> localizationManager.getString("settings_hotkeys.action_replace")
         HotkeyAction.CYCLE_TARGET_LANGUAGE    -> localizationManager.getString("settings_hotkeys.action_cycle_language")
+        HotkeyAction.SHOW_DICTIONARY          -> localizationManager.getString("settings_hotkeys.action_show_dictionary")
+        HotkeyAction.TRANSLATE                -> localizationManager.getString("settings_hotkeys.action_translate")
     }
 
     private fun scopeLabel(scope: HotkeyScope): String = when (scope) {
@@ -247,36 +259,106 @@ class KeyboardPanel(
         HotkeyScope.LOCAL  -> localizationManager.getString("settings_hotkeys.scope_local")
     }
 
-    private inner class HotkeyColumnRenderer : DefaultTableCellRenderer() {
-        init { horizontalAlignment = SwingConstants.CENTER }
+    /**
+     * Renders keyboard bindings as pill-shaped key chip badges — e.g. [Ctrl] [Alt] [T].
+     * Each token is drawn as a custom component with a rounded border, matching modern
+     * OS-style hotkey displays (VS Code, macOS System Settings, JetBrains IDEs).
+     */
+    private inner class HotkeyColumnRenderer : TableCellRenderer {
 
         override fun getTableCellRendererComponent(
             t: JTable, value: Any?, sel: Boolean, focus: Boolean, row: Int, col: Int
         ): Component {
-            super.getTableCellRendererComponent(t, value, sel, focus, row, col)
             val action  = actionOrder.getOrNull(row)
             val binding = value as? HotkeyBinding
+            val bg      = if (sel) t.selectionBackground else t.background
 
-            when {
-                action in nonEditableActions -> {
-                    text       = localizationManager.getString("settings_hotkeys.double_ctrl")
-                    foreground = UIManager.getColor("Label.disabledForeground")
-                    font       = font.deriveFont(Font.ITALIC)
-                }
-                binding == null || !binding.hasBinding -> {
-                    text       = localizationManager.getString("settings_hotkeys.no_binding")
-                    foreground = UIManager.getColor("Label.disabledForeground")
-                    font       = font.deriveFont(Font.PLAIN)
-                }
-                else -> {
-                    text       = formatBinding(binding)
-                    foreground = if (sel) UIManager.getColor("Table.selectionForeground")
-                    else     UIManager.getColor("Table.foreground")
-                    font       = font.deriveFont(Font.BOLD)
-                }
+            return when {
+                action == HotkeyAction.SHOW_MAIN_WINDOW && (binding == null || !binding.hasBinding) ->
+                    chipRow(
+                        listOf(localizationManager.getString("settings_hotkeys.double_ctrl")),
+                        bg, muted = true,
+                        tooltip = localizationManager.getString("settings_hotkeys.show_main_tooltip")
+                    )
+                binding == null || !binding.hasBinding ->
+                    chipRow(
+                        listOf(localizationManager.getString("settings_hotkeys.no_binding")),
+                        bg, muted = true
+                    )
+                else ->
+                    chipRow(
+                        tokenizeBinding(binding), bg, muted = false,
+                        tooltip = if (action == HotkeyAction.SHOW_MAIN_WINDOW)
+                            localizationManager.getString("settings_hotkeys.show_main_tooltip") else null
+                    )
             }
-            return this
         }
+
+        /** Builds a centered row of key chips. */
+        private fun chipRow(
+            tokens: List<String>,
+            bg: Color,
+            muted: Boolean,
+            tooltip: String? = null
+        ): JPanel = JPanel(FlowLayout(FlowLayout.CENTER, 4, 0)).apply {
+            background  = bg
+            toolTipText = tooltip
+            tokens.forEach { add(KeyChip(it, muted)) }
+        }
+
+        /** Splits a binding into individual displayable key tokens. */
+        private fun tokenizeBinding(binding: HotkeyBinding): List<String> = buildList {
+            if (binding.modifiers and InputEvent.CTRL_DOWN_MASK  != 0) add("Ctrl")
+            if (binding.modifiers and InputEvent.ALT_DOWN_MASK   != 0) add("Alt")
+            if (binding.modifiers and InputEvent.SHIFT_DOWN_MASK != 0) add("Shift")
+            if (binding.modifiers and InputEvent.META_DOWN_MASK  != 0) add("⌘")
+            add(KeyEvent.getKeyText(binding.keyCode))
+        }
+    }
+
+    /**
+     * A single keyboard key rendered as a rounded-rectangle badge.
+     * Matches the visual style of key chips in modern IDEs and OS preference panes.
+     */
+    private inner class KeyChip(private val label: String, private val muted: Boolean) : JComponent() {
+        private val hPad = 8
+        private val vPad = 3
+        private val arc  = 6
+
+        init { isOpaque = false }
+
+        override fun getPreferredSize(): Dimension {
+            val fm = getFontMetrics(chipFont())
+            return Dimension(fm.stringWidth(label) + hPad * 2, fm.height + vPad * 2)
+        }
+
+        override fun paintComponent(g: Graphics) {
+            val g2 = g as Graphics2D
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+
+            if (!muted) {
+                val chipBg     = UIManager.getColor("Button.background")     ?: Color(235, 235, 235)
+                val chipBorder = UIManager.getColor("Component.borderColor") ?: Color(180, 180, 180)
+                g2.color = chipBg
+                g2.fillRoundRect(0, 0, width, height, arc, arc)
+                g2.color = Color(chipBorder.red, chipBorder.green, chipBorder.blue, 180)
+                g2.stroke = BasicStroke(1f)
+                g2.drawRoundRect(0, 0, width - 1, height - 1, arc, arc)
+            }
+
+            val fg = if (muted) UIManager.getColor("Label.disabledForeground") ?: Color.GRAY
+                     else       UIManager.getColor("Label.foreground")          ?: Color.BLACK
+            g2.color = fg
+            g2.font  = chipFont()
+            val fm   = g2.fontMetrics
+            g2.drawString(label,
+                (width - fm.stringWidth(label)) / 2,
+                (height + fm.ascent - fm.descent) / 2)
+        }
+
+        private fun chipFont() = Font(Font.MONOSPACED, if (muted) Font.ITALIC else Font.PLAIN,
+            this@KeyboardPanel.font.size - 1)
     }
 
     private inner class ScopeColumnRenderer : DefaultTableCellRenderer() {
@@ -287,12 +369,31 @@ class KeyboardPanel(
         ): Component {
             super.getTableCellRendererComponent(t, value, sel, focus, row, col)
             val action = actionOrder.getOrNull(row)
-            val label  = value as? String ?: ""
 
-            if (action in nonEditableActions) {
-                text       = label
-                foreground = UIManager.getColor("Label.disabledForeground")
-                font       = font.deriveFont(Font.ITALIC)
+            if (action == HotkeyAction.SHOW_MAIN_WINDOW) {
+                // Repurpose scope cell as a "Double Ctrl" on/off toggle.
+                val binding = store.state.value.workingConfiguration.hotkeys
+                    .find { it.action == action }
+                val enabled = binding?.isDoubleCtrlEnabled ?: true
+                text        = if (enabled)
+                    localizationManager.getString("settings_hotkeys.double_ctrl_on")
+                else
+                    localizationManager.getString("settings_hotkeys.double_ctrl_off")
+                foreground  = if (enabled)
+                    (UIManager.getColor("Component.accentColor") ?: UIManager.getColor("Table.foreground"))
+                else
+                    UIManager.getColor("Label.disabledForeground")
+                font        = font.deriveFont(Font.PLAIN)
+                toolTipText = localizationManager.getString("settings_hotkeys.double_ctrl_toggle_hint")
+                return this
+            }
+
+            val label = value as? String ?: ""
+            if (action in nonScopeToggleActions) {
+                text        = label
+                foreground  = UIManager.getColor("Label.disabledForeground")
+                font        = font.deriveFont(Font.ITALIC)
+                toolTipText = null
             } else {
                 text       = label
                 foreground = if (sel) UIManager.getColor("Table.selectionForeground")
@@ -345,6 +446,8 @@ object HotkeyRecorderDialog {
             HotkeyAction.OPEN_OCR                 -> localizer.getString("settings_hotkeys.action_ocr")
             HotkeyAction.REPLACE_WITH_TRANSLATION -> localizer.getString("settings_hotkeys.action_replace")
             HotkeyAction.CYCLE_TARGET_LANGUAGE    -> localizer.getString("settings_hotkeys.action_cycle_language")
+            HotkeyAction.SHOW_DICTIONARY          -> localizer.getString("settings_hotkeys.action_show_dictionary")
+            HotkeyAction.TRANSLATE                -> localizer.getString("settings_hotkeys.action_translate")
         }
 
         val promptLabel = JLabel(
