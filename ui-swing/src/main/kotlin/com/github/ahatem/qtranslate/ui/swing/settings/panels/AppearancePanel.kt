@@ -6,6 +6,7 @@ import com.github.ahatem.qtranslate.core.settings.data.FontConfig
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager
+import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager.Companion.OS_DEFAULT_THEME_ID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,15 +23,10 @@ class AppearancePanel(
     private val scope: CoroutineScope
 ) : SettingsPanel() {
 
-    /** Sentinel item that represents "follow the OS dark/light preference". */
-    private val osDefaultItem = ThemeInfo(
-        id          = ThemeManager.OS_DEFAULT_THEME_ID,
-        displayName = localizationManager.getString("settings_appearance.theme_os_default"),
-        isDark      = false
-    )
-
-    private val themes = listOf(osDefaultItem) + themeManager.getAvailableThemes().map {
-        ThemeInfo(it.id, it.name, it.isDark)
+    private val themes: List<ThemeInfo> = buildList {
+        // Synthetic sentinel: follows OS dark/light preference at apply time
+        add(ThemeInfo(OS_DEFAULT_THEME_ID, localizationManager.getString("settings_appearance.theme_os_default"), false))
+        addAll(themeManager.getAvailableThemes().map { ThemeInfo(it.id, it.name, it.isDark) })
     }
 
     private lateinit var languageCombo:     JComboBox<LanguageInfo>
@@ -124,8 +120,9 @@ class AppearancePanel(
         addHint(localizationManager.getString("settings_appearance.fallback_hint"))
 
         fontPreview = JLabel(localizationManager.getString("settings_appearance.font_preview_text")).apply {
+            // themeAwareBorder() reads the color at paint time — adapts to theme changes.
             border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(UIManager.getColor("Component.borderColor") ?: Color.GRAY),
+                themeAwareBorder(),
                 BorderFactory.createEmptyBorder(10, 10, 10, 10)
             )
         }
@@ -276,7 +273,7 @@ class AppearancePanel(
                     break
                 }
             }
-            themeCombo.selectedItem  = themes.find { it.id == c.themeId } ?: osDefaultItem
+            themeCombo.selectedItem  = themes.find { it.id == c.themeId }
             titleBarCheck.isSelected = c.useUnifiedTitleBar
             scaleSpinner.value       = c.uiScale
             uiFontSize.value         = c.uiFontConfig.size
