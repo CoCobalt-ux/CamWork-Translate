@@ -23,14 +23,11 @@ class AppearancePanel(
     private val scope: CoroutineScope
 ) : SettingsPanel() {
 
-    private val themes: List<ThemeInfo> = buildList {
-        // Synthetic sentinel: follows OS dark/light preference at apply time
-        add(ThemeInfo(OS_DEFAULT_THEME_ID, localizationManager.getString("settings_appearance.theme_os_default"), false))
-        addAll(themeManager.getAvailableThemes().map { ThemeInfo(it.id, it.name, it.isDark) })
-    }
+    private val groupedItems: List<ThemeItem> = buildGroupedItems()
 
     private lateinit var languageCombo:     JComboBox<LanguageInfo>
-    private lateinit var themeCombo:        JComboBox<ThemeInfo>
+    private lateinit var themeCombo:        JComboBox<ThemeItem>
+    private lateinit var syncWithOsCheck:   JCheckBox
     private lateinit var titleBarCheck:     JCheckBox
     private lateinit var scaleSpinner:      JSpinner
     private lateinit var uiFontCombo:       JComboBox<String>
@@ -65,16 +62,26 @@ class AppearancePanel(
         // ---- Theme ----
         addSeparator(localizationManager.getString("settings_appearance.theme_group"))
 
-        themeCombo = JComboBox(themes.toTypedArray()).apply {
-            renderer = themeRenderer()
+        themeCombo = JComboBox(buildGroupedModel()).apply {
+            renderer = groupedThemeRenderer()
             addActionListener {
                 if (!isUpdatingFromState) {
-                    val theme = selectedItem as? ThemeInfo ?: return@addActionListener
-                    applyDraft(store) { it.copy(themeId = theme.id) }
+                    val entry = selectedItem as? ThemeItem.Entry ?: return@addActionListener
+                    applyDraft(store) { it.copy(themeId = entry.id) }
                 }
             }
         }
+
         addRow(localizationManager.getString("settings_appearance.theme_label"), themeCombo)
+
+        syncWithOsCheck = addCheckbox(
+            text     = localizationManager.getString("settings_appearance.theme_sync_os"),
+            selected = false,
+            onChange = { synced ->
+                themeCombo.isEnabled = !synced
+                applyDraft(store) { it.copy(themeId = if (synced) OS_DEFAULT_THEME_ID else (themeCombo.selectedItem as? ThemeItem.Entry)?.id ?: it.themeId) }
+            }
+        )
 
         titleBarCheck = addCheckbox(
             text     = localizationManager.getString("settings_appearance.unified_title_bar"),
@@ -172,6 +179,62 @@ class AppearancePanel(
     }
 
 
+    // ── Grouped theme helpers ─────────────────────────────────────────────────
+
+    private fun buildGroupedItems(): List<ThemeItem> {
+        val all = themeManager.getAvailableThemes()
+        val light    = all.filter { !it.isDark && !it.id.startsWith("external:") }
+            .map { ThemeItem.Entry(it.id, it.name, it.isDark) }
+        val dark     = all.filter { it.isDark  && !it.id.startsWith("external:") }
+            .map { ThemeItem.Entry(it.id, it.name, it.isDark) }
+        val external = all.filter { it.id.startsWith("external:") }
+            .map { ThemeItem.Entry(it.id, it.name, it.isDark) }
+
+        return buildList {
+            add(ThemeItem.Header(localizationManager.getString("settings_appearance.theme_group_light")))
+            addAll(light)
+            add(ThemeItem.Header(localizationManager.getString("settings_appearance.theme_group_dark")))
+            addAll(dark)
+            if (external.isNotEmpty()) {
+                add(ThemeItem.Header(localizationManager.getString("settings_appearance.theme_group_installed")))
+                addAll(external)
+            }
+        }
+    }
+
+    private fun buildGroupedModel() = object : DefaultComboBoxModel<ThemeItem>(groupedItems.toTypedArray()) {
+        override fun setSelectedItem(anObject: Any?) {
+            if (anObject is ThemeItem.Entry) super.setSelectedItem(anObject)
+        }
+    }
+
+    private fun groupedThemeRenderer() = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?,
+            index: Int, isSelected: Boolean, cellHasFocus: Boolean
+        ): Component {
+            when (val item = value) {
+                is ThemeItem.Header -> {
+                    super.getListCellRendererComponent(list, value, index, false, false)
+                    text = item.label
+                    font = font.deriveFont(Font.BOLD, font.size - 1f)
+                    foreground = UIManager.getColor("Label.disabledForeground") ?: Color.GRAY
+                    border = BorderFactory.createEmptyBorder(if (index <= 1) 4 else 10, 6, 2, 4)
+                    background = list?.background ?: background
+                    isOpaque = true
+                }
+                is ThemeItem.Entry -> {
+                    super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+                    text = item.displayName
+                    // index < 0 = closed button cell — no extra padding so the combo height stays normal
+                    if (index >= 0) border = BorderFactory.createEmptyBorder(2, 12, 2, 4)
+                }
+                else -> super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+            }
+            return this
+        }
+    }
+
     private fun languageRenderer() = object : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(
             list: JList<*>?, value: Any?,
@@ -182,18 +245,6 @@ class AppearancePanel(
             return this
         }
     }
-
-    private fun themeRenderer() = object : DefaultListCellRenderer() {
-        override fun getListCellRendererComponent(
-            list: JList<*>?, value: Any?,
-            index: Int, isSelected: Boolean, cellHasFocus: Boolean
-        ): Component {
-            super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-            text = (value as? ThemeInfo)?.displayName ?: ""
-            return this
-        }
-    }
-
 
     private fun loadFontsAsync() {
         object : SwingWorker<Array<String>, Void>() {
@@ -273,7 +324,12 @@ class AppearancePanel(
                     break
                 }
             }
-            themeCombo.selectedItem  = themes.find { it.id == c.themeId }
+            val isSynced = c.themeId == OS_DEFAULT_THEME_ID
+            syncWithOsCheck.isSelected = isSynced
+            themeCombo.isEnabled = !isSynced
+            if (!isSynced) {
+                themeCombo.selectedItem = groupedItems.filterIsInstance<ThemeItem.Entry>().find { it.id == c.themeId }
+            }
             titleBarCheck.isSelected = c.useUnifiedTitleBar
             scaleSpinner.value       = c.uiScale
             uiFontSize.value         = c.uiFontConfig.size
@@ -283,8 +339,11 @@ class AppearancePanel(
     }
 
 
-    private data class ThemeInfo(val id: String, val displayName: String, val isDark: Boolean) {
-        override fun toString() = displayName
+    private sealed class ThemeItem {
+        data class Header(val label: String) : ThemeItem()
+        data class Entry(val id: String, val displayName: String, val isDark: Boolean) : ThemeItem() {
+            override fun toString() = displayName
+        }
     }
 
     private data class LanguageInfo(val code: String, val displayName: String) {
