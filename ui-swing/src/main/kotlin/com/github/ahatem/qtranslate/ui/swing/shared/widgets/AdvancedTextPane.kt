@@ -338,7 +338,20 @@ class AdvancedTextPane(
         highlighter  = WavyUnderlineHighlighter()
         editorKit    = WrappingEditorKit()
         caret        = AdvancedCaret()
+        // Enable Swing's built-in focus traversal so plain Tab / Shift+Tab are consumed by
+        // the KeyboardFocusManager and routed through TextPaneCycleFocusPolicy.
+        // By default the JDK also includes Ctrl+Tab / Shift+Ctrl+Tab in the traversal sets,
+        // which prevents those keystrokes from reaching the InputMap binding that inserts a
+        // literal tab character.  Override both sets to contain only the unmodified Tab strokes.
         focusTraversalKeysEnabled = true
+        setFocusTraversalKeys(
+            java.awt.KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS,
+            setOf(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, 0))
+        )
+        setFocusTraversalKeys(
+            java.awt.KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS,
+            setOf(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, InputEvent.SHIFT_DOWN_MASK))
+        )
         margin = Insets(6, 6, 6, 6)
 
         document.addUndoableEditListener(undoManager)
@@ -511,6 +524,29 @@ class AdvancedTextPane(
         val redoAction = createAction("Redo", KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK)) {
             if (undoManager.canRedo()) undoManager.redo()
         }
+
+        // Tab focus traversal — JTextPane normally inserts a literal tab; override that so
+        // keyboard-only users can navigate out of the pane.
+        //   Tab         → move focus to the next component in the traversal cycle
+        //   Shift+Tab   → move focus to the previous component
+        //   Ctrl+Tab    → insert a literal tab character (escape hatch for power users)
+        val tabForwardAction = object : AbstractAction("tab-forward") {
+            override fun actionPerformed(e: ActionEvent) = transferFocus()
+        }
+        val tabBackwardAction = object : AbstractAction("tab-backward") {
+            override fun actionPerformed(e: ActionEvent) = transferFocusBackward()
+        }
+        val tabInsertAction = object : AbstractAction("tab-insert") {
+            override fun actionPerformed(e: ActionEvent) {
+                if (isEditable) replaceSelection("\t")
+            }
+        }
+        actionMap.put("tab-forward",  tabForwardAction)
+        actionMap.put("tab-backward", tabBackwardAction)
+        actionMap.put("tab-insert",   tabInsertAction)
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, 0),                                       "tab-forward")
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, InputEvent.SHIFT_DOWN_MASK),              "tab-backward")
+        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_TAB, InputEvent.CTRL_DOWN_MASK),               "tab-insert")
 
         // Translate action — keystroke is set dynamically via setTranslateKeyStroke() so the
         // user-configured binding is always used; selected text is preferred over full pane text.
@@ -736,6 +772,10 @@ class AdvancedTextPane(
         // Forcing it true ensures keyboard shortcuts (Ctrl+C, Ctrl+A, …) continue to work
         // in read-only output panes.
         isFocusable = true
+        // In read-only mode the system default caretColor can match the pane background in dark
+        // themes, making the caret invisible. Always use the foreground color so it is visible
+        // regardless of theme.
+        caretColor = UIManager.getColor("Label.foreground") ?: Color.WHITE
     }
 
     override fun updateUI() {
