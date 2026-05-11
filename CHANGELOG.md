@@ -11,6 +11,28 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.2.1] — 2026-05-11
+
+### Added
+- **Grouped theme selector** — Appearance settings now organises themes into Light, Dark, and Installed sections with bold section headers; a new "Sync with OS" checkbox replaces the flat "OS Default" entry and disables the dropdown when checked
+- **Hotkey recorder redesign** — IntelliJ-style dialog: left-aligned action label above a plain text field with an embedded `+` button for selecting special keys (Enter, Escape, Tab, F1–F12, arrow keys, etc.) that cannot be typed directly; global hotkeys are paused while the recorder is open to prevent accidental triggers
+- **Alt+1 / Alt+2 / Alt+3 focus shortcuts** — configurable in Settings → Keyboard & Hotkeys; work in all layouts including Compact (tabbed) mode
+- **Compact layout tab tooltips** — each tab shows its keyboard shortcut in the tooltip
+
+### Fixed
+- Target language is now remembered across sessions — no longer resets to Arabic on every launch (#92)
+- Tab key in the input pane now moves focus instead of inserting a literal tab character; Ctrl+Tab inserts a tab
+- Caret is always visible in read-only output panes regardless of theme
+- `Ctrl+C` / `Ctrl+X` and text drag-out reliably work in the input pane
+- Translator service order in the selector is now stable across JVM restarts
+- Key chip text in the Hotkeys table now renders with proper LCD/ClearType antialiasing
+- Combo box height in Appearance settings is consistent with all other combo boxes on the page
+
+### Changed
+- All 12 non-English locale files fully translated — 20 previously English-only keys now localised (hotkey recorder strings, focus action names, default language settings, compact layout tooltips, theme group headers)
+
+---
+
 ## [1.2.0] — 2026-05-10
 
 ### Added
