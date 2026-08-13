@@ -28,6 +28,8 @@ import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialog
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryConfig
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialogState
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryStrings
+import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationDialog
+import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialog
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialogState
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryEntryState
@@ -77,6 +79,40 @@ class MainAppFrame(
     private val historyDialog by lazy { HistoryDialog(this) }
     private val dictionaryDialog by lazy { DictionaryDialog(this) }
     private val loadingIndicator by lazy { LoadingIndicator(this) }
+
+    private val documentTranslationDialog by lazy {
+        DocumentTranslationDialog(
+            owner = this,
+            iconManager = iconManager,
+            strings = DocumentTranslationStrings(
+                title = localizer.getString("document_translation.title"),
+                inputFile = localizer.getString("document_translation.input_file"),
+                outputFile = localizer.getString("document_translation.output_file"),
+                browse = localizer.getString("common.browse"),
+                translate = localizer.getString("document_translation.translate"),
+                open = localizer.getString("document_translation.open"),
+                openFailed = localizer.getString("document_translation.open_failed"),
+                cancel = localizer.getString("common.cancel"),
+                close = localizer.getString("common.close"),
+                ready = localizer.getString("document_translation.ready"),
+                pdfMode = localizer.getString("document_translation.pdf_mode"),
+                layoutAware = localizer.getString("document_translation.layout_aware"),
+                layoutAwareDescription = localizer.getString("document_translation.layout_aware_description"),
+                textOnly = localizer.getString("document_translation.text_only"),
+                textOnlyDescription = localizer.getString("document_translation.text_only_description"),
+                chooseInput = localizer.getString("document_translation.choose_input"),
+                chooseOutput = localizer.getString("document_translation.choose_output"),
+                preparing = localizer.getString("document_translation.preparing"),
+                translating = localizer.getString("document_translation.translating"),
+                completed = localizer.getString("document_translation.completed"),
+                cancelled = localizer.getString("document_translation.cancelled")
+            ),
+            onStart = { input, output, pdfMode ->
+                mainStore.dispatch(MainIntent.TranslateDocument(input, output, pdfMode))
+            },
+            onCancel = { mainStore.dispatch(MainIntent.CancelDocumentTranslation) }
+        )
+    }
 
     private val notificationPopover by lazy {
         NotificationPopover(
@@ -372,6 +408,24 @@ class MainAppFrame(
                 }
         }
 
+        appScope.launch(handler) {
+            combine(
+                mainStore.state.map { it.sourceLanguage to it.targetLanguage },
+                settingsStore.state.map { settings ->
+                    settings.workingConfiguration.getActivePreset()
+                        ?.selectedServices
+                        ?.get(ServiceType.TRANSLATOR)
+                }
+            ) { languages, translatorId -> Triple(languages.first, languages.second, translatorId) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.translationContextChanged()
+                    }
+                }
+        }
+
         // Status bar loading spinner
         appScope.launch(handler) {
             mainStore.state
@@ -380,6 +434,17 @@ class MainAppFrame(
                 .collect { loading ->
                     withContext(Dispatchers.Swing) {
                         statusBarController.setLoading(loading)
+                    }
+                }
+        }
+
+        appScope.launch(handler) {
+            mainStore.state
+                .map { it.documentTranslationProgress }
+                .filterNotNull()
+                .collect { progress ->
+                    withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.updateProgress(progress)
                     }
                 }
         }
@@ -409,6 +474,12 @@ class MainAppFrame(
                             Toolkit.getDefaultToolkit().systemClipboard
                                 .setContents(StringSelection(event.text), null)
                         }
+                    }
+                    is MainEvent.DocumentTranslationCompleted -> withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.complete(event.outputFile)
+                    }
+                    is MainEvent.DocumentTranslationFailed -> withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.fail(event.message)
                     }
                 }
             }
@@ -763,6 +834,7 @@ class MainAppFrame(
             },
             onShowDictionary = { showDictionaryDialog() },
             onShowHistory = { showHistoryDialog() },
+            onTranslateDocument = { documentTranslationDialog.open() },
             onShowSettings = {
                 val dialog = createSettingsDialog()
                 dialog.applyComponentOrientation(
@@ -824,6 +896,7 @@ class MainAppFrame(
             dictionary = localizer.getString("system_tray_menu.dictionary"),
             isDictionaryPanelOpen = mainStore.state.value.isDictionaryPanelVisible,
             history = localizer.getString("system_tray_menu.history"),
+            translateDocument = localizer.getString("main_window_main_menu.translate_document"),
             settings = localizer.getString("main_window_main_menu.settings"),
             help = localizer.getString("main_window_main_menu.help_submenu"),
             howToUse = localizer.getString("main_window_main_menu.how_to_use"),
