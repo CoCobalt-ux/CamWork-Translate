@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.dictionary
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -140,8 +141,8 @@ class DictionaryDialog(owner: Frame) : JDialog(owner, false) {
 
         if (!isVisible) {
             pack()
-            minimumSize = Dimension(480, 400)
-            preferredSize = Dimension(560, 520)
+            minimumSize = Dimension(UIScale.scale(480), UIScale.scale(400))
+            preferredSize = Dimension(UIScale.scale(560), UIScale.scale(520))
             pack()
             setLocationRelativeTo(owner)
         }

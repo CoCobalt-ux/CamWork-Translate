@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.plugin.PluginSettings
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.plugin.settings.*
@@ -105,7 +106,7 @@ class DynamicPluginSettingsDialog(
 
         defaultCloseOperation = DISPOSE_ON_CLOSE
         minimumSize = Dimension(520, 320)
-        preferredSize = Dimension(640, 500)
+        preferredSize = Dimension(UIScale.scale(640), UIScale.scale(500))
         pack()
         setLocationRelativeTo(owner)
     }
@@ -390,7 +391,7 @@ class DynamicPluginSettingsDialog(
                 }
                 val fm = area.getFontMetrics(area.font)
                 val targetH = (fm.height * rows + 8).coerceAtLeast(60)
-                scroll.preferredSize = Dimension(300, targetH)
+                scroll.preferredSize = Dimension(UIScale.scale(300), targetH)
                 scroll.minimumSize = Dimension(0, targetH)
                 SettingComponent(placeholder, scroll) { area.text }
             }
@@ -435,7 +436,7 @@ class DynamicPluginSettingsDialog(
                 }
                 val fmt = "%.${decimalPlaces}f"
                 val valueLabel = JLabel(fmt.format(intVal.toDouble() / scale)).apply {
-                    preferredSize = Dimension(48, preferredSize.height)
+                    preferredSize = Dimension(UIScale.scale(48), preferredSize.height)
                     horizontalAlignment = SwingConstants.TRAILING
                     font = font.deriveFont(Font.BOLD)
                 }
