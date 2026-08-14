@@ -3,6 +3,7 @@ package com.github.ahatem.qtranslate.ui.swing.main
 import com.formdev.flatlaf.FlatLaf
 import com.formdev.flatlaf.extras.components.FlatButton
 import com.formdev.flatlaf.util.FontUtils
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
@@ -307,17 +308,22 @@ class MainAppFrame(
             val config = settingsStore.state.value.workingConfiguration
             val scale = config.uiScale / 100f
 
+            // The constants are authored against a 100% display, while everything drawn inside the
+            // window — fonts, icons, insets — is scaled by FlatLaf to the display's density. Without
+            // UIScale the window opens at its 100% size on a 150% or 200% screen and clips its own
+            // controls. A saved size is already in device pixels, so it is used as-is; scaling it
+            // again would grow the window on every launch.
             minimumSize = Dimension(
-                (AppConstants.MIN_WINDOW_WIDTH * scale).toInt(),
-                (AppConstants.MIN_WINDOW_HEIGHT * scale).toInt()
+                UIScale.scale((AppConstants.MIN_WINDOW_WIDTH * scale).toInt()),
+                UIScale.scale((AppConstants.MIN_WINDOW_HEIGHT * scale).toInt())
             )
             val savedSize = config.mainWindowSize
             preferredSize = if (savedSize != null) {
                 Dimension(savedSize.width, savedSize.height)
             } else {
                 Dimension(
-                    (AppConstants.DEFAULT_WINDOW_WIDTH * scale).toInt(),
-                    (AppConstants.DEFAULT_WINDOW_HEIGHT * scale).toInt()
+                    UIScale.scale((AppConstants.DEFAULT_WINDOW_WIDTH * scale).toInt()),
+                    UIScale.scale((AppConstants.DEFAULT_WINDOW_HEIGHT * scale).toInt())
                 )
             }
 
@@ -1226,7 +1232,7 @@ class MainAppFrame(
         )
 
         dialog.pack()
-        dialog.minimumSize = Dimension(320, dialog.height)
+        dialog.minimumSize = Dimension(UIScale.scale(320), dialog.height)
         dialog.setLocationRelativeTo(this)
         dialog.isVisible = true
 

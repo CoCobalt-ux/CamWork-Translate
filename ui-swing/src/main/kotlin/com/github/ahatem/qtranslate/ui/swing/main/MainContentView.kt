@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.localization.getDisplayName
@@ -162,7 +163,7 @@ class MainContentView(
         },
         onClose  = { dispatch(MainIntent.ToggleDictionaryPanel) },
     ).apply {
-        minimumSize = Dimension(220, 0)
+        minimumSize = Dimension(UIScale.scale(220), 0)
     }
 
     // Separate wrapper so LayoutManager.switchLayout()'s removeAll() never touches dictionaryPanel.

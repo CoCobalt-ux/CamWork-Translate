@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.util.UIScale
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -189,7 +190,7 @@ class PluginsPanel(
         }
 
         leftPanel = JPanel(BorderLayout()).apply {
-            preferredSize = Dimension(320, 0)
+            preferredSize = Dimension(UIScale.scale(320), 0)
             minimumSize   = Dimension(270, 0)
             maximumSize   = Dimension(350, Int.MAX_VALUE)
             add(listHeader, BorderLayout.NORTH)
@@ -302,7 +303,7 @@ class PluginsPanel(
             }
         }.apply {
             maximumSize = Dimension(Int.MAX_VALUE, 62)
-            preferredSize = Dimension(290, 62)
+            preferredSize = Dimension(UIScale.scale(290), UIScale.scale(62))
             isOpaque = false
             border = BorderFactory.createEmptyBorder(7, 9, 7, 7)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)

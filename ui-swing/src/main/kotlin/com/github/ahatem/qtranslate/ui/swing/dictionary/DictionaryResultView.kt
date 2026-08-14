@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.dictionary
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.dictionary.DictionaryEntry
 import java.awt.*
 import javax.swing.*
@@ -127,7 +128,7 @@ class DictionaryResultView : JScrollPane() {
             add(JLabel("$num.").apply {
                 foreground = muted
                 verticalAlignment = SwingConstants.TOP
-                preferredSize = Dimension(22, preferredSize.height)
+                preferredSize = Dimension(UIScale.scale(22), preferredSize.height)
             }, BorderLayout.LINE_START)
             add(wrappingArea(text), BorderLayout.CENTER)
         }

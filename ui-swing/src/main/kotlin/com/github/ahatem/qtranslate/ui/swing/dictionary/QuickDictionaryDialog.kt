@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.dictionary
 
+import com.formdev.flatlaf.util.UIScale
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource
@@ -139,7 +140,7 @@ class QuickDictionaryDialog(
     init {
         isUndecorated = true
         isAlwaysOnTop = true
-        minimumSize = Dimension(320, 200)
+        minimumSize = Dimension(UIScale.scale(320), UIScale.scale(200))
         focusableWindowState = false
 
         val wrapperPanel = JPanel(BorderLayout()).apply {

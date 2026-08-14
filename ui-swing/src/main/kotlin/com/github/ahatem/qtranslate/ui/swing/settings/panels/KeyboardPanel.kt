@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.util.UIScale
 import com.formdev.flatlaf.FlatClientProperties
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
@@ -91,14 +92,14 @@ class KeyboardPanel(
             setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
             putClientProperty("FlatLaf.style", "showCellFocusIndicator: false")
 
-            columnModel.getColumn(COL_ACTION).apply { preferredWidth = 200; minWidth = 150 }
+            columnModel.getColumn(COL_ACTION).apply { preferredWidth = UIScale.scale(200); minWidth = UIScale.scale(150) }
             columnModel.getColumn(COL_HOTKEY).apply {
-                preferredWidth = 150
+                preferredWidth = UIScale.scale(150)
                 minWidth       = 110
                 cellRenderer   = HotkeyColumnRenderer()
             }
             columnModel.getColumn(COL_SCOPE).apply {
-                preferredWidth = 130
+                preferredWidth = UIScale.scale(130)
                 minWidth       = 80
                 cellRenderer   = ScopeColumnRenderer()
             }
@@ -129,7 +130,7 @@ class KeyboardPanel(
         gb.nextRow().spanLine().weightX(1.0).fill(GridBagConstraints.HORIZONTAL)
             .insets(4, 0, 0, 0)
             .add(JScrollPane(table).apply {
-                preferredSize = Dimension(580, actionOrder.size * 34 + 4)
+                preferredSize = Dimension(UIScale.scale(580), UIScale.scale(actionOrder.size * 34 + 4))
                 border = themeAwareBorder()
             })
 
