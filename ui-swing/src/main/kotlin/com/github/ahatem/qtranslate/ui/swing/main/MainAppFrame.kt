@@ -28,6 +28,8 @@ import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialog
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryConfig
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialogState
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryStrings
+import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationDialog
+import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialog
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialogState
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryEntryState
@@ -42,6 +44,7 @@ import com.github.ahatem.qtranslate.ui.swing.main.statusbar.StatusBar
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.StatusBarState
 import com.github.ahatem.qtranslate.ui.swing.quciktranslate.*
 import com.github.ahatem.qtranslate.ui.swing.settings.SettingsDialog
+import com.github.ahatem.qtranslate.ui.swing.settings.panels.DynamicPluginSettingsDialog
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager
 import com.github.ahatem.qtranslate.ui.swing.shared.util.*
@@ -50,7 +53,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.swing.Swing
 import java.awt.*
+import com.github.ahatem.qtranslate.core.document.DocumentFormat
+import com.github.ahatem.qtranslate.ui.swing.shared.util.copyToClipboard
+import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.io.File
 import java.awt.event.*
 import java.net.URI
 import java.util.*
@@ -77,6 +84,40 @@ class MainAppFrame(
     private val historyDialog by lazy { HistoryDialog(this) }
     private val dictionaryDialog by lazy { DictionaryDialog(this) }
     private val loadingIndicator by lazy { LoadingIndicator(this) }
+
+    private val documentTranslationDialog by lazy {
+        DocumentTranslationDialog(
+            owner = this,
+            iconManager = iconManager,
+            strings = DocumentTranslationStrings(
+                title = localizer.getString("document_translation.title"),
+                inputFile = localizer.getString("document_translation.input_file"),
+                outputFile = localizer.getString("document_translation.output_file"),
+                browse = localizer.getString("common.browse"),
+                translate = localizer.getString("document_translation.translate"),
+                open = localizer.getString("document_translation.open"),
+                openFailed = localizer.getString("document_translation.open_failed"),
+                cancel = localizer.getString("common.cancel"),
+                close = localizer.getString("common.close"),
+                ready = localizer.getString("document_translation.ready"),
+                pdfMode = localizer.getString("document_translation.pdf_mode"),
+                layoutAware = localizer.getString("document_translation.layout_aware"),
+                layoutAwareDescription = localizer.getString("document_translation.layout_aware_description"),
+                textOnly = localizer.getString("document_translation.text_only"),
+                textOnlyDescription = localizer.getString("document_translation.text_only_description"),
+                chooseInput = localizer.getString("document_translation.choose_input"),
+                chooseOutput = localizer.getString("document_translation.choose_output"),
+                preparing = localizer.getString("document_translation.preparing"),
+                translating = localizer.getString("document_translation.translating"),
+                completed = localizer.getString("document_translation.completed"),
+                cancelled = localizer.getString("document_translation.cancelled")
+            ),
+            onStart = { input, output, pdfMode ->
+                mainStore.dispatch(MainIntent.TranslateDocument(input, output, pdfMode))
+            },
+            onCancel = { mainStore.dispatch(MainIntent.CancelDocumentTranslation) }
+        )
+    }
 
     private val notificationPopover by lazy {
         NotificationPopover(
@@ -110,7 +151,9 @@ class MainAppFrame(
                 )
                 mainStore.dispatch(MainIntent.Translate())
             },
-            onListen = { mainStore.dispatch(MainIntent.ListenToText(TextSource.Output)) },
+            // Reads the source text, not the translation — the popup is most often used
+            // to check how the original word is pronounced.
+            onListen = { mainStore.dispatch(MainIntent.ListenToText(TextSource.Input)) },
             onCopy = { mainStore.state.value.translatedText.copyToClipboard() },
             onSavePosition = { pos ->
                 settingsStore.dispatch(
@@ -148,8 +191,49 @@ class MainAppFrame(
         dispatch = { mainStore.dispatch(it) },
         dispatchSettings = { settingsStore.dispatch(it) },
         onOpenSnippingTool = { openSnippingTool() },
-        onNotificationsClicked = { notificationPopover.show(mainContentView.statusBar) }
+        onOpenDocumentTranslation = { documentTranslationDialog.open() },
+        onNotificationsClicked = { notificationPopover.show(mainContentView.statusBar) },
+        onConfigureService = { serviceId -> openPluginConfiguration(serviceId) },
+        onOpenServiceSettings = {
+            val dialog = createSettingsDialog()
+            dialog.applyComponentOrientation(
+                if (localizer.isRtl) ComponentOrientation.RIGHT_TO_LEFT
+                else ComponentOrientation.LEFT_TO_RIGHT
+            )
+            dialog.isVisible = true
+        }
     )
+
+    private val selectionTranslateButton = SelectionTranslateButton(
+        this,
+        iconManager,
+        localizer.getString("main_window_language_bar.translate_button")
+    ) { text ->
+        mainStore.dispatch(MainIntent.ShowQuickTranslate(text))
+    }
+
+    private fun openPluginConfiguration(serviceId: String) {
+        val plugin = pluginManager.plugins.value.find { state -> state.services.any { it.id == serviceId } }
+            ?: return
+        appScope.launch {
+            val model = pluginManager.getPluginSettingsModel(plugin.id)
+            val instance = pluginManager.getPluginSettingsInstance(plugin.id)
+            withContext(Dispatchers.Swing) {
+                if (model == null) {
+                    JOptionPane.showMessageDialog(this@MainAppFrame, "This service has no configurable settings.", plugin.manifest.name, JOptionPane.INFORMATION_MESSAGE)
+                    return@withContext
+                }
+                DynamicPluginSettingsDialog(
+                    owner = this@MainAppFrame,
+                    pluginName = plugin.manifest.name,
+                    localizationManager = localizer,
+                    settingsModel = model,
+                    settingsInstance = instance,
+                    onSave = { values -> appScope.launch { pluginManager.applySettingsFromMap(plugin.id, values) } }
+                ).isVisible = true
+            }
+        }
+    }
 
     private val globalKeyListener = MainGlobalKeyListener(
         scope = appScope,
@@ -188,7 +272,18 @@ class MainAppFrame(
                 mainStore.dispatch(MainIntent.ShowQuickDictionary(selectedText, lang))
             }
         },
-        onTranslate = { mainStore.dispatch(MainIntent.Translate()) }
+        onTranslate = { mainStore.dispatch(MainIntent.Translate()) },
+        onSelectionDetected = { text, location ->
+            runOnUi {
+                val enabled = settingsStore.state.value.originalConfiguration.isSelectionIconEnabled
+                // Suppress the button while QTranslate itself is focused — selecting text
+                // inside the app already has the toolbar and hotkeys available.
+                if (enabled && !isActive) selectionTranslateButton.showAt(location, text)
+            }
+        },
+        onPointerPressed = { location ->
+            runOnUi { selectionTranslateButton.dismissIfOutside(location) }
+        }
     )
 
     private val statusBarController = StatusBarController(
@@ -200,6 +295,9 @@ class MainAppFrame(
     init {
         globalKeyListener.updateBindings(
             settingsStore.state.value.originalConfiguration.hotkeys
+        )
+        globalKeyListener.setSelectionIconEnabled(
+            settingsStore.state.value.originalConfiguration.isSelectionIconEnabled
         )
 
         SwingUtilities.invokeLater {
@@ -242,6 +340,7 @@ class MainAppFrame(
             setupMenuBar()
             setupTrayMenu()
             setupGlobalHotkeys()
+            setupDocumentDropTarget()
 
             observeStateAndEvents()
             isVisible = true
@@ -372,6 +471,24 @@ class MainAppFrame(
                 }
         }
 
+        appScope.launch(handler) {
+            combine(
+                mainStore.state.map { it.sourceLanguage to it.targetLanguage },
+                settingsStore.state.map { settings ->
+                    settings.workingConfiguration.getActivePreset()
+                        ?.selectedServices
+                        ?.get(ServiceType.TRANSLATOR)
+                }
+            ) { languages, translatorId -> Triple(languages.first, languages.second, translatorId) }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect {
+                    withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.translationContextChanged()
+                    }
+                }
+        }
+
         // Status bar loading spinner
         appScope.launch(handler) {
             mainStore.state
@@ -380,6 +497,29 @@ class MainAppFrame(
                 .collect { loading ->
                     withContext(Dispatchers.Swing) {
                         statusBarController.setLoading(loading)
+                    }
+                }
+        }
+
+        // Selection translate button — toggling the setting takes effect immediately,
+        // and disabling it hides any button that is currently on screen.
+        appScope.launch(handler) {
+            settingsStore.state
+                .map { it.originalConfiguration.isSelectionIconEnabled }
+                .distinctUntilChanged()
+                .collect { enabled ->
+                    globalKeyListener.setSelectionIconEnabled(enabled)
+                    if (!enabled) withContext(Dispatchers.Swing) { selectionTranslateButton.dismiss() }
+                }
+        }
+
+        appScope.launch(handler) {
+            mainStore.state
+                .map { it.documentTranslationProgress }
+                .filterNotNull()
+                .collect { progress ->
+                    withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.updateProgress(progress)
                     }
                 }
         }
@@ -409,6 +549,12 @@ class MainAppFrame(
                             Toolkit.getDefaultToolkit().systemClipboard
                                 .setContents(StringSelection(event.text), null)
                         }
+                    }
+                    is MainEvent.DocumentTranslationCompleted -> withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.complete(event.outputFile)
+                    }
+                    is MainEvent.DocumentTranslationFailed -> withContext(Dispatchers.Swing) {
+                        documentTranslationDialog.fail(event.message)
                     }
                 }
             }
@@ -669,6 +815,26 @@ class MainAppFrame(
                         HotkeyAction.FOCUS_INPUT        -> mainContentView.switchToAndFocusInput()
                         HotkeyAction.FOCUS_OUTPUT       -> mainContentView.switchToAndFocusOutput()
                         HotkeyAction.FOCUS_EXTRA_OUTPUT -> mainContentView.switchToAndFocusExtraOutput()
+
+                        // Also LOCAL-only, and every one of these needs something the frame
+                        // owns — a dialog, the clipboard, or the content view — so they are
+                        // handled here for the same reason FOCUS_* is.
+                        HotkeyAction.COPY_TRANSLATION -> {
+                            val text = mainStore.state.value.translatedText
+                            if (text.isNotBlank()) {
+                                text.copyToClipboard()
+                                mainStore.dispatch(MainIntent.NotifyTextCopied)
+                            }
+                        }
+                        HotkeyAction.CLEAR_INPUT -> {
+                            mainStore.dispatch(MainIntent.UpdateInputText(""))
+                            mainContentView.switchToAndFocusInput()
+                        }
+                        HotkeyAction.SWAP_LANGUAGES     -> mainStore.dispatch(MainIntent.SwapLanguages)
+                        HotkeyAction.OPEN_SETTINGS      -> openSettingsDialog()
+                        HotkeyAction.SHOW_HISTORY       -> showHistoryDialog()
+                        HotkeyAction.TRANSLATE_DOCUMENT -> documentTranslationDialog.open()
+
                         else -> globalKeyListener.dispatchAction(binding.action)
                     }
                 }
@@ -763,14 +929,8 @@ class MainAppFrame(
             },
             onShowDictionary = { showDictionaryDialog() },
             onShowHistory = { showHistoryDialog() },
-            onShowSettings = {
-                val dialog = createSettingsDialog()
-                dialog.applyComponentOrientation(
-                    if (localizer.isRtl) ComponentOrientation.RIGHT_TO_LEFT
-                    else ComponentOrientation.LEFT_TO_RIGHT
-                )
-                dialog.isVisible = true
-            },
+            onTranslateDocument = { documentTranslationDialog.open() },
+            onShowSettings = { openSettingsDialog() },
             onShowHowToUse = { openUrl("https://github.com/ahatem/QTranslate/wiki") },
             onShowAboutQTranslate = { onShowAboutDialog() },
             onContactUs = { openUrl("https://github.com/ahatem/QTranslate/issues/new") },
@@ -824,6 +984,7 @@ class MainAppFrame(
             dictionary = localizer.getString("system_tray_menu.dictionary"),
             isDictionaryPanelOpen = mainStore.state.value.isDictionaryPanelVisible,
             history = localizer.getString("system_tray_menu.history"),
+            translateDocument = localizer.getString("main_window_main_menu.translate_document"),
             settings = localizer.getString("main_window_main_menu.settings"),
             help = localizer.getString("main_window_main_menu.help_submenu"),
             howToUse = localizer.getString("main_window_main_menu.how_to_use"),
@@ -1157,6 +1318,7 @@ class MainAppFrame(
             ),
             strings = DialogStrings(
                 copyTooltip = localizer.getString("common.copy"),
+                closeTooltip = localizer.getString("common.close"),
                 listenTooltip = localizer.getString("common.listen"),
                 pinTooltip = localizer.getString("common.pin"),
                 unpinTooltip = localizer.getString("common.unpin"),
@@ -1165,16 +1327,55 @@ class MainAppFrame(
         )
     }
 
+    /**
+     * Opens the document translation dialog when a supported file is dropped on the window.
+     *
+     * Document translation was otherwise reachable only through a menu item and a toolbar
+     * button, even though dropping a file on the window is the obvious gesture for it.
+     * Unsupported files are ignored so dropping an image or an archive does nothing rather
+     * than opening a dialog that cannot proceed.
+     */
+    /** Opens Settings with the correct orientation. Shared by the menu and the Ctrl+Comma binding. */
+    private fun openSettingsDialog() {
+        val dialog = createSettingsDialog()
+        dialog.applyComponentOrientation(
+            if (localizer.isRtl) ComponentOrientation.RIGHT_TO_LEFT
+            else ComponentOrientation.LEFT_TO_RIGHT
+        )
+        dialog.isVisible = true
+    }
+
+    private fun setupDocumentDropTarget() {
+        transferHandler = object : TransferHandler() {
+            override fun canImport(support: TransferSupport): Boolean =
+                support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) && firstSupportedDocument(support) != null
+
+            override fun importData(support: TransferSupport): Boolean {
+                val file = firstSupportedDocument(support) ?: return false
+                SwingUtilities.invokeLater { documentTranslationDialog.openWith(file) }
+                return true
+            }
+
+            @Suppress("UNCHECKED_CAST")
+            private fun firstSupportedDocument(support: TransferSupport): File? = runCatching {
+                (support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>)
+                    .firstOrNull { DocumentFormat.from(it) != null }
+            }.getOrNull()
+        }
+    }
+
     private fun setupGlobalHotkeys() {
         addWindowListener(object : WindowAdapter() {
             override fun windowOpened(e: WindowEvent?) {
                 globalKeyListener.initialize()
                 val config = settingsStore.state.value.workingConfiguration
                 globalKeyListener.setHotkeysEnabled(config.isGlobalHotkeysEnabled)
+                globalKeyListener.setSelectionIconEnabled(config.isSelectionIconEnabled)
                 registerLocalHotkeys()
             }
 
             override fun windowClosed(e: WindowEvent?) {
+                selectionTranslateButton.dispose()
                 globalKeyListener.shutdown()
                 System.runFinalization()
                 exitProcess(0)
@@ -1453,6 +1654,7 @@ class MainAppFrame(
             errorDetailPopup.warningLabel = localizer.getString("main_window_status_bar.error_detail_warning")
             errorDetailPopup.copyLabel    = localizer.getString("main_window_status_bar.error_detail_copy")
             errorDetailPopup.copiedLabel  = localizer.getString("main_window_status_bar.error_detail_copied")
+            errorDetailPopup.closeLabel   = localizer.getString("common.close")
 
             statusBar.onErrorClicked = { message ->
                 shownDetailMessage = message
@@ -1554,6 +1756,7 @@ class MainAppFrame(
             StatusCode.NoTextInImage                -> localizer.getString("status_bar.no_text_in_image")
             StatusCode.OcrComplete                  -> localizer.getString("status_bar.ocr_complete")
             StatusCode.OcrTextCopied               -> localizer.getString("status_bar.ocr_text_copied")
+            StatusCode.TextCopied                  -> localizer.getString("status_bar.text_copied")
             is StatusCode.OcrFailed                 -> localizer.getString("status_bar.ocr_failed", code.summary)
             StatusCode.NoSummarizerActive           -> localizer.getString("status_bar.no_summarizer_active")
             StatusCode.Summarizing                  -> localizer.getString("status_bar.summarizing")

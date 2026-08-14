@@ -2,6 +2,9 @@ package com.github.ahatem.qtranslate.core.main.mvi
 
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
+import com.github.ahatem.qtranslate.core.document.DocumentTranslationException
+import com.github.ahatem.qtranslate.core.document.DocumentTranslationRequest
+import com.github.ahatem.qtranslate.core.document.DocumentTranslationUseCase
 import com.github.ahatem.qtranslate.core.history.HistoryRepository
 import com.github.ahatem.qtranslate.core.localization.getDisplayName
 import com.github.ahatem.qtranslate.core.main.domain.usecase.*
@@ -11,7 +14,9 @@ import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.core.shared.arch.Store
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -49,8 +54,12 @@ class MainStore(
     private val ocrAndTranslateUseCase: OcrAndTranslateUseCase,
     private val summarizeUseCase: SummarizeUseCase,
     private val rewriteUseCase: RewriteUseCase,
-    private val lookupWordUseCase: LookupWordUseCase
+    private val lookupWordUseCase: LookupWordUseCase,
+    private val documentTranslationUseCase: DocumentTranslationUseCase
 ) : Store<MainState, MainIntent, MainEvent> {
+
+    private var documentTranslationJob: Job? = null
+    private var documentTranslationGeneration = 0L
 
     private val _state = MutableStateFlow(
         MainState(
@@ -237,6 +246,8 @@ class MainStore(
 
             MainIntent.SwapLanguages -> scope.launch { swapLanguages() }
             MainIntent.CheckForUpdates -> checkForUpdates()
+            is MainIntent.TranslateDocument -> startDocumentTranslation(intent)
+            MainIntent.CancelDocumentTranslation -> cancelDocumentTranslation()
             MainIntent.PerformSpellCheck -> scope.launch {
                 handleSpellCheck(_state.value.inputText, isEnabled = true)
             }
@@ -249,6 +260,10 @@ class MainStore(
                 scope.launch {
                     updateStatusBar(StatusCode.TranslationCancelled, NotificationType.INFO, true)
                 }
+            }
+
+            MainIntent.NotifyTextCopied -> scope.launch {
+                updateStatusBar(StatusCode.TextCopied, NotificationType.SUCCESS, true)
             }
 
             MainIntent.StopTTS -> handleTextToSpeechUseCase.stop()
@@ -307,6 +322,58 @@ class MainStore(
     // -------------------------------------------------------------------------
     // Async handlers
     // -------------------------------------------------------------------------
+
+    private fun startDocumentTranslation(intent: MainIntent.TranslateDocument) {
+        documentTranslationJob?.cancel()
+        val generation = ++documentTranslationGeneration
+        documentTranslationJob = scope.launch {
+            val state = _state.value
+            try {
+                val output = documentTranslationUseCase(
+                    DocumentTranslationRequest(
+                        inputFile = intent.inputFile,
+                        outputFile = intent.outputFile,
+                        sourceLanguage = state.sourceLanguage,
+                        targetLanguage = state.targetLanguage,
+                        pdfMode = intent.pdfMode
+                    )
+                ) { progress ->
+                    if (generation == documentTranslationGeneration) {
+                        _state.update { it.copy(documentTranslationProgress = progress) }
+                    }
+                }
+                if (generation != documentTranslationGeneration) return@launch
+                _state.update { it.copy(documentTranslationProgress = null) }
+                _eventChannel.send(MainEvent.DocumentTranslationCompleted(output))
+            } catch (error: CancellationException) {
+                if (generation == documentTranslationGeneration) {
+                    _state.update { it.copy(documentTranslationProgress = null) }
+                }
+                throw error
+            } catch (error: DocumentTranslationException) {
+                if (generation != documentTranslationGeneration) return@launch
+                _state.update { it.copy(documentTranslationProgress = null) }
+                _eventChannel.send(MainEvent.DocumentTranslationFailed(error.message))
+            } catch (error: Exception) {
+                if (generation != documentTranslationGeneration) return@launch
+                _state.update { it.copy(documentTranslationProgress = null) }
+                _eventChannel.send(
+                    MainEvent.DocumentTranslationFailed(error.message ?: "Document translation failed.")
+                )
+            } finally {
+                if (generation == documentTranslationGeneration) {
+                    documentTranslationJob = null
+                }
+            }
+        }
+    }
+
+    private fun cancelDocumentTranslation() {
+        documentTranslationGeneration++
+        documentTranslationJob?.cancel(CancellationException("Document translation cancelled"))
+        documentTranslationJob = null
+        _state.update { it.copy(documentTranslationProgress = null) }
+    }
 
     private suspend fun handleOcrAndTranslate(intent: MainIntent.OcrAndTranslateImage) {
         val extractedText = ocrAndTranslateUseCase(
@@ -375,6 +442,7 @@ class MainStore(
         lookupWordUseCase(
             word = intent.word,
             language = intent.language,
+            targetLanguage = _state.value.targetLanguage,
             updateState = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar
         )
@@ -529,6 +597,7 @@ class MainStore(
     }
 
     suspend fun onShutdown() {
+        cancelDocumentTranslation()
         if (settingsState.value.clearHistoryOnExit) {
             historyRepository.clearHistory()
         }

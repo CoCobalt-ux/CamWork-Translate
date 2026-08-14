@@ -203,6 +203,7 @@ class QuickTranslateDialog(
         pinButton.toolTipText = if (state.isPinned) state.strings.unpinTooltip else state.strings.pinTooltip
         listenButton.toolTipText = state.strings.listenTooltip
         copyButton.toolTipText = state.strings.copyTooltip
+        closeButton.toolTipText = state.strings.closeTooltip
 
         listenButton.isEnabled = state.actionsState.canListen && !state.isLoading
         copyButton.isEnabled = state.actionsState.canCopy && !state.isLoading
@@ -340,6 +341,14 @@ class QuickTranslateDialog(
         if (awtMouseListener != null) return
         awtMouseListener = AWTEventListener { ev ->
             val me = ev as? MouseEvent ?: return@AWTEventListener
+            if (me.id == MouseEvent.MOUSE_PRESSED) {
+                if (!isPinned && isVisible) {
+                    val clickPoint = Point(me.locationOnScreen)
+                    SwingUtilities.convertPointFromScreen(clickPoint, contentPane)
+                    if (!contentPane.contains(clickPoint)) onDismiss()
+                }
+                return@AWTEventListener
+            }
             if (me.id != MouseEvent.MOUSE_MOVED && me.id != MouseEvent.MOUSE_ENTERED && me.id != MouseEvent.MOUSE_EXITED) return@AWTEventListener
             SwingUtilities.invokeLater {
                 val p = MouseInfo.getPointerInfo()?.location ?: return@invokeLater

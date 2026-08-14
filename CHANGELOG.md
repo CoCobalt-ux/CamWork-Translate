@@ -11,6 +11,52 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
+## [1.3.0] — 2026-08-14
+
+### Added
+- **QTranslate Light and QTranslate Dark** — purpose-built default themes built on the project's own palette: warm parchment and gold in the light theme, near-black and gold in the dark one, with OS light/dark synchronization and every colour verified against WCAG contrast targets
+- **Format-preserving document translation** for DOCX, PDF, TXT, SRT, and VTT, including progress, cancellation, DOCX structure preservation, subtitle timing preservation, and best-effort PDF appearance mode
+- **Modern plugin manager** — searchable and filterable installed-plugin list, inline enable/configure actions, drag-and-drop installation, detailed metadata and service lists, failure states, and complete plugin/service icon coverage
+- **Configurable service selectors** — classic and enhanced layouts, icons/text display modes, overflow handling, automatic scrolling, and quick access to plugin configuration
+- **Selection translate button** — optional floating button that appears next to text selected by dragging in any application; click it to translate without reaching for a hotkey (off by default, enable under Settings → General → Text Selection)
+- **New translation plugins** — DeepL, Mozhi, MyMemory, LibreTranslate Local, Reverso, and Yandex Web
+- **Wikimedia Reference plugin** with separate Wikipedia and Wiktionary dictionary services using official MediaWiki APIs
+- **Batch translation and bilingual dictionary plugin API capabilities** for efficient document translation and contextual dictionary results
+- **Release variants** — app-only JAR, portable ZIP, independently versioned plugin JARs, machine-readable metadata, SHA-256 checksums, and size reports
+- **Portable Windows x64 package** with `QTranslate.exe` and a bundled trimmed Java runtime
+- **Document translation button** in the history bar, and dropping a DOCX, PDF, TXT, SRT or VTT file on the window opens the translation dialog with it already selected
+- **Six new keyboard shortcuts** — copy translation, clear input, swap languages, open settings, show history and translate document, all rebindable under Settings → Keyboard & Hotkeys
+- **Guidance when no translation service is configured**, with a direct link to the Services settings, instead of a window that silently does nothing
+- `runWithPlugins` manual QA launcher and `smokeTestAllPlugins` automated plugin lifecycle/service check
+
+### Changed
+- A single portable distribution bundles every included plugin, replacing the separate minimal and full builds that differed by less than 1 MB
+- DeepL automatically uses the official API when a key is configured and otherwise uses its rate-limited free web fallback
+- Mozhi settings provide known public instances, endpoint tests, and automatic fastest-instance selection
+- OpenRouter defaults and setup guidance are clearer for first-time AI Services users
+- Release archives are size-budgeted to keep portable downloads practical
+- Copying a translation now confirms in the status bar instead of giving no feedback at all
+
+### Performance
+- **The translation appears as soon as it arrives.** With extra output enabled it was held back until the second request finished, so every translation felt as slow as the slower of the pair; the extra panel now loads on its own
+- **The window opens before plugins finish loading.** Startup previously waited for every plugin to initialise — including ones that make network calls — leaving nothing on screen in the meantime
+- Instant translation responds after 350 ms instead of 700 ms, so the result still reads as a response to what was typed
+
+### Fixed
+- **Every network service failed in the Windows package.** The bundled Java runtime was missing its elliptic-curve crypto provider, so every HTTPS connection failed and translation, dictionary and TTS all appeared broken
+- Selected-text capture is more reliable across desktop applications
+- Quick Translate now reads the original text aloud instead of the translation, so Listen can be used to check pronunciation of the word you selected
+- Global hotkeys support non-US keyboard layouts
+- Google translation supports Croatian and Farsi
+- Quick Translate closes when clicking outside the popup
+- Service types can be disabled independently
+- Java2D selects the appropriate rendering pipeline instead of forcing one globally
+- A malformed plugin is represented as a failure in the plugin manager without preventing app startup
+- Non-English interface languages format numbers and dates correctly in the Windows package, which was missing its locale data
+- The error detail popup and Quick Translate close buttons have tooltips
+
+---
+
 ## [1.2.1] — 2026-05-11
 
 ### Added
@@ -122,7 +168,9 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-[Unreleased]: https://github.com/ahatem/QTranslate/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/ahatem/QTranslate/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/ahatem/QTranslate/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/ahatem/QTranslate/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/ahatem/QTranslate/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/ahatem/QTranslate/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/ahatem/QTranslate/releases/tag/v1.0.0

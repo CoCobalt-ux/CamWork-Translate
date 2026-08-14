@@ -5,6 +5,8 @@ import com.github.ahatem.qtranslate.api.ocr.ImageData
 import com.github.ahatem.qtranslate.core.history.HistorySnapshot
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.shared.arch.UiIntent
+import java.io.File
+import com.github.ahatem.qtranslate.core.document.PdfTranslationMode
 
 /**
  * All user actions that can be dispatched to [MainStore].
@@ -39,6 +41,14 @@ sealed interface MainIntent : UiIntent {
      * No-op if no translation is running.
      */
     data object CancelTranslation : MainIntent
+
+    /**
+     * Text was copied to the clipboard and the user should be told.
+     *
+     * The copy itself happens in the UI, which owns the clipboard; this only reports it so
+     * the confirmation travels through the same status-bar path as every other message.
+     */
+    data object NotifyTextCopied : MainIntent
 
     /**
      * User stopped TTS playback that is currently in progress.
@@ -103,6 +113,16 @@ sealed interface MainIntent : UiIntent {
 
     /** User requested a check for application updates. */
     data object CheckForUpdates : MainIntent
+
+    /** Translate a supported document using the active translator and language pair. */
+    data class TranslateDocument(
+        val inputFile: File,
+        val outputFile: File,
+        val pdfMode: PdfTranslationMode = PdfTranslationMode.LAYOUT_AWARE
+    ) : MainIntent
+
+    /** Cancel the active document translation and remove its partial output. */
+    data object CancelDocumentTranslation : MainIntent
 
     // ---- Quick translate popup ----
 

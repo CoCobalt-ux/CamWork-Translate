@@ -25,6 +25,7 @@ import com.github.ahatem.qtranslate.ui.swing.main.layout.LayoutManager
 import com.github.ahatem.qtranslate.ui.swing.main.output.ExtraOutputPanel
 import com.github.ahatem.qtranslate.ui.swing.main.output.ExtraOutputState
 import com.github.ahatem.qtranslate.ui.swing.main.output.OutputTextPanel
+import com.github.ahatem.qtranslate.ui.swing.main.output.NoServiceState
 import com.github.ahatem.qtranslate.ui.swing.main.output.OutputTextState
 import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorSelector
 import com.github.ahatem.qtranslate.ui.swing.main.selector.TranslatorSelectorState
@@ -54,7 +55,10 @@ class MainContentView(
     private val dispatch: (MainIntent) -> Unit,
     private val dispatchSettings: (SettingsIntent) -> Unit,
     private val onOpenSnippingTool: () -> Unit,
+    private val onOpenDocumentTranslation: () -> Unit,
     private val onNotificationsClicked: () -> Unit,
+    private val onConfigureService: (String) -> Unit,
+    private val onOpenServiceSettings: () -> Unit,
 ) : JPanel(BorderLayout(0, 0)) {
 
     private val translationHistoryBar: TranslationHistoryBar = TranslationHistoryBar(
@@ -62,16 +66,18 @@ class MainContentView(
         onBackward = { dispatch(MainIntent.UndoTranslation) },
         onForward = { dispatch(MainIntent.RedoTranslation) },
         onImageTranslate = { onOpenSnippingTool() },
+        onDocumentTranslate = { onOpenDocumentTranslation() },
     )
 
     private val translatorSelector = TranslatorSelector(
         iconManager = iconManager,
-        onTranslatorSelected = { serviceId ->
+        onServiceSelected = { type, serviceId ->
             dispatchSettings(
-                SettingsIntent.UpdateServiceInActivePreset(ServiceType.TRANSLATOR, serviceId)
+                SettingsIntent.UpdateServiceInActivePreset(type, serviceId)
             )
-            dispatch(MainIntent.Translate())
-        }
+            if (type == ServiceType.TRANSLATOR) dispatch(MainIntent.Translate())
+        },
+        onConfigureService = onConfigureService
     )
 
     private val languageSelectionBar = LanguageSelectionBar(
@@ -423,6 +429,7 @@ class MainContentView(
                     backwardTooltip = localizer.getString("main_window_history_bar.backward_tooltip"),
                     forwardTooltip = localizer.getString("main_window_history_bar.forward_tooltip"),
                     imageTranslateTooltip = localizer.getString("main_window_history_bar.image_translate_tooltip"),
+                    documentTranslateTooltip = localizer.getString("main_window_history_bar.document_translate_tooltip"),
                 ),
             )
         )
@@ -431,7 +438,11 @@ class MainContentView(
             TranslatorSelectorState(
                 availableTranslators = mainState.getAvailableServicesFor(ServiceType.TRANSLATOR),
                 selectedTranslatorId = selectedTranslatorId,
-                isLoading = mainState.isLoading
+                isLoading = mainState.isLoading,
+                availableServices = mainState.availableServices,
+                selectedServices = activePreset?.selectedServices.orEmpty(),
+                style = config.serviceSelectorStyle,
+                appearance = config.serviceSelectorAppearance
             )
         )
 
@@ -467,7 +478,7 @@ class MainContentView(
                     tooltip = localizer.getString("main_window_editor_context_menu.copy"),
                     isEnabled = hasInputText && !mainState.isLoading,
                     isVisible = true,
-                    onClick = { mainState.inputText.copyToClipboard() }
+                    onClick = { mainState.inputText.copyToClipboard(); dispatch(MainIntent.NotifyTextCopied) }
                 ),
                 Action(
                     id = if (isTtsPlaying) "stop_tts_input" else "listen_input",
@@ -498,9 +509,20 @@ class MainContentView(
         val hasOutputText = mainState.translatedText.isNotBlank()
         val hasExtraText = mainState.extraOutputText.isNotBlank()
 
+        // Nothing can be translated without a translator, and an empty window gives a new
+        // user no clue why. Point them at the setting that fixes it.
+        val noService = if (mainState.getAvailableServicesFor(ServiceType.TRANSLATOR).isEmpty()) {
+            NoServiceState(
+                message = localizer.getString("main_window.no_service_message"),
+                actionLabel = localizer.getString("main_window.no_service_action"),
+                onAction = onOpenServiceSettings
+            )
+        } else null
+
         outputTextPanel.render(
             OutputTextState(
                 text = mainState.translatedText,
+                noService = noService,
                 isLoading = mainState.isLoading,
                 fontConfig = config.scaledEditorFont,
                 fallbackFontConfig = config.scaledEditorFallbackFont,
@@ -512,7 +534,7 @@ class MainContentView(
                             tooltip = localizer.getString("main_window_editor_context_menu.copy"),
                             isEnabled = hasOutputText && !mainState.isLoading,
                             isVisible = true,
-                            onClick = { mainState.translatedText.copyToClipboard() }
+                            onClick = { mainState.translatedText.copyToClipboard(); dispatch(MainIntent.NotifyTextCopied) }
                         ),
                         Action(
                             id = if (isTtsPlaying) "stop_tts_output" else "listen_output",
@@ -534,7 +556,9 @@ class MainContentView(
             ExtraOutputState(
                 text = mainState.extraOutputText,
                 isVisible = config.extraOutputType != ExtraOutputType.None,
-                isLoading = mainState.isLoading,
+                // Stays loading after the main translation has landed — this panel is fed by
+                // its own request and must not make the main output wait for it.
+                isLoading = mainState.isLoading || mainState.isExtraOutputLoading,
                 fontConfig = config.scaledEditorFont,
                 fallbackFontConfig = config.scaledEditorFallbackFont,
                 activeType = config.extraOutputType,
@@ -593,7 +617,7 @@ class MainContentView(
                             tooltip = localizer.getString("main_window_editor_context_menu.copy"),
                             isEnabled = hasExtraText && !mainState.isLoading,
                             isVisible = true,
-                            onClick = { mainState.extraOutputText.copyToClipboard() }
+                            onClick = { mainState.extraOutputText.copyToClipboard(); dispatch(MainIntent.NotifyTextCopied) }
                         ),
                         Action(
                             id = if (isTtsPlaying) "stop_tts_extra" else "listen_extra",
