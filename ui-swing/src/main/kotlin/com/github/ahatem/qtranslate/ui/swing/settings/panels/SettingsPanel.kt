@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
@@ -31,6 +32,35 @@ import javax.swing.border.AbstractBorder
  * callbacks from firing while the UI is being populated from state.
  */
 abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
+
+    /**
+     * One searchable setting.
+     *
+     * @param label    what the user reads: a checkbox's text or a row's label.
+     * @param section  the [addSeparator] heading it sits under, for disambiguating rows that
+     *                 share a label across popups.
+     * @param hint     the explanatory text beneath it, if any. Searched too, so "fades" finds the
+     *                 idle timeout even though the word appears nowhere in its label.
+     * @param anchor   the component to reveal when the result is chosen.
+     */
+    data class SettingEntry(
+        val label: String,
+        val section: String,
+        val hint: String,
+        val anchor: JComponent
+    )
+
+    /**
+     * Every setting on this page, collected as it is built.
+     *
+     * Gathered by instrumenting the layout helpers rather than by hand-registering each setting,
+     * so a new row is searchable by virtue of being added at all. A registry maintained
+     * separately would be wrong the first time someone forgot it, and silently.
+     */
+    val searchEntries: List<SettingEntry> get() = entries
+
+    private val entries = mutableListOf<SettingEntry>()
+    private var currentSection: String = ""
 
     @Volatile
     protected var isUpdatingFromState = false
@@ -105,6 +135,7 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
      * clearly separated groups.
      */
     protected fun addSeparator(title: String) {
+        currentSection = title
         val isFirst = gb.currentY == 0
         gb.nextRow()
             .spanLine()
@@ -124,6 +155,10 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
      *   `  Sub-section`            ← addSubSeparator (muted label, indented, no line)
      */
     protected fun addSubSeparator(title: String) {
+        // Sub-sections refine the section rather than replacing it, so search results read
+        // "Popups › Dictionary Popup" and the three identical "Hide after idle" rows stay apart.
+        currentSection = currentSection.substringBefore(SECTION_SEPARATOR).trim()
+            .let { if (it.isEmpty()) title else "$it $SECTION_SEPARATOR $title" }
         val label = JLabel(title).apply {
             font       = font.deriveFont(Font.BOLD, font.size - 0.5f)
             foreground = UIManager.getColor("Label.disabledForeground")
@@ -196,6 +231,7 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
             .weightX(1.0)
             .fill(GridBagConstraints.HORIZONTAL)
             .add(cb)
+        entries += SettingEntry(text, currentSection, hint = "", anchor = cb)
         return cb
     }
 
@@ -203,13 +239,17 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
      * Adds a `label : component` row, with an optional trailing [suffix] label.
      */
     protected fun addRow(label: String, component: JComponent, suffix: String? = null) {
-        gb.nextRow().add(JLabel(label))
+        val labelComponent = JLabel(label)
+        gb.nextRow().add(labelComponent)
         if (suffix != null) {
             gb.weightX(1.0).fill(GridBagConstraints.HORIZONTAL).add(component)
             gb.weightX(0.0).fill(GridBagConstraints.NONE).add(JLabel(suffix))
         } else {
             gb.weightX(1.0).fill(GridBagConstraints.HORIZONTAL).add(component)
         }
+        // Anchored on the label, not the control: the label is what carries the words being
+        // searched for, and revealing it brings the control beside it into view anyway.
+        entries += SettingEntry(label, currentSection, hint = "", anchor = labelComponent)
     }
 
     /**
@@ -218,7 +258,10 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
      */
     protected fun addHint(text: String) {
         val html = text.replace("\n", "<br>")
-        val hint = JLabel("<html><body style='width:460px'><i>$html</i></body></html>").apply {
+        // Swing does not scale pixel widths inside HTML, so an unscaled figure here wraps the
+        // hint at half the intended measure on a 200% display while the font around it doubles.
+        val width = UIScale.scale(HINT_WIDTH)
+        val hint = JLabel("<html><body style='width:${width}px'><i>$html</i></body></html>").apply {
             foreground = UIManager.getColor("Label.disabledForeground")
             font = font.deriveFont(font.size - 1f)
         }
@@ -228,6 +271,10 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
             .fill(GridBagConstraints.HORIZONTAL)
             .insets(0, 2, 4, 0)
             .add(hint)
+
+        // Attached to the setting above rather than indexed on its own, so searching for a word
+        // that only appears in the explanation still finds the control it explains.
+        entries.lastOrNull()?.let { entries[entries.lastIndex] = it.copy(hint = text) }
     }
 
     /**
@@ -241,5 +288,13 @@ abstract class SettingsPanel : JPanel(), Renderable<SettingsState> {
             .weightY(1.0)
             .fill(GridBagConstraints.BOTH)
             .add(Box.createVerticalGlue())
+    }
+
+    protected companion object {
+        /** Measure a hint wraps at, before scaling. Roughly a comfortable line of prose. */
+        const val HINT_WIDTH = 460
+
+        /** Separates a section from a sub-section in a search result's path. */
+        const val SECTION_SEPARATOR = "›"
     }
 }

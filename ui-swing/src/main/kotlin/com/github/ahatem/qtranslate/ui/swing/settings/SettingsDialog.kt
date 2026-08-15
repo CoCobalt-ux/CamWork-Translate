@@ -1,7 +1,10 @@
 package com.github.ahatem.qtranslate.ui.swing.settings
 
 import com.github.ahatem.qtranslate.ui.swing.shared.util.clearBorder
+import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.FlatSVGIcon
+import com.formdev.flatlaf.icons.FlatSearchIcon
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
@@ -23,6 +26,8 @@ import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import javax.swing.*
 import javax.swing.border.MatteBorder
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
@@ -54,31 +59,54 @@ class SettingsDialog(
         if (event.propertyName == "lookAndFeel") SwingUtilities.invokeLater { updateBorders() }
     }
 
-    // ── Nav items (ordered) ───────────────────────────────────────────────────
-    private val navItems = listOf(
-        localizationManager.getString("settings_dialog_sidebar.general"),
-        localizationManager.getString("settings_dialog_sidebar.appearance"),
-        localizationManager.getString("settings_dialog_sidebar.services"),
-        localizationManager.getString("settings_dialog_sidebar.plugins"),
-        localizationManager.getString("settings_dialog_sidebar.hotkeys"),
-        localizationManager.getString("settings_dialog_sidebar.translation"),
-        localizationManager.getString("settings_dialog_sidebar.languages"),
-        localizationManager.getString("settings_dialog_sidebar.window_layout")
+    /** A sidebar entry. Groups own children and have no page of their own. */
+    private sealed interface Nav {
+        val label: String
+
+        data class Page(override val label: String, val iconPath: String) : Nav
+        data class Group(override val label: String, val children: List<Page>) : Nav
+    }
+
+    private fun label(key: String) = localizationManager.getString("settings_dialog_sidebar.$key")
+
+    /**
+     * The sidebar, in order.
+     *
+     * Grouped only where sections genuinely cluster. Everything under one parent would be
+     * IntelliJ cosplay at this size, and a flat list left the three translation-related pages
+     * separated by Plugins and Hotkeys.
+     */
+    private val navTree: List<Nav> = listOf(
+        Nav.Page(label("general"), "icons/lucide/sliders-horizontal.svg"),
+        Nav.Page(label("appearance"), "icons/lucide/palette.svg"),
+        Nav.Group(
+            label("group_translation"), listOf(
+                Nav.Page(label("services"), "icons/lucide/zap.svg"),
+                Nav.Page(label("behavior"), "icons/lucide/languages.svg"),
+                Nav.Page(label("languages"), "icons/lucide/globe.svg"),
+            )
+        ),
+        Nav.Group(
+            label("group_interface"), listOf(
+                Nav.Page(label("layout"), "icons/lucide/layout-dashboard.svg"),
+                Nav.Page(label("popups"), "icons/lucide/message-square.svg"),
+            )
+        ),
+        Nav.Page(label("hotkeys"), "icons/lucide/keyboard.svg"),
+        Nav.Page(label("plugins"), "icons/lucide/package.svg"),
     )
 
-    /** SVG resource paths keyed by localized nav label. */
-    // @formatter:off
-    private val sidebarIconPaths: Map<String, String> = mapOf(
-        localizationManager.getString("settings_dialog_sidebar.general")       to "icons/lucide/sliders-horizontal.svg",
-        localizationManager.getString("settings_dialog_sidebar.appearance")    to "icons/lucide/palette.svg",
-        localizationManager.getString("settings_dialog_sidebar.services")      to "icons/lucide/zap.svg",
-        localizationManager.getString("settings_dialog_sidebar.plugins")       to "icons/lucide/package.svg",
-        localizationManager.getString("settings_dialog_sidebar.hotkeys")       to "icons/lucide/keyboard.svg",
-        localizationManager.getString("settings_dialog_sidebar.translation")   to "icons/lucide/languages.svg",
-        localizationManager.getString("settings_dialog_sidebar.languages")     to "icons/lucide/globe.svg",
-        localizationManager.getString("settings_dialog_sidebar.window_layout") to "icons/lucide/layout-dashboard.svg"
-    )
-    // @formatter:on
+    /** Every selectable page, flattened, in sidebar order. */
+    private val pages: List<Nav.Page> = navTree.flatMap {
+        when (it) {
+            is Nav.Page -> listOf(it)
+            is Nav.Group -> it.children
+        }
+    }
+
+    /** SVG resource paths keyed by localized nav label. Groups carry no icon of their own. */
+    private val sidebarIconPaths: Map<String, String> =
+        pages.associate { it.label to it.iconPath }
 
     /**
      * Theme-aware sidebar icons: 14 × 14 [FlatSVGIcon] with a [FlatSVGIcon.ColorFilter]
@@ -99,9 +127,82 @@ class SettingsDialog(
     // ── Widgets ───────────────────────────────────────────────────────────────
     private val tree: JTree
 
+    private val searchField = JTextField()
+
+    /** Swaps between the section tree and the search results in the same space. */
+    private val navCards = JPanel(CardLayout())
+
+    private val resultsList = JList<SearchHit>().apply {
+        selectionMode = ListSelectionModel.SINGLE_SELECTION
+        cellRenderer = ListCellRenderer<SearchHit> { list, hit, _, selected, _ ->
+            JPanel(BorderLayout()).apply {
+                border = BorderFactory.createEmptyBorder(4, 10, 4, 10)
+                isOpaque = true
+                background = if (selected) {
+                    UIManager.getColor("List.selectionBackground")
+                } else {
+                    list.background
+                }
+                add(JLabel(hit.entry.label).apply {
+                    foreground = if (selected) {
+                        UIManager.getColor("List.selectionForeground")
+                    } else {
+                        UIManager.getColor("Label.foreground")
+                    }
+                }, BorderLayout.NORTH)
+                // The path is what tells two identically-labelled rows apart, so it is always
+                // shown rather than only on ambiguity.
+                add(JLabel("${hit.pageLabel} $PATH_SEPARATOR ${hit.entry.section}").apply {
+                    font = font.deriveFont(font.size - 2f)
+                    foreground = if (selected) {
+                        UIManager.getColor("List.selectionForeground")
+                    } else {
+                        UIManager.getColor("Label.disabledForeground")
+                    }
+                }, BorderLayout.SOUTH)
+            }
+        }
+        addListSelectionListener { e ->
+            if (!e.valueIsAdjusting) (selectedValue as? SearchHit)?.let { openHit(it) }
+        }
+
+        // Selection listeners only fire on a change, so clicking the row you are already on did
+        // nothing — and that is exactly when you want the marker shown again, having lost track of
+        // it. Only the already-selected row is handled here; anything else is a real selection
+        // change and the listener above has it.
+        addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mousePressed(e: java.awt.event.MouseEvent) {
+                val index = locationToIndex(e.point)
+                if (index < 0 || index != selectedIndex) return
+                // locationToIndex answers with the nearest row even for a click in the empty space
+                // below the last one, so the click has to be inside the row it named.
+                val bounds = getCellBounds(index, index) ?: return
+                if (bounds.contains(e.point)) openHit(model.getElementAt(index))
+            }
+        })
+    }
+
+    /** Built on the first search and reused; see [searchIndex]. */
+    private var cachedIndex: List<SearchHit>? = null
+
+    /**
+     * Ends the marker currently showing, if any.
+     *
+     * Held as the whole cleanup rather than just the timer, so a second result clears the first
+     * on the way past instead of leaving it on screen.
+     */
+    private var activeFlash: (() -> Unit)? = null
+
+    private val markerOverlay = MarkerOverlay()
+
+    private val noResultsLabel = JLabel().apply {
+        foreground = UIManager.getColor("Label.disabledForeground")
+        verticalAlignment = SwingConstants.TOP
+    }
+
     private val contentArea = JPanel(BorderLayout())
 
-    private val panelTitle = JLabel(navItems.firstOrNull() ?: "").apply {
+    private val panelTitle = JLabel(pages.firstOrNull()?.label ?: "").apply {
         font = font.deriveFont(Font.BOLD, font.size + 3f)
     }
 
@@ -143,6 +244,8 @@ class SettingsDialog(
         add(mainPanel, BorderLayout.CENTER)
         add(buttonBarPanel, BorderLayout.SOUTH)
 
+        glassPane = markerOverlay
+
         // Apply borders based on current theme, then keep them fresh on theme changes
         updateBorders()
         UIManager.addPropertyChangeListener(themeListener)
@@ -172,8 +275,8 @@ class SettingsDialog(
 
         observeState()
 
-        minimumSize = Dimension(860, 580)
-        preferredSize = Dimension(1020, 700)
+        minimumSize = Dimension(UIScale.scale(860), UIScale.scale(580))
+        preferredSize = Dimension(UIScale.scale(1020), UIScale.scale(700))
         pack()
         setLocationRelativeTo(owner)
 
@@ -186,6 +289,13 @@ class SettingsDialog(
         val bc = UIManager.getColor("Component.borderColor") ?: Color.GRAY
 
         sidebarPanel.border = MatteBorder(0, 0, 0, 1, bc)
+
+        // Divides the search box from the sections it searches, matching the rule under the
+        // header strip on the other side of the sidebar so the two line up as one row of chrome.
+        searchField.border = BorderFactory.createCompoundBorder(
+            MatteBorder(0, 0, 1, 0, bc),
+            BorderFactory.createEmptyBorder(8, 8, 8, 8)
+        )
 
         headerStrip.border = BorderFactory.createCompoundBorder(
             MatteBorder(0, 0, 1, 0, bc),
@@ -205,12 +315,19 @@ class SettingsDialog(
 
     private fun buildTree(): JTree {
         val root = DefaultMutableTreeNode("root")
-        navItems.forEach { root.add(DefaultMutableTreeNode(it)) }
+        navTree.forEach { nav ->
+            val node = DefaultMutableTreeNode(nav.label)
+            if (nav is Nav.Group) nav.children.forEach { node.add(DefaultMutableTreeNode(it.label)) }
+            root.add(node)
+        }
 
         return JTree(DefaultTreeModel(root)).apply {
             isRootVisible = false
             showsRootHandles = false
             selectionModel.selectionMode = TreeSelectionModel.SINGLE_TREE_SELECTION
+            // Groups exist to label their children, not to hide them. Expanded and left that way;
+            // collapsing is still possible by clicking the handle.
+            for (row in rowCount - 1 downTo 0) expandRow(row)
 
             putClientProperty(
                 "FlatLaf.style",
@@ -236,36 +353,336 @@ class SettingsDialog(
                     text = name
                     icon = sidebarIcons[name]
                     iconTextGap = 8
-                    border = BorderFactory.createEmptyBorder(0, 8, 0, 8)
 
-                    if (!sel) foreground = UIManager.getColor("Label.foreground")
+                    // A group is a heading for the rows beneath it, so it is styled as one
+                    // rather than competing with the pages it labels.
+                    val isGroup = navTree.any { it is Nav.Group && it.label == name }
+
+                    // Every page shares one left edge, whether or not it happens to sit under a
+                    // group, and only the two headings outdent. The tree indents its children by
+                    // one unit on its own, so the pages that have no group are given that unit
+                    // back here. Read from the look and feel rather than hard-coded, since the
+                    // tree's own indent comes from the same numbers.
+                    val depth = (value as? DefaultMutableTreeNode)?.level ?: 1
+                    val unit = UIManager.getInt("Tree.leftChildIndent") +
+                        UIManager.getInt("Tree.rightChildIndent")
+                    val extra = if (!isGroup && depth <= 1) unit else 0
+                    border = BorderFactory.createEmptyBorder(0, 8 + extra, 0, 8)
+                    font = font.deriveFont(if (isGroup) Font.BOLD else Font.PLAIN)
+                    if (!sel) {
+                        foreground = UIManager.getColor(
+                            if (isGroup) "Label.disabledForeground" else "Label.foreground"
+                        )
+                    }
                     return this
                 }
             }
 
             addTreeSelectionListener { e ->
-                val name = (e.path.lastPathComponent as? DefaultMutableTreeNode)
-                    ?.userObject as? String ?: return@addTreeSelectionListener
+                val node = e.path.lastPathComponent as? DefaultMutableTreeNode
+                    ?: return@addTreeSelectionListener
+                val name = node.userObject as? String ?: return@addTreeSelectionListener
+
+                // Groups have no page. Selecting one opens its first child, which is more useful
+                // than doing nothing and avoids a selected row with a blank content area.
+                val group = navTree.firstOrNull { it is Nav.Group && it.label == name } as? Nav.Group
+                if (group != null) {
+                    selectPage(group.children.first().label)
+                    return@addTreeSelectionListener
+                }
                 showPanel(name)
             }
         }
     }
 
     private fun buildSidebar(): JPanel {
+        // Breathing room under the search box's rule. Without it the first row sits against the
+        // line and reads as attached to it rather than as the first of a list.
+        // An EmptyBorder rather than null: the look and feel reinstalls its own default over a
+        // null border on every theme change, which is what clearBorder() exists to avoid.
+        val listInset = BorderFactory.createEmptyBorder(UIScale.scale(6), 0, UIScale.scale(6), 0)
+        tree.border = listInset
+        resultsList.border = listInset
+
         val treeScroll = JScrollPane(tree).apply {
             clearBorder()
             horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
         }
 
+        val resultsScroll = JScrollPane(resultsList).apply {
+            clearBorder()
+            horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
+            verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED
+        }
+
+        navCards.add(treeScroll, NAV_TREE)
+        navCards.add(resultsScroll, NAV_RESULTS)
+        navCards.add(
+            JPanel(BorderLayout()).apply {
+                border = BorderFactory.createEmptyBorder(16, 12, 12, 12)
+                add(noResultsLabel, BorderLayout.NORTH)
+            },
+            NAV_EMPTY
+        )
+
+        searchField.apply {
+            putClientProperty(
+                FlatClientProperties.PLACEHOLDER_TEXT,
+                localizationManager.getString("settings_dialog_sidebar.search_placeholder")
+            )
+            putClientProperty(FlatClientProperties.TEXT_FIELD_SHOW_CLEAR_BUTTON, true)
+            putClientProperty(FlatClientProperties.TEXT_FIELD_LEADING_ICON, FlatSearchIcon())
+            // Border applied by updateBorders() so the rule follows the theme.
+
+            document.addDocumentListener(object : DocumentListener {
+                override fun insertUpdate(e: DocumentEvent) = onSearchChanged()
+                override fun removeUpdate(e: DocumentEvent) = onSearchChanged()
+                override fun changedUpdate(e: DocumentEvent) = onSearchChanged()
+            })
+
+            // Down from the field moves into the results without reaching for the mouse, which is
+            // the whole point of typing rather than clicking.
+            registerKeyboardAction(
+                { if (resultsList.model.size > 0) { resultsList.requestFocusInWindow(); resultsList.selectedIndex = 0 } },
+                KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0),
+                JComponent.WHEN_FOCUSED
+            )
+        }
+
         return JPanel(BorderLayout()).apply {
-            minimumSize = Dimension(160, 0)
-            // Let preferred width be driven by the tree's widest row
-            add(treeScroll, BorderLayout.CENTER)
+            minimumSize = Dimension(UIScale.scale(200), 0)
+            add(searchField, BorderLayout.NORTH)
+            add(navCards, BorderLayout.CENTER)
+        }
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+
+    private fun onSearchChanged() {
+        val query = searchField.text.trim()
+        val cards = navCards.layout as CardLayout
+
+        if (query.isEmpty()) {
+            cards.show(navCards, NAV_TREE)
+            return
+        }
+
+        val hits = searchIndex().filter { it.matches(query) }
+        if (hits.isEmpty()) {
+            // Naming the query back is the difference between "nothing matched what you typed"
+            // and a sidebar that looks broken.
+            noResultsLabel.text = "<html><body style='width:${UIScale.scale(140)}px'>" +
+                localizationManager.getString("settings_dialog_sidebar.search_no_results", query) +
+                "</body></html>"
+            cards.show(navCards, NAV_EMPTY)
+            return
+        }
+        resultsList.setListData(hits.toTypedArray())
+        cards.show(navCards, NAV_RESULTS)
+    }
+
+    /**
+     * Every setting on every page, built once on the first search.
+     *
+     * Panels are created lazily as pages are opened, so until someone searches, most do not
+     * exist to be asked. Building the rest here trades a pause on the first keystroke for an
+     * index that cannot fall behind the panels it describes.
+     *
+     * Plugins is excluded deliberately: it is a manager for a list that changes at runtime, not a
+     * page of settings, and it is the one panel whose construction does real work.
+     */
+    private fun searchIndex(): List<SearchHit> {
+        cachedIndex?.let { return it }
+
+        val index = pages
+            .filter { it.label != label("plugins") }
+            .flatMap { page ->
+                val panel = panelCache.getOrPut(page.label) { createPanel(page.label) }
+                (panel as? SettingsPanel)?.searchEntries.orEmpty()
+                    .map { SearchHit(page.label, it) }
+            }
+        cachedIndex = index
+        return index
+    }
+
+    private fun openHit(hit: SearchHit) {
+        selectPage(hit.pageLabel)
+        SwingUtilities.invokeLater {
+            // The panel may have been built for the search index and never shown, in which case
+            // it has no layout yet and every component in it measures zero. Scrolling to a
+            // zero-sized component lands at the top of the page and the marker is drawn around
+            // nothing, which is why results on unvisited pages appeared to do nothing at all.
+            contentArea.validate()
+
+            val anchor = hit.entry.anchor
+            anchor.scrollRectToVisible(Rectangle(0, 0, anchor.width, anchor.height))
+
+            // Once more, after the scroll has settled: the marker is positioned in window
+            // coordinates, so it has to be placed where the row ended up rather than where it
+            // was before the viewport moved.
+            SwingUtilities.invokeLater { flash(anchor) }
+        }
+    }
+
+    /**
+     * Briefly tints the found setting.
+     *
+     * A page can hold thirty rows, and landing on the right one without a marker leaves the
+     * reader to find it again by eye, which is the work the search was meant to save.
+     */
+    private fun flash(component: JComponent) {
+        activeFlash?.invoke()
+        if (component.width == 0 || component.height == 0) return
+
+        // Drawn on the glass pane rather than on the row itself. A component clips its own
+        // painting to its bounds, so a marker drawn around a row was cut off exactly where it
+        // needed to be visible, leaving only the faint fill inside. The glass pane spans the
+        // window, so the outline can sit outside the row with room to breathe, and nothing in
+        // the page moves to make space for it.
+        val bounds = SwingUtilities.convertRectangle(
+            component.parent,
+            component.bounds,
+            markerOverlay
+        )
+        markerOverlay.markAt(bounds)
+
+        val timer = Timer(FLASH_TICK_MILLIS, null)
+        val finish = {
+            timer.stop()
+            markerOverlay.clear()
+            activeFlash = null
+        }
+
+        val started = System.currentTimeMillis()
+        timer.addActionListener {
+            val elapsed = (System.currentTimeMillis() - started).toFloat()
+            if (elapsed >= FLASH_MILLIS) {
+                finish()
+            } else {
+                // Held at full strength for the first part, then faded. Fading from the first
+                // frame makes it read as a flicker; holding first makes it read as a marker.
+                val fadeFrom = FLASH_MILLIS * FLASH_HOLD_FRACTION
+                markerOverlay.strength = if (elapsed <= fadeFrom) 1f
+                else 1f - (elapsed - fadeFrom) / (FLASH_MILLIS - fadeFrom)
+                markerOverlay.repaint()
+            }
+        }
+        activeFlash = finish
+        timer.start()
+    }
+
+    /**
+     * A dashed marker drawn over the window, around whichever row the search just found.
+     *
+     * Lives on the glass pane rather than on the row, because a component clips its own painting
+     * to its bounds: a marker drawn around a row was cut off exactly where it needed to be seen.
+     * From up here it can sit outside the row with padding, and no layout changes to make room.
+     *
+     * Colours are read at paint time, so a theme change while it is up cannot leave a stale one.
+     */
+    private class MarkerOverlay : JComponent() {
+        /** 1 while held, falling to 0 as it fades out. */
+        var strength: Float = 1f
+
+        private var target: Rectangle? = null
+
+        init {
+            isOpaque = false
+            isVisible = false
+        }
+
+        fun markAt(bounds: Rectangle) {
+            target = bounds
+            strength = 1f
+            isVisible = true
+            repaint()
+        }
+
+        fun clear() {
+            target = null
+            isVisible = false
+            repaint()
+        }
+
+        /**
+         * Never claims the pointer.
+         *
+         * A visible glass pane swallows every click underneath it by default, which would make
+         * the settings unusable for as long as the marker is up.
+         */
+        override fun contains(x: Int, y: Int) = false
+
+        override fun paintComponent(g: Graphics) {
+            val rect = target ?: return
+            if (strength <= 0f) return
+
+            val accent = UIManager.getColor("Component.accentColor")
+                ?: UIManager.getColor("Table.selectionBackground")
+                ?: Color(86, 156, 214)
+
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+
+                val padX = UIScale.scale(7)
+                val padY = UIScale.scale(5)
+                val arc = UIScale.scale(9)
+                val left = rect.x - padX
+                val top = rect.y - padY
+                val width = rect.width + padX * 2
+                val height = rect.height + padY * 2
+
+                g2.color = Color(accent.red, accent.green, accent.blue, (FILL_ALPHA * strength).toInt())
+                g2.fillRoundRect(left, top, width, height, arc, arc)
+
+                // Dashed, in the idiom the plugin drop zone already uses, and thick enough to
+                // carry the emphasis on its own — the fill is only there to seat it.
+                g2.color = Color(accent.red, accent.green, accent.blue, (OUTLINE_ALPHA * strength).toInt())
+                g2.stroke = BasicStroke(
+                    UIScale.scale(2f),
+                    BasicStroke.CAP_BUTT,
+                    BasicStroke.JOIN_ROUND,
+                    1f,
+                    floatArrayOf(UIScale.scale(6f), UIScale.scale(4f)),
+                    0f
+                )
+                g2.drawRoundRect(left, top, width - 1, height - 1, arc, arc)
+            } finally {
+                g2.dispose()
+            }
+        }
+
+        private companion object {
+            /** Faint: the outline does the work, and the row's own text has to stay readable. */
+            const val FILL_ALPHA = 38f
+            const val OUTLINE_ALPHA = 255f
+        }
+    }
+
+    private data class SearchHit(val pageLabel: String, val entry: SettingsPanel.SettingEntry) {
+        fun matches(query: String): Boolean {
+            val q = query.lowercase()
+            return entry.label.lowercase().contains(q) ||
+                entry.section.lowercase().contains(q) ||
+                entry.hint.lowercase().contains(q) ||
+                pageLabel.lowercase().contains(q)
         }
     }
 
     // ── Panel management ──────────────────────────────────────────────────────
+
+    /** Moves the sidebar selection to [pageLabel], which in turn shows its panel. */
+    private fun selectPage(pageLabel: String) {
+        for (row in 0 until tree.rowCount) {
+            val node = tree.getPathForRow(row).lastPathComponent as? DefaultMutableTreeNode
+            if (node?.userObject == pageLabel) {
+                tree.setSelectionRow(row)
+                tree.scrollRowToVisible(row)
+                return
+            }
+        }
+    }
 
     private fun showPanel(name: String) {
         currentPanelName = name
@@ -293,29 +710,32 @@ class SettingsDialog(
     }
 
     private fun createPanel(name: String): JPanel = when (name) {
-        localizationManager.getString("settings_dialog_sidebar.general") ->
-            GeneralPanel(settingsStore, localizationManager, availableLanguages)
+        label("general") ->
+            GeneralPanel(settingsStore, localizationManager)
 
-        localizationManager.getString("settings_dialog_sidebar.appearance") ->
+        label("appearance") ->
             AppearancePanel(settingsStore, themeManager, localizationManager, scope)
 
-        localizationManager.getString("settings_dialog_sidebar.services") ->
+        label("services") ->
             ServicesPanel(settingsStore, pluginManager, localizationManager, scope)
 
-        localizationManager.getString("settings_dialog_sidebar.plugins") ->
+        label("plugins") ->
             PluginsPanel(iconManager, pluginManager, localizationManager, scope)
 
-        localizationManager.getString("settings_dialog_sidebar.hotkeys") ->
+        label("hotkeys") ->
             KeyboardPanel(settingsStore, localizationManager, pauseGlobalHotkeys, resumeGlobalHotkeys)
 
-        localizationManager.getString("settings_dialog_sidebar.translation") ->
+        label("behavior") ->
             TranslationPanel(settingsStore, localizationManager)
 
-        localizationManager.getString("settings_dialog_sidebar.languages") ->
-            LanguagesPanel(settingsStore, localizationManager)
+        label("languages") ->
+            LanguagesPanel(settingsStore, localizationManager, availableLanguages)
 
-        localizationManager.getString("settings_dialog_sidebar.window_layout") ->
-            WindowPanel(settingsStore, localizationManager)
+        label("layout") ->
+            LayoutPanel(settingsStore, localizationManager)
+
+        label("popups") ->
+            PopupsPanel(settingsStore, localizationManager)
 
         else -> JPanel()
     }
@@ -430,5 +850,16 @@ class SettingsDialog(
     override fun dispose() {
         scope.cancel()
         super.dispose()
+    }
+
+    private companion object {
+        const val NAV_TREE = "tree"
+        const val NAV_RESULTS = "results"
+        const val NAV_EMPTY = "empty"
+        const val PATH_SEPARATOR = "›"
+        const val FLASH_MILLIS = 2200f
+        const val FLASH_TICK_MILLIS = 30
+        /** How much of the flash is held at full strength before it starts fading. */
+        const val FLASH_HOLD_FRACTION = 0.6f
     }
 }
