@@ -56,6 +56,7 @@ class MainStore(
     private val rewriteUseCase: RewriteUseCase,
     private val lookupWordUseCase: LookupWordUseCase,
     private val searchImagesUseCase: SearchImagesUseCase,
+    private val fetchInlineDefinitionUseCase: FetchInlineDefinitionUseCase,
     private val documentTranslationUseCase: DocumentTranslationUseCase
 ) : Store<MainState, MainIntent, MainEvent> {
 
@@ -230,8 +231,13 @@ class MainStore(
             is MainIntent.ApplyCorrection ->
                 _state.update { it.copy(inputText = it.inputText.replaceFirst(intent.original, intent.suggestion)) }
 
+            // Closing clears the pin. A pin says "keep this one around", not "and every one
+            // after it" — leaving it set meant the next popup opened wearing the pinned border
+            // and then auto-hid anyway, which is the worst of both.
             MainIntent.HideQuickTranslate ->
-                _state.update { it.copy(isQuickTranslateDialogVisible = false) }
+                _state.update {
+                    it.copy(isQuickTranslateDialogVisible = false, isQuickTranslateDialogPinned = false)
+                }
 
             MainIntent.ToggleQuickTranslateDialogPin ->
                 // Use `it` from the update lambda — not _state.value — to avoid
@@ -302,8 +308,12 @@ class MainStore(
                 _state.update {
                     it.copy(
                         isQuickDictionaryVisible = true,
+                        // A pin belongs to the popup that was pinned, not to the next one.
+                        isQuickDictionaryPinned =
+                            if (it.isQuickDictionaryVisible) it.isQuickDictionaryPinned else false,
                         dictionaryWord   = if (intent.selectedText.isNotBlank()) intent.selectedText else it.dictionaryWord,
-                        isDictionaryLoading = intent.selectedText.isNotBlank()
+                        isDictionaryLoading = intent.selectedText.isNotBlank(),
+                        quickDictionaryTriggerCount = it.quickDictionaryTriggerCount + 1
                     )
                 }
                 if (intent.selectedText.isNotBlank()) {
@@ -312,7 +322,7 @@ class MainStore(
             }
 
             is MainIntent.HideQuickDictionary -> _state.update {
-                it.copy(isQuickDictionaryVisible = false)
+                it.copy(isQuickDictionaryVisible = false, isQuickDictionaryPinned = false)
             }
 
             is MainIntent.ToggleQuickDictionaryPin -> _state.update {
@@ -327,8 +337,11 @@ class MainStore(
                 _state.update {
                     it.copy(
                         isImageSearchVisible = true,
+                        isImageSearchPinned =
+                            if (it.isImageSearchVisible) it.isImageSearchPinned else false,
                         imageSearchTerm = intent.selectedText.ifBlank { it.imageSearchTerm },
-                        isImageSearchLoading = intent.selectedText.isNotBlank()
+                        isImageSearchLoading = intent.selectedText.isNotBlank(),
+                        imageSearchTriggerCount = it.imageSearchTriggerCount + 1
                     )
                 }
                 if (intent.selectedText.isNotBlank()) {
@@ -337,12 +350,25 @@ class MainStore(
             }
 
             is MainIntent.HideImageSearch -> _state.update {
-                it.copy(isImageSearchVisible = false)
+                it.copy(isImageSearchVisible = false, isImageSearchPinned = false)
             }
 
             is MainIntent.ToggleImageSearchPin -> _state.update {
                 it.copy(isImageSearchPinned = !it.isImageSearchPinned)
             }
+
+            is MainIntent.UpdateInlineDefinition ->
+                if (intent.word.isBlank()) {
+                    fetchInlineDefinitionUseCase.clear { transform -> _state.update(transform) }
+                } else {
+                    fetchInlineDefinitionUseCase(
+                        word = intent.word,
+                        language = intent.language,
+                        alternateWord = intent.alternateWord,
+                        alternateLanguage = intent.alternateLanguage,
+                        updateState = { transform -> _state.update(transform) }
+                    )
+                }
         }
     }
 
@@ -435,19 +461,33 @@ class MainStore(
     private suspend fun handleShowQuickTranslate(intent: MainIntent.ShowQuickTranslate) {
         if (intent.selectedText.isBlank()) return
 
-        val current = _state.value
-        val isPinnedAndVisible = current.isQuickTranslateDialogVisible && current.isQuickTranslateDialogPinned
-
-        if (isPinnedAndVisible) {
-            // Popup is already open and pinned — just update the text and retranslate.
-            _state.update { it.copy(inputText = intent.selectedText) }
-        } else {
-            // Open a fresh popup — not pinned.
+        if (_state.value.isQuickTranslateDialogVisible) {
+            // Already open, pinned or not: replace the text and count the trigger, so the popup
+            // refreshes in place and restarts its countdown. Hiding and re-showing it would
+            // flicker, move it, and throw away a pin the user had set.
             _state.update {
                 it.copy(
                     inputText = intent.selectedText,
+                    quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1
+                )
+            }
+        } else {
+            // Open a fresh popup — never pinned, whatever the last one was left as.
+            //
+            // isLoading and the cleared text are set here rather than left to the use case that
+            // follows. The popup withholds itself until there is something to show, and it decides
+            // that from this state; without it the popup saw "not loading, no text" for the moment
+            // between being asked for and the request starting, took that for a finished result,
+            // and opened empty — which is the loading state the user was seeing inside the popup
+            // instead of the marker that should have covered the wait.
+            _state.update {
+                it.copy(
+                    inputText = intent.selectedText,
+                    translatedText = "",
+                    isLoading = true,
                     isQuickTranslateDialogPinned = false,
-                    isQuickTranslateDialogVisible = true
+                    isQuickTranslateDialogVisible = true,
+                    quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1
                 )
             }
         }

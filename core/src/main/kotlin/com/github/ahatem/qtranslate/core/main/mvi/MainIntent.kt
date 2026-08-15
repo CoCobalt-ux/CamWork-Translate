@@ -203,4 +203,23 @@ sealed interface MainIntent : UiIntent {
 
     /** User toggled the pin state of the floating image popup. */
     data object ToggleImageSearchPin : MainIntent
+
+    /**
+     * A translation finished and its result is a single word, so a short definition belongs
+     * beneath it. A blank [word] clears whatever is showing.
+     */
+    data class UpdateInlineDefinition(
+        val word: String,
+        val language: LanguageCode = LanguageCode("en"),
+        /**
+         * The other word worth defining, tried when [word] yields nothing.
+         *
+         * A translation has two sides and dictionaries are lopsided: the common ones cover English
+         * thoroughly and most other languages barely at all. Defining only the translated word
+         * means a reader translating into Arabic, or Hindi, or Vietnamese, sees no definition ever
+         * — the lookup is simply asking a dictionary for a language it does not hold.
+         */
+        val alternateWord: String = "",
+        val alternateLanguage: LanguageCode = LanguageCode("en")
+    ) : MainIntent
 }

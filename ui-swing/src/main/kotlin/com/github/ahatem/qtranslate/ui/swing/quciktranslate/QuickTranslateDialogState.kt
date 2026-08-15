@@ -15,6 +15,10 @@ data class QuickTranslateDialogState(
     val isLoading: Boolean,
     val translatedText: String,
     val isPinned: Boolean,
+    /** Bumped when the user asks for this popup again; a change restarts the countdown. */
+    val triggerCount: Int,
+    /** Short definition for a single-word result; empty for anything longer. */
+    val definition: String,
 
     // --- The Data is now a first-class citizen ---
     val sourceLanguage: LanguageCode,
@@ -36,6 +40,8 @@ data class DialogConfig(
     val autoPositionEnabled: Boolean,
     val transparencyPercentage: Int,
     val idleTimeoutSeconds: Int = 3,
+    /** Whether pressing outside the popup dismisses it; pinning overrides this. */
+    val closeOnClickOutside: Boolean = true,
     val lastKnownSize: Size,
     val lastKnownPosition: Position
 )

@@ -221,35 +221,41 @@ class FontFallbackDocumentListener(
     private fun applyFontFallback(doc: StyledDocument, offset: Int, length: Int, primary: Font, fallback: Font) {
         if (length <= 0) return
         val text = doc.getText(offset, length)
-        var pos  = 0
-        while (pos < text.length) {
-            val remaining        = text.substring(pos)
-            val primaryFailIndex = primary.canDisplayUpTo(remaining)
+        // Copied once, then scanned in place. The previous version called text.substring(pos)
+        // once per run, copying everything still to be scanned each time, which made a run-heavy
+        // document quadratic in allocation — while this method's own documentation claimed it
+        // allocated nothing per character. canDisplayUpTo takes an offset only for char arrays,
+        // which is why this is an array rather than the string.
+        val chars = text.toCharArray()
+        val end = chars.size
+        var pos = 0
 
-            if (primaryFailIndex == -1) {
-                applyRunAttributes(doc, offset + pos, remaining.length, primary)
+        while (pos < end) {
+            val primaryFail = primary.canDisplayUpTo(chars, pos, end)
+
+            if (primaryFail == -1) {
+                applyRunAttributes(doc, offset + pos, end - pos, primary)
                 break
             }
-            if (primaryFailIndex > 0) {
-                applyRunAttributes(doc, offset + pos, primaryFailIndex, primary)
-                pos += primaryFailIndex
+            if (primaryFail > pos) {
+                applyRunAttributes(doc, offset + pos, primaryFail - pos, primary)
+                pos = primaryFail
                 continue
             }
 
-            val fallbackFailIndex = fallback.canDisplayUpTo(remaining)
-            if (fallbackFailIndex == -1) {
-                applyRunAttributes(doc, offset + pos, remaining.length, fallback)
+            val fallbackFail = fallback.canDisplayUpTo(chars, pos, end)
+            if (fallbackFail == -1) {
+                applyRunAttributes(doc, offset + pos, end - pos, fallback)
                 break
             }
-            if (fallbackFailIndex > 0) {
-                applyRunAttributes(doc, offset + pos, fallbackFailIndex, fallback)
-                pos += fallbackFailIndex
+            if (fallbackFail > pos) {
+                applyRunAttributes(doc, offset + pos, fallbackFail - pos, fallback)
+                pos = fallbackFail
                 continue
             }
 
             // Neither font can display this code point — skip it and let the system handle it.
-            val cpLen = Character.charCount(remaining.codePointAt(0))
-            pos += cpLen
+            pos += Character.charCount(Character.codePointAt(chars, pos))
         }
     }
 
@@ -264,6 +270,9 @@ class FontFallbackDocumentListener(
         doc.setCharacterAttributes(docOffset, runLength, reusableAttrs, true)
     }
 }
+
+/** Shared because it is only ever read; a fresh one per paint was pure garbage. */
+private val EMPTY_INSETS = Insets(0, 0, 0, 0)
 
 private fun toBufferedImage(image: Image): BufferedImage {
     if (image is BufferedImage) return image
@@ -310,6 +319,14 @@ class AdvancedTextPane(
      */
     var showCharCount: Boolean = false
         set(value) { field = value; repaint() }
+
+    // Paint-path caches. This component repaints on every caret blink, so anything allocated in
+    // paintComponent is allocated roughly twice a second per pane, forever.
+    private var cachedCounterFont: Font? = null
+    private var cachedCounterBase: Font? = null
+    private var cachedCounterValue: Int = -1
+    private var cachedCounterText: String = ""
+    private var cachedDisabledFg: Color? = null
 
     private val contextMenu: JPopupMenu by lazy { createContextMenu() }
     private val fallbackListener: FontFallbackDocumentListener
@@ -451,38 +468,68 @@ class AdvancedTextPane(
     // -----------------------------------------------------------------------
 
     override fun paintComponent(g: Graphics) {
-        val g2 = g as Graphics2D
-        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
-        super.paintComponent(g)
+        // Painted on a copy. Rendering hints set on the Graphics Swing handed us outlive this
+        // method and change how sibling components are drawn afterwards; AdvancedCaret already
+        // saves and restores for the same reason, and this half of the file did not.
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
+            super.paintComponent(g2)
 
-        // Use document.length (O(1)) instead of text.length (O(n) serialisation).
-        val docLen     = document.length
-        val insets     = margin ?: Insets(0, 0, 0, 0)
-        val disabledFg = UIManager.getColor("Label.disabledForeground") ?: Color.GRAY
-        val ltr        = componentOrientation.isLeftToRight
+            // Use document.length (O(1)) instead of text.length (O(n) serialisation).
+            val docLen = document.length
+            val hasHint = docLen == 0 && hintText.isNotBlank()
+            val hasCounter = showCharCount && docLen > 0
+            if (!hasHint && !hasCounter) return
 
-        // Placeholder / hint text — drawn only when the pane is empty.
-        if (docLen == 0 && hintText.isNotBlank()) {
-            g2.font  = font
-            g2.color = disabledFg
-            val fm = g2.fontMetrics
-            val x  = if (ltr) insets.left + 2 else width - insets.right - 2 - fm.stringWidth(hintText)
-            val y  = insets.top + fm.ascent
-            g2.drawString(hintText, x, y)
+            // Only touched when something is actually drawn — paint runs on every caret blink.
+            val insets = margin ?: EMPTY_INSETS
+            val disabledFg = cachedDisabledFg
+                ?: (UIManager.getColor("Label.disabledForeground") ?: Color.GRAY).also { cachedDisabledFg = it }
+            val ltr = componentOrientation.isLeftToRight
+
+            if (hasHint) {
+                g2.font = font
+                g2.color = disabledFg
+                val fm = g2.fontMetrics
+                val x = if (ltr) insets.left + 2 else width - insets.right - 2 - fm.stringWidth(hintText)
+                val y = insets.top + fm.ascent
+                g2.drawString(hintText, x, y)
+            }
+
+            if (hasCounter) {
+                val counterFont = counterFont()
+                val counterStr = counterText(docLen)
+                g2.font = counterFont
+                g2.color = disabledFg
+                val fm = g2.getFontMetrics(counterFont)
+                val x = if (ltr) width - insets.right - fm.stringWidth(counterStr) - 2 else insets.left + 2
+                val y = height - insets.bottom - 2
+                g2.drawString(counterStr, x, y)
+            }
+        } finally {
+            g2.dispose()
         }
+    }
 
-        // Character count — drawn in the bottom corner when enabled and there is text.
-        if (showCharCount && docLen > 0) {
-            val counterFont = font.deriveFont(font.size2D - 1f)
-            val counterStr  = docLen.toString()
-            g2.font  = counterFont
-            g2.color = disabledFg
-            val fm = g2.getFontMetrics(counterFont)
-            val x  = if (ltr) width - insets.right - fm.stringWidth(counterStr) - 2 else insets.left + 2
-            val y  = height - insets.bottom - 2
-            g2.drawString(counterStr, x, y)
+    /** Derived once per font rather than on every paint — `deriveFont` is not free. */
+    private fun counterFont(): Font {
+        val base = font
+        if (cachedCounterBase !== base || cachedCounterFont == null) {
+            cachedCounterBase = base
+            cachedCounterFont = base.deriveFont(base.size2D - 1f)
         }
+        return cachedCounterFont!!
+    }
+
+    /** The count changes far less often than the pane repaints, so the string is kept. */
+    private fun counterText(length: Int): String {
+        if (cachedCounterValue != length) {
+            cachedCounterValue = length
+            cachedCounterText = length.toString()
+        }
+        return cachedCounterText
     }
 
     // -----------------------------------------------------------------------
@@ -729,6 +776,11 @@ class AdvancedTextPane(
     override fun updateUI() {
         super.updateUI()
         putClientProperty(HONOR_DISPLAY_PROPERTIES, true)
+        // A theme switch invalidates the cached colour and the font derived from the old one.
+        // Swing calls this for us then, which is why the caches need no listener of their own.
+        cachedCounterFont = null
+        cachedCounterBase = null
+        cachedDisabledFg = null
     }
 
     override fun getScrollableTracksViewportWidth(): Boolean =

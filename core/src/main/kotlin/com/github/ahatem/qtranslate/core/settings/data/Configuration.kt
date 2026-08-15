@@ -317,6 +317,17 @@ data class Configuration(
     val showDictionaryPanel: Boolean = false,
     val dictionaryAutoSource: DictionaryAutoSource = DictionaryAutoSource.TRANSLATED,
     val isDictionaryAutoPopupEnabled: Boolean = true,
+
+    /**
+     * Whether clicking away from a floating popup closes it.
+     *
+     * On by default: clicking elsewhere is how people dismiss a transient window, and a popup
+     * that ignores it has to be closed deliberately every time. Off suits anyone who translates
+     * a word and then works in the document beside it — for them, a click in the document
+     * throwing the translation away is the annoyance instead. Pinning still overrides it either
+     * way, which is what pinning is for.
+     */
+    val closePopupsOnClickOutside: Boolean = true,
     val mainWindowSize: Size? = null,
     val mainWindowPosition: Position? = null,
     val uiFontConfig: FontConfig = FontConfig(name = "Rubik", size = 13),
@@ -334,7 +345,14 @@ data class Configuration(
     val isPopupAutoSizeEnabled: Boolean = true,
     val isPopupAutoPositionEnabled: Boolean = true,
     val popupTransparencyPercentage: Int = 5,
-    val popupIdleTimeoutSeconds: Int = 3,
+    /**
+     * How long the translate popup waits before hiding itself.
+     *
+     * Three seconds was not enough to read a translated sentence, let alone a paragraph -- the
+     * popup was gone before most people finished. The countdown restarts on any activity, so a
+     * longer default costs nothing to someone who has already moved on.
+     */
+    val popupIdleTimeoutSeconds: Int = 12,
     val popupLastKnownSize: Size = Size(width = 450, height = 250),
     val popupLastKnownPosition: Position = Position(x = 0, y = 0),
 
@@ -346,7 +364,8 @@ data class Configuration(
     val imageSearchLastKnownPosition: Position = Position(x = 0, y = 0),
     val isQuickDictionaryPinned: Boolean = false,
     val isQuickDictionaryAutoPositionEnabled: Boolean = true,
-    val quickDictionaryIdleTimeoutSeconds: Int = 8,
+    /** Longer than the translate popup: definitions are read and compared, not glanced at. */
+    val quickDictionaryIdleTimeoutSeconds: Int = 20,
     val quickDictionaryTransparencyPercentage: Int = 5,
 
     // ---- Donation nudge ----

@@ -20,6 +20,8 @@ data class ImageSearchDialogState(
     val searchedTerm: String,
     val hasFailed: Boolean,
     val isPinned: Boolean,
+    /** Bumped when the user asks for this popup again; a change restarts the countdown. */
+    val triggerCount: Int,
     val availableServices: List<ServiceInfo>,
     val selectedServiceId: String?,
     val config: ImageSearchConfig,
@@ -36,7 +38,9 @@ data class ImageSearchDialogState(
 data class ImageSearchConfig(
     val lastKnownSize: Size,
     val lastKnownPosition: Position,
-    val positionNearMouse: Boolean = true
+    val positionNearMouse: Boolean = true,
+    /** Whether pressing outside the popup dismisses it; pinning overrides this. */
+    val closeOnClickOutside: Boolean = true
 )
 
 data class ImageSearchStrings(

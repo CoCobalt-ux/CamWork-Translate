@@ -285,11 +285,9 @@ class MainAppFrame(
         },
         onShowDictionary = { selectedText ->
             appScope.launch {
-                // Toggle: Ctrl+D while popup is open → close it.
-                if (mainStore.state.value.isQuickDictionaryVisible) {
-                    mainStore.dispatch(MainIntent.HideQuickDictionary)
-                    return@launch
-                }
+                // No longer a toggle. Pressing the hotkey again with the popup open refreshes it
+                // in place and restarts its countdown — hiding it meant the popup vanished when
+                // the user was asking for more of it, and threw away a pin they had set.
                 val s = mainStore.state.value
                 val lang = when {
                     s.sourceLanguage != LanguageCode.AUTO -> s.sourceLanguage
@@ -301,12 +299,8 @@ class MainAppFrame(
             }
         },
         onShowImages = { selectedText ->
+            // Refreshes in place when already open, for the same reason as the dictionary.
             appScope.launch {
-                // Same toggle as the dictionary: the key that opened it closes it.
-                if (mainStore.state.value.isImageSearchVisible) {
-                    mainStore.dispatch(MainIntent.HideImageSearch)
-                    return@launch
-                }
                 mainStore.dispatch(MainIntent.ShowImageSearch(selectedText, resolvedLookupLanguage()))
             }
         },
@@ -320,9 +314,46 @@ class MainAppFrame(
             }
         },
         onPointerPressed = { location ->
-            runOnUi { selectionTranslateButton.dismissIfOutside(location) }
+            runOnUi {
+                selectionTranslateButton.dismissIfOutside(location)
+                dismissPopupsPressedOutside(location)
+            }
         }
     )
+
+    /**
+     * Closes any floating popup the user has just clicked away from.
+     *
+     * Driven by the native hook rather than by an AWT listener. The click that dismisses a popup
+     * almost always lands in another application — the document being read — and AWT never sees
+     * those: it only delivers events destined for this program's own windows. An AWT-based
+     * version of this appeared to work when clicking on QTranslate itself and did nothing at all
+     * in the case that matters.
+     *
+     * Pinned popups are left alone, which is the point of pinning.
+     */
+    private fun dismissPopupsPressedOutside(screenPoint: java.awt.Point) {
+        if (!settingsStore.state.value.workingConfiguration.closePopupsOnClickOutside) return
+        val state = mainStore.state.value
+
+        fun pressedOutside(dialog: java.awt.Window) = dialog.isVisible && !dialog.bounds.contains(screenPoint)
+
+        if (state.isQuickTranslateDialogVisible && !state.isQuickTranslateDialogPinned &&
+            pressedOutside(quickTranslateDialog)
+        ) {
+            mainStore.dispatch(MainIntent.HideQuickTranslate)
+        }
+        if (state.isQuickDictionaryVisible && !state.isQuickDictionaryPinned &&
+            pressedOutside(quickDictionaryDialog)
+        ) {
+            mainStore.dispatch(MainIntent.HideQuickDictionary)
+        }
+        if (state.isImageSearchVisible && !state.isImageSearchPinned &&
+            pressedOutside(imageSearchDialog)
+        ) {
+            mainStore.dispatch(MainIntent.HideImageSearch)
+        }
+    }
 
     private val statusBarController = StatusBarController(
         statusBar = mainContentView.statusBar,
@@ -512,9 +543,19 @@ class MainAppFrame(
             mainStore.state
                 .map { Triple(it.isLoading, it.isQuickTranslateDialogVisible, it.isReplacingSelection) }
                 .distinctUntilChanged()
-                .collect { (isLoading, isDialogVisible, isReplacing) ->
+                .collect { (isLoading, popupRequested, isReplacing) ->
                     withContext(Dispatchers.Swing) {
-                        val shouldShow = isLoading && (!isVisible && !isDialogVisible || isReplacing)
+                        // Two cases want the marker, and neither depends on whether the main
+                        // window happens to be open: a popup translation that has been asked for
+                        // but has nothing to show yet, and an inline replace, which has no window
+                        // of its own at all.
+                        //
+                        // It used to also require the main window to be hidden, on the reasoning
+                        // that a visible main window shows its own progress. But Ctrl+Q opens the
+                        // popup either way, and in that case the main window is not where the user
+                        // is looking.
+                        val popupPending = popupRequested && !quickTranslateDialog.isVisible
+                        val shouldShow = isLoading && (isReplacing || popupPending)
                         loadingIndicator.render(LoadingIndicatorState(isVisible = shouldShow))
                     }
                 }
@@ -719,8 +760,13 @@ class MainAppFrame(
                         curr.isLoading -> true
                         // Need a previous snapshot to detect transitions.
                         prev == null -> false
-                        // Auto-lookup is disabled — nothing to do.
-                        curr.autoSource == com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource.OFF -> false
+                        // The definition strip is switched off entirely.
+                        //
+                        // Gated on its own setting rather than on dictionaryAutoSource. That
+                        // setting used to mean "open the dictionary popup by itself", and anyone
+                        // who found that intrusive turned it off — which would now also cost them
+                        // the quiet one-line definition, a different thing they never refused.
+                        !curr.isDictionaryAutoPopupEnabled -> false
                         else -> {
                             // Primary trigger: translation just finished.
                             val justFinishedLoading = prev.isLoading && !curr.isLoading
@@ -744,38 +790,55 @@ class MainAppFrame(
                         }
                         return@collect
                     }
-                    val autoSource = key.autoSource
-                    if (autoSource == com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource.OFF) return@collect
+                    // Both sides of the translation are offered, in preference order. SOURCE means
+                    // the user asked for the word they typed; otherwise the translation comes
+                    // first, since that is what they are looking at.
+                    //
+                    // Both matter because dictionaries are lopsided. Translating English into
+                    // Arabic and defining only the Arabic would ask Google Dictionary for a
+                    // language it barely holds, and produce nothing every single time.
+                    val preferSource =
+                        key.autoSource == com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource.SOURCE
+                    val (word, lang) =
+                        if (preferSource) key.inputText to key.resolvedSourceLang
+                        else key.translatedText to key.targetLang
+                    val (alternate, alternateLang) =
+                        if (preferSource) key.translatedText to key.targetLang
+                        else key.inputText to key.resolvedSourceLang
 
-                    val (word, lang) = when (autoSource) {
-                        com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource.TRANSLATED ->
-                            key.translatedText to key.targetLang
-                        com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource.SOURCE ->
-                            key.inputText to key.resolvedSourceLang
-                        else -> return@collect
-                    }
-
-                    // Word is not a single valid word — dismiss any unpinned auto popup.
+                    // Not a single word, so no definition belongs under the result.
                     if (word.isBlank() || word.contains(Regex("\\s")) || word.length < 2) {
-                        if (key.isQuickDictionaryVisible && !key.isQuickDictionaryPinned) {
-                            mainStore.dispatch(MainIntent.HideQuickDictionary)
-                        }
+                        mainStore.dispatch(MainIntent.UpdateInlineDefinition(""))
                         return@collect
                     }
+
+                    // A single word: fetch the short definition that sits beneath the translation,
+                    // in the popup and in the main window alike. Nothing is opened for it.
+                    mainStore.dispatch(
+                        MainIntent.UpdateInlineDefinition(
+                            word = word,
+                            language = lang,
+                            alternateWord = alternate.takeIf { it.isNotBlank() && it.none(Char::isWhitespace) }.orEmpty(),
+                            alternateLanguage = alternateLang
+                        )
+                    )
                     val current = mainStore.state.value.dictionaryWord
                     if (word.equals(current, ignoreCase = true)) return@collect
 
-                    if (key.panelVisible) {
-                        // Panel is open — update it directly.
+                    // Only ever fills in a dictionary the user already has open, and only in the
+                    // main window. It never summons one.
+                    //
+                    // Translating a single word used to make the dictionary popup appear on its
+                    // own. That was wrong twice over: it fired during Quick Translate with the
+                    // main window hidden, so a hotkey translation produced two windows when one
+                    // was asked for; and even in the main window it decided for the user that a
+                    // short word meant they wanted a definition. Looking a word up is now an
+                    // action they take — see the definition button on the output pane.
+                    if (key.panelVisible && key.mainVisible) {
                         withContext(Dispatchers.Swing) {
                             mainContentView.setDictionarySearchWord(word)
                         }
                         mainStore.dispatch(MainIntent.LookupWord(word, lang))
-                    } else if (key.mainVisible && key.isDictionaryAutoPopupEnabled) {
-                        // Panel closed but main window visible — show floating popup.
-                        // Position near the owner window, not the mouse cursor.
-                        quickDictionaryPositionNearMouse = false
-                        mainStore.dispatch(MainIntent.ShowQuickDictionary(word, lang))
                     }
                 }
         }
@@ -1347,6 +1410,8 @@ class MainAppFrame(
             isLoading = mainState.isLoading,
             translatedText = mainState.translatedText,
             isPinned = mainState.isQuickTranslateDialogPinned,
+            triggerCount = mainState.quickTranslateTriggerCount,
+            definition = mainState.inlineDefinition,
 
             sourceLanguage = displaySourceLanguage,
             targetLanguage = mainState.targetLanguage,
@@ -1366,6 +1431,7 @@ class MainAppFrame(
                 autoPositionEnabled = config.isPopupAutoPositionEnabled,
                 transparencyPercentage = config.popupTransparencyPercentage,
                 idleTimeoutSeconds = config.popupIdleTimeoutSeconds,
+                closeOnClickOutside = config.closePopupsOnClickOutside,
                 lastKnownSize = config.popupLastKnownSize,
                 lastKnownPosition = config.popupLastKnownPosition
             ),
@@ -1610,11 +1676,13 @@ class MainAppFrame(
             searchedTerm      = mainState.imageSearchTerm,
             hasFailed         = mainState.imageSearchFailed,
             isPinned          = mainState.isImageSearchPinned,
+            triggerCount      = mainState.imageSearchTriggerCount,
             availableServices = available,
             selectedServiceId = selectedId,
             config = ImageSearchConfig(
                 lastKnownSize     = config.imageSearchLastKnownSize,
-                lastKnownPosition = config.imageSearchLastKnownPosition
+                lastKnownPosition = config.imageSearchLastKnownPosition,
+                closeOnClickOutside = config.closePopupsOnClickOutside
             ),
             strings = ImageSearchStrings(
                 title             = localizer.getString("image_search_dialog.title"),
@@ -1682,6 +1750,7 @@ class MainAppFrame(
             lookedUpWord         = mainState.dictionaryWord,
             hasFailed            = mainState.dictionaryFailed,
             isPinned             = mainState.isQuickDictionaryPinned,
+            triggerCount         = mainState.quickDictionaryTriggerCount,
             availableDictionaries = availableDicts,
             selectedDictionaryId  = selectedDictId,
             autoSource               = config.dictionaryAutoSource,
@@ -1694,6 +1763,7 @@ class MainAppFrame(
                 lastKnownPosition    = config.quickDictionaryLastKnownPosition,
                 positionNearMouse    = quickDictionaryPositionNearMouse,
                 idleTimeoutSeconds   = config.quickDictionaryIdleTimeoutSeconds,
+                closeOnClickOutside  = config.closePopupsOnClickOutside,
                 transparencyPercentage = config.quickDictionaryTransparencyPercentage
             ),
             strings = QuickDictionaryStrings(

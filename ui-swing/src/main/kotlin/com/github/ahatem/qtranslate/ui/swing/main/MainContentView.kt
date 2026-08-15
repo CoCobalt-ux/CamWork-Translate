@@ -547,6 +547,9 @@ class MainContentView(
         outputTextPanel.render(
             OutputTextState(
                 text = mainState.translatedText,
+                // Shown automatically for a single word, empty otherwise, so a multi-word
+                // translation lays out exactly as it did before this existed.
+                definition = mainState.inlineDefinition,
                 noService = noService,
                 isLoading = mainState.isLoading,
                 fontConfig = config.scaledEditorFont,

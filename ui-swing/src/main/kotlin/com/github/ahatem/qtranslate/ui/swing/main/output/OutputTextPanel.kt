@@ -6,6 +6,7 @@ import com.github.ahatem.qtranslate.ui.swing.main.widgets.ReadOnlyTextPanelState
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.TextActionsPanel
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.AdvancedTextPane
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.DefinitionStrip
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import java.awt.BorderLayout
 import java.awt.Color
@@ -42,6 +43,8 @@ class OutputTextPanel(
     )
     private val actionsPanel = TextActionsPanel(iconManager)
     private val readOnlyPanel = ReadOnlyTextPanel(textPane, actionsPanel)
+    // No rule of its own: the output pane above already draws a border.
+    private val definitionStrip = DefinitionStrip(showDivider = false)
 
     private val noServiceLabel = JLabel()
     private val noServiceAction = JButton().apply {
@@ -72,6 +75,9 @@ class OutputTextPanel(
     init {
         add(noServiceBanner, BorderLayout.NORTH)
         add(readOnlyPanel, BorderLayout.CENTER)
+        // An aside beneath the translation. Kept out of readOnlyPanel so it never lands in the
+        // clipboard when the translation is copied.
+        add(definitionStrip, BorderLayout.SOUTH)
 
         textPane.hintText = localizationManager.getString("main_window_editor_context_menu.output_hint")
 
@@ -94,6 +100,7 @@ class OutputTextPanel(
 
     override fun render(state: OutputTextState) {
         renderNoServiceBanner(state.noService)
+        definitionStrip.render(state.definition)
         readOnlyPanel.render(
             ReadOnlyTextPanelState(
                 text = state.text,

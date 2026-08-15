@@ -20,6 +20,8 @@ data class QuickDictionaryDialogState(
     val lookedUpWord: String,
     val hasFailed: Boolean,
     val isPinned: Boolean,
+    /** Bumped when the user asks for this popup again; a change restarts the countdown. */
+    val triggerCount: Int,
     val availableDictionaries: List<ServiceInfo>,
     val selectedDictionaryId: String?,
     val config: QuickDictionaryConfig,
@@ -46,6 +48,8 @@ data class QuickDictionaryConfig(
     /** When false, the dialog positions itself adjacent to the owner window instead of near the mouse cursor. */
     val positionNearMouse: Boolean = true,
     val idleTimeoutSeconds: Int = 8,
+    /** Whether pressing outside the popup dismisses it; pinning overrides this. */
+    val closeOnClickOutside: Boolean = true,
     val transparencyPercentage: Int = 5
 )
 
