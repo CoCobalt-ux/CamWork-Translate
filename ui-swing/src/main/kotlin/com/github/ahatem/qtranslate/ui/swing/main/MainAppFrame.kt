@@ -30,6 +30,10 @@ import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialog
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryConfig
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryDialogState
 import com.github.ahatem.qtranslate.ui.swing.dictionary.QuickDictionaryStrings
+import com.github.ahatem.qtranslate.ui.swing.imagesearch.ImageSearchConfig
+import com.github.ahatem.qtranslate.ui.swing.imagesearch.ImageSearchDialog
+import com.github.ahatem.qtranslate.ui.swing.imagesearch.ImageSearchDialogState
+import com.github.ahatem.qtranslate.ui.swing.imagesearch.ImageSearchStrings
 import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationDialog
 import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialog
@@ -133,6 +137,14 @@ class MainAppFrame(
         QuickDictionaryDialog(owner = this, iconManager = iconManager)
     }
 
+    private val imageSearchDialog by lazy {
+        ImageSearchDialog(owner = this, iconManager = iconManager)
+    }
+
+    private val dragOverlay by lazy {
+        DragOverlay(this) { localizer.getString("main_window.drop_hint") }
+    }
+
     /**
      * Controls where the floating dictionary popup positions itself on first open.
      * - `true`  → near the mouse cursor   (global hotkey trigger)
@@ -193,7 +205,9 @@ class MainAppFrame(
         dispatch = { mainStore.dispatch(it) },
         dispatchSettings = { settingsStore.dispatch(it) },
         onOpenSnippingTool = { openSnippingTool() },
-        onOpenDocumentTranslation = { documentTranslationDialog.open() },
+        onOpenDocumentTranslation = { file ->
+            if (file != null) documentTranslationDialog.openWith(file) else documentTranslationDialog.open()
+        },
         onNotificationsClicked = { notificationPopover.show(mainContentView.statusBar) },
         onConfigureService = { serviceId -> openPluginConfiguration(serviceId) },
         onOpenServiceSettings = {
@@ -286,6 +300,16 @@ class MainAppFrame(
                 mainStore.dispatch(MainIntent.ShowQuickDictionary(selectedText, lang))
             }
         },
+        onShowImages = { selectedText ->
+            appScope.launch {
+                // Same toggle as the dictionary: the key that opened it closes it.
+                if (mainStore.state.value.isImageSearchVisible) {
+                    mainStore.dispatch(MainIntent.HideImageSearch)
+                    return@launch
+                }
+                mainStore.dispatch(MainIntent.ShowImageSearch(selectedText, resolvedLookupLanguage()))
+            }
+        },
         onTranslate = { mainStore.dispatch(MainIntent.Translate()) },
         onSelectionDetected = { text, location ->
             runOnUi {
@@ -359,7 +383,7 @@ class MainAppFrame(
             setupMenuBar()
             setupTrayMenu()
             setupGlobalHotkeys()
-            setupDocumentDropTarget()
+            setupDropTarget()
 
             observeStateAndEvents()
             isVisible = true
@@ -464,6 +488,12 @@ class MainAppFrame(
                             if (mainState.isQuickDictionaryVisible || quickDictionaryDialog.isVisible) {
                                 quickDictionaryDialog.render(
                                     buildQuickDictionaryDialogState(mainState, settingsState.workingConfiguration)
+                                )
+                            }
+
+                            if (mainState.isImageSearchVisible || imageSearchDialog.isVisible) {
+                                imageSearchDialog.render(
+                                    buildImageSearchDialogState(mainState, settingsState.workingConfiguration)
                                 )
                             }
                         } catch (e: Exception) {
@@ -947,6 +977,7 @@ class MainAppFrame(
                 )
             },
             onShowDictionary = { showDictionaryDialog() },
+            onShowImageSearch = { showImageSearchDialog() },
             onShowHistory = { showHistoryDialog() },
             onTranslateDocument = { documentTranslationDialog.open() },
             onShowSettings = { openSettingsDialog() },
@@ -1002,6 +1033,7 @@ class MainAppFrame(
             viewOptions = localizer.getString("main_window_main_menu.options_submenu"),
             dictionary = localizer.getString("system_tray_menu.dictionary"),
             isDictionaryPanelOpen = mainStore.state.value.isDictionaryPanelVisible,
+            imageSearch = localizer.getString("system_tray_menu.image_search"),
             history = localizer.getString("system_tray_menu.history"),
             translateDocument = localizer.getString("main_window_main_menu.translate_document"),
             settings = localizer.getString("main_window_main_menu.settings"),
@@ -1075,6 +1107,7 @@ class MainAppFrame(
         val strings = TrayMenuStrings(
             showApplication = localizer.getString("system_tray_menu.show_application"),
             dictionary = localizer.getString("system_tray_menu.dictionary"),
+            imageSearch = localizer.getString("system_tray_menu.image_search"),
             textRecognition = localizer.getString("system_tray_menu.recognize_text"),
             history = localizer.getString("system_tray_menu.history"),
             settings = localizer.getString("system_tray_menu.settings"),
@@ -1085,6 +1118,7 @@ class MainAppFrame(
         val actions = TrayMenuActions(
             onShowApplication = { runOnUi { showAndFocus() } },
             onShowDictionary = { showDictionaryDialog() },
+            onShowImageSearch = { showImageSearchDialog() },
             onRecognizeText = { openSnippingTool() },
             onShowHistory = { showHistoryDialog() },
             onShowSettings = {
@@ -1364,23 +1398,37 @@ class MainAppFrame(
         dialog.isVisible = true
     }
 
-    private fun setupDocumentDropTarget() {
-        transferHandler = object : TransferHandler() {
-            override fun canImport(support: TransferSupport): Boolean =
-                support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) && firstSupportedDocument(support) != null
-
-            override fun importData(support: TransferSupport): Boolean {
-                val file = firstSupportedDocument(support) ?: return false
-                SwingUtilities.invokeLater { documentTranslationDialog.openWith(file) }
-                return true
+    /**
+     * The window's single drop target, for pictures and documents alike.
+     *
+     * It used to be two: the input pane took images and the frame took documents. Because the pane
+     * claimed every file list — documents included — a `.docx` dropped on it was accepted and then
+     * quietly discarded, so document drop worked only on the window chrome. Handling both here
+     * means a drop behaves the same wherever in the window it lands, which is what anyone dropping
+     * a file expects.
+     *
+     * Plain text is deliberately declined so a text drag still reaches the editor under the
+     * pointer and inserts there.
+     */
+    private fun setupDropTarget() {
+        val onContent: (DroppedContent) -> Unit = { content ->
+            when (content) {
+                is DroppedContent.Picture ->
+                    mainStore.dispatch(MainIntent.OcrAndTranslateImage(content.image.toImageData("png")))
+                is DroppedContent.Document ->
+                    SwingUtilities.invokeLater { documentTranslationDialog.openWith(content.file) }
+                DroppedContent.None -> Unit
             }
-
-            @Suppress("UNCHECKED_CAST")
-            private fun firstSupportedDocument(support: TransferSupport): File? = runCatching {
-                (support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as List<File>)
-                    .firstOrNull { DocumentFormat.from(it) != null }
-            }.getOrNull()
         }
+        val onDragOver = { dragOverlay.keepShowing() }
+        val onDropped = { dragOverlay.hide() }
+
+        // The frame covers window chrome; the overlay covers itself once it is showing, since a
+        // visible glass pane is what the pointer is over; the panes cover themselves because
+        // Swing asks no one else once they own the pointer.
+        rootPane.installContentDropHandler(onContent, onDragOver, onDropped)
+        dragOverlay.component.installContentDropHandler(onContent, onDragOver, onDropped)
+        mainContentView.installDropHandling(onContent, onDragOver, onDropped)
     }
 
     private fun setupGlobalHotkeys() {
@@ -1456,6 +1504,18 @@ class MainAppFrame(
         runOnUi { updateDialog.show(state) }
     }
 
+    /**
+     * Opens the image popup from a menu, seeded with the input text when it is a single word.
+     *
+     * The hotkey and the context menu both start from a selection; a menu click has none, so it
+     * falls back to what is in the input pane and otherwise opens empty for the user to type in.
+     */
+    private fun showImageSearchDialog() {
+        val term = mainStore.state.value.inputText.trim()
+            .takeIf { it.isNotBlank() && !it.contains(' ') } ?: ""
+        mainStore.dispatch(MainIntent.ShowImageSearch(term, resolvedLookupLanguage()))
+    }
+
     private fun showDictionaryDialog() {
         val initialWord = mainStore.state.value.inputText.trim()
             .takeIf { it.isNotBlank() && !it.contains(' ') } ?: ""
@@ -1518,6 +1578,83 @@ class MainAppFrame(
                 )
                 val currentWord = mainStore.state.value.dictionaryWord
                 if (currentWord.isNotBlank()) mainStore.dispatch(MainIntent.LookupWord(currentWord, resolvedLang))
+            }
+        )
+    }
+
+    /**
+     * The language a looked-up term should be treated as.
+     *
+     * The chosen source language when there is one, otherwise whatever detection found, otherwise
+     * English. "Auto" is not a language a dictionary or an image search can be asked about.
+     */
+    private fun resolvedLookupLanguage(state: MainState = mainStore.state.value): LanguageCode = when {
+        state.sourceLanguage != LanguageCode.AUTO -> state.sourceLanguage
+        state.detectedSourceLanguage != null      -> state.detectedSourceLanguage!!
+        else                                      -> LanguageCode("en")
+    }
+
+    private fun buildImageSearchDialogState(
+        mainState: MainState,
+        config: Configuration
+    ): ImageSearchDialogState {
+        val serviceType = com.github.ahatem.qtranslate.core.shared.arch.ServiceType.IMAGE_SEARCH
+        val available = mainState.getAvailableServicesFor(serviceType)
+        val selectedId = config.getActivePreset()?.selectedServices?.get(serviceType)
+        val language = resolvedLookupLanguage(mainState)
+
+        return ImageSearchDialogState(
+            isVisible         = mainState.isImageSearchVisible,
+            isLoading         = mainState.isImageSearchLoading,
+            results           = mainState.imageResults,
+            searchedTerm      = mainState.imageSearchTerm,
+            hasFailed         = mainState.imageSearchFailed,
+            isPinned          = mainState.isImageSearchPinned,
+            availableServices = available,
+            selectedServiceId = selectedId,
+            config = ImageSearchConfig(
+                lastKnownSize     = config.imageSearchLastKnownSize,
+                lastKnownPosition = config.imageSearchLastKnownPosition
+            ),
+            strings = ImageSearchStrings(
+                title             = localizer.getString("image_search_dialog.title"),
+                hintMessage       = localizer.getString("image_search_dialog.hint_message"),
+                loadingMessage    = localizer.getString("image_search_dialog.loading_message"),
+                notFoundMessage   = localizer.getString(
+                    "image_search_dialog.not_found_message",
+                    mainState.imageSearchTerm
+                ),
+                errorMessage      = localizer.getString("image_search_dialog.error_message"),
+                searchButtonLabel = localizer.getString("image_search_dialog.search_button"),
+                openTooltip       = localizer.getString("image_search_dialog.open_tooltip"),
+                openSourceLabel   = localizer.getString("image_search_dialog.open_source"),
+                backLabel         = localizer.getString("image_search_dialog.back"),
+                pinTooltip        = localizer.getString("common.pin"),
+                unpinTooltip      = localizer.getString("common.unpin"),
+                closeTooltip      = localizer.getString("common.close")
+            ),
+            onSearch = { term -> mainStore.dispatch(MainIntent.SearchImages(term, language)) },
+            onServiceSelected = { serviceId ->
+                settingsStore.dispatch(SettingsIntent.UpdateServiceInActivePreset(serviceType, serviceId))
+                val term = mainStore.state.value.imageSearchTerm
+                if (term.isNotBlank()) mainStore.dispatch(MainIntent.SearchImages(term, language))
+            },
+            // The description page rather than the raw image: it carries the licence and the
+            // caption, which is what someone looking a term up actually wants to read.
+            onImageOpened = { result -> openUrl(result.sourceUrl ?: result.fullUrl) },
+            onPinToggled = { mainStore.dispatch(MainIntent.ToggleImageSearchPin) },
+            onClose = { mainStore.dispatch(MainIntent.HideImageSearch) },
+            onSavePosition = { position ->
+                settingsStore.dispatch(
+                    SettingsIntent.ToggleSetting { it.copy(imageSearchLastKnownPosition = position) }
+                )
+                settingsStore.dispatch(SettingsIntent.SaveChanges)
+            },
+            onSaveSize = { size ->
+                settingsStore.dispatch(
+                    SettingsIntent.ToggleSetting { it.copy(imageSearchLastKnownSize = size) }
+                )
+                settingsStore.dispatch(SettingsIntent.SaveChanges)
             }
         )
     }
@@ -1796,6 +1933,13 @@ class MainAppFrame(
             is StatusCode.DictionaryNotFound        -> localizer.getString("status_bar.dictionary_not_found", code.word)
             StatusCode.DictionaryTimeout            -> localizer.getString("status_bar.dictionary_timeout")
             is StatusCode.DictionaryFailed          -> localizer.getString("status_bar.dictionary_failed", code.summary)
+            StatusCode.NoTermToIllustrate           -> localizer.getString("status_bar.no_term_to_illustrate")
+            StatusCode.NoImageSearchServiceActive   -> localizer.getString("status_bar.no_image_search_active")
+            StatusCode.SearchingImages              -> localizer.getString("status_bar.searching_images")
+            StatusCode.ImageSearchReady             -> localizer.getString("status_bar.image_search_ready")
+            is StatusCode.ImagesNotFound            -> localizer.getString("status_bar.images_not_found", code.term)
+            StatusCode.ImageSearchTimeout           -> localizer.getString("status_bar.image_search_timeout")
+            is StatusCode.ImageSearchFailed         -> localizer.getString("status_bar.image_search_failed", code.summary)
             is StatusCode.AlreadyUpToDate           -> localizer.getString("status_bar.already_up_to_date", code.version)
             StatusCode.UpdateCheckNetworkError      -> localizer.getString("status_bar.update_check_network_error")
             StatusCode.UpdateCheckParseError        -> localizer.getString("status_bar.update_check_parse_error")
