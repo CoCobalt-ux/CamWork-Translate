@@ -15,6 +15,8 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.SummarizeUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateTextUseCase
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
+import com.github.ahatem.qtranslate.core.plugin.text.LocalizedPluginTextResolver
+import com.github.ahatem.qtranslate.core.plugin.text.PluginLocalization
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprintRepository
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginKeyValueStore
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
@@ -113,13 +115,28 @@ suspend fun buildDependencies(
     val notificationBus = NotificationBus()
     val appEventBus     = AppEventBus()
 
+    // Built before the plugin manager, which needs it to resolve the DisplayText plugins hand
+    // back for notifications and option labels.
+    val localizationManager = LocalizationManager(
+        appDataDirectory = appData,
+        parser           = LanguageTomlParser(logger = loggerFactory.getLogger("LanguageTomlParser")),
+        logger           = loggerFactory.getLogger("LocalizationManager")
+    )
+
     val pluginManager = PluginManager(
         appDataDirectory            = appData,
         settingsRepository          = settingsRepo,
         pluginFingerprintRepository = PluginFingerprintRepository(appData, Json { ignoreUnknownKeys = true; isLenient = true }),
         pluginKeyValueStore         = PluginKeyValueStore(appData),
         loggerFactory               = loggerFactory,
-        notificationBus             = notificationBus
+        notificationBus             = notificationBus,
+        textResolver                = LocalizedPluginTextResolver(
+            localizationManager = localizationManager,
+            pluginLocalization  = PluginLocalization(
+                parser = LanguageTomlParser(logger = loggerFactory.getLogger("PluginLocalization")),
+                logger = loggerFactory.getLogger("PluginLocalization")
+            )
+        )
     )
 
     // ---- 4. Settings store + reactive config ----
@@ -156,12 +173,6 @@ suspend fun buildDependencies(
         repoName   = "qtranslate",
         httpClient = httpClient,
         logger     = loggerFactory.getLogger("Updater")
-    )
-
-    val localizationManager = LocalizationManager(
-        appDataDirectory = appData,
-        parser           = LanguageTomlParser(logger = loggerFactory.getLogger("LanguageTomlParser")),
-        logger           = loggerFactory.getLogger("LocalizationManager")
     )
 
     val themeManager = ThemeManager(
@@ -231,10 +242,11 @@ suspend fun buildDependencies(
         handleTextToSpeechUseCase  = handleTtsUseCase,
         performSpellCheckUseCase   = PerformSpellCheckUseCase(activeServiceManager, loggerFactory),
         selectActiveServiceUseCase = SelectActiveServiceUseCase(
-            activeServices = pluginManager.activeServices,
-            settingsState  = configState,
-            scope          = appScope,
-            loggerFactory  = loggerFactory
+            activeServices       = pluginManager.activeServices,
+            settingsState        = configState,
+            activeServiceManager = activeServiceManager,
+            scope                = appScope,
+            loggerFactory        = loggerFactory
         ),
         translateTextUseCase       = translateUseCase,
         swapLanguagesUseCase       = SwapLanguagesUseCase(),

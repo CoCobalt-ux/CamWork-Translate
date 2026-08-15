@@ -12,6 +12,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
+import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
 import com.github.ahatem.qtranslate.core.settings.data.*
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
@@ -214,8 +215,9 @@ class MainAppFrame(
     }
 
     private fun openPluginConfiguration(serviceId: String) {
-        val plugin = pluginManager.plugins.value.find { state -> state.services.any { it.id == serviceId } }
-            ?: return
+        // The plugin is named in the service id itself, so there is nothing to search for.
+        val owningPluginId = ServiceId.pluginIdOf(serviceId) ?: return
+        val plugin = pluginManager.plugins.value.find { it.id == owningPluginId } ?: return
         appScope.launch {
             val model = pluginManager.getPluginSettingsModel(plugin.id)
             val instance = pluginManager.getPluginSettingsInstance(plugin.id)
@@ -224,13 +226,24 @@ class MainAppFrame(
                     JOptionPane.showMessageDialog(this@MainAppFrame, "This service has no configurable settings.", plugin.manifest.name, JOptionPane.INFORMATION_MESSAGE)
                     return@withContext
                 }
+                // Only offered for plugins that say they need setting up. For anything else the
+                // check has nothing to report, and a button that always says "fine" teaches the
+                // user to ignore it.
+                val canTest = plugin.services.any { it.metadata.requiresConfiguration }
+
                 DynamicPluginSettingsDialog(
                     owner = this@MainAppFrame,
                     pluginName = plugin.manifest.name,
                     localizationManager = localizer,
                     settingsModel = model,
                     settingsInstance = instance,
-                    onSave = { values -> appScope.launch { pluginManager.applySettingsFromMap(plugin.id, values) } }
+                    onSave = { values -> appScope.launch { pluginManager.applySettingsFromMap(plugin.id, values) } },
+                    onTestConnection = if (!canTest) null else { values ->
+                        // Applied first so the test uses what is on screen, not what was saved
+                        // last time — testing a key you have just typed is the whole point.
+                        pluginManager.applySettingsFromMap(plugin.id, values)
+                        pluginManager.validateServices(plugin.id)
+                    }
                 ).isVisible = true
             }
         }
