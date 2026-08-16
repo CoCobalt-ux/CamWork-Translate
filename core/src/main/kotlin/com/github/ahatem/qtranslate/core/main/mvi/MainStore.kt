@@ -262,9 +262,13 @@ class MainStore(
 
             is MainIntent.Translate -> scope.launch { translateText(intent.text) }
 
+            MainIntent.RefreshExtraOutput -> scope.launch { refreshExtraOutput() }
+
             MainIntent.CancelTranslation -> {
                 translateTextUseCase.cancel()
-                _state.update { it.copy(isLoading = false) }
+                // Both flags, because cancelling can land while the extra panel is still waiting
+                // on its own request and only the main one was ever cleared here.
+                _state.update { it.copy(isLoading = false, isExtraOutputLoading = false) }
                 scope.launch {
                     updateStatusBar(StatusCode.TranslationCancelled, NotificationType.INFO, true)
                 }
@@ -503,6 +507,19 @@ class MainStore(
             onStatusUpdate = ::updateStatusBar,
             textOverride = textOverride
         )
+    }
+
+    /**
+     * Recomputes the extra panel alone, falling back to a full translation when there is no
+     * translation yet to derive one from.
+     */
+    private suspend fun refreshExtraOutput() {
+        val refreshed = translateTextUseCase.refreshExtraOutput(
+            getState = { _state.value },
+            updateState = { transform -> _state.update(transform) },
+            onStatusUpdate = ::updateStatusBar
+        )
+        if (!refreshed) translateText()
     }
 
     private suspend fun handleLookupWord(intent: MainIntent.LookupWord) {
