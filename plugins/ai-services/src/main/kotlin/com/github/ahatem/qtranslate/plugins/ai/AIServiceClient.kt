@@ -59,13 +59,7 @@ class AIServiceClient(
      */
     suspend fun validate(): Result<Unit, ServiceError> {
         val current = settings()
-        if (current.apiKey.isBlank()) {
-            return Err(
-                ServiceError.ConfigurationError(
-                    "No API key set. Add one in Settings → Plugins → AI Plugin."
-                )
-            )
-        }
+        current.missingKeyError()?.let { return Err(it) }
         return complete(system = "Reply with the single character: 1", userContent = "1")
             .map { }
     }
@@ -76,15 +70,7 @@ class AIServiceClient(
     ): Result<String, ServiceError> {
         val current = settings()
 
-        if (current.apiKey.isBlank()) {
-            // Not set up yet, which is a different problem from a key the provider rejected —
-            // one is "finish configuring", the other is "the key is wrong".
-            return Err(
-                ServiceError.ConfigurationError(
-                    "AI Plugin: API key is not configured. Add your key in Settings → Plugins → AI Plugin."
-                )
-            )
-        }
+        current.missingKeyError()?.let { return Err(it) }
 
         val baseUrl = current.baseUrl.trimEnd('/')
         val endpoint = "$baseUrl/chat/completions"
@@ -158,13 +144,10 @@ class AIServiceClient(
     ): Result<String, ServiceError> {
         val current = settings()
 
-        if (current.apiKey.isBlank()) {
-            return Err(
-                ServiceError.AuthenticationError(
-                    "AI Plugin: API key is not configured. Add your key in Settings → Plugins → AI Plugin."
-                )
-            )
-        }
+        // The same rule as every other call. This one used to have its own check, which meant
+        // Vision OCR still refused to run against a local endpoint after the others had been
+        // fixed — and reported it as an authentication failure rather than a missing setting.
+        current.missingKeyError()?.let { return Err(it) }
 
         val baseUrl  = current.baseUrl.trimEnd('/')
         val endpoint = "$baseUrl/chat/completions"
