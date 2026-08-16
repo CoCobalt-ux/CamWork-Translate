@@ -1,8 +1,8 @@
 package com.github.ahatem.qtranslate.core.settings.data
 
 import com.github.ahatem.qtranslate.api.plugin.Service
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
-import com.github.ahatem.qtranslate.core.shared.util.hasType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
+import com.github.ahatem.qtranslate.core.shared.util.hasRole
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -21,36 +21,36 @@ class ActiveServiceManager(
     /**
      * The service currently selected for [type], with its id.
      *
-     * Preference order is the active preset's choice, then any enabled service that declares the
-     * capability. A service is only considered if it actually declares [type] — the preset can
-     * name a service that has since stopped offering that capability, or been replaced by a
-     * different plugin under the same id.
+     * Preference order is the active preset's choice, then any enabled service holding the role.
+     * The preset's choice is still checked against [type] rather than trusted, because a preset
+     * can name a service that has since stopped offering the role, or been replaced by a
+     * different plugin registered under the same id.
      */
     @Suppress("UNCHECKED_CAST")
-    fun <T : Service> getActive(type: ServiceType): ActiveService<T>? {
+    fun <T : Service> getActive(type: ServiceRole): ActiveService<T>? {
         val config = configuration.value
         val services = activeServices.value
 
-        if (!config.isServiceTypeEnabled(type)) return null
+        if (!config.isServiceRoleEnabled(type)) return null
 
         val preferredId = config.getActivePreset()?.selectedServices?.get(type)
         val preferred = preferredId
             ?.let { id -> services[id]?.let { ActiveService(id, it) } }
-            ?.takeIf { it.service.hasType(type) && !config.isServiceDisabled(it.id, type) }
+            ?.takeIf { it.service.hasRole(type) && !config.isServiceDisabled(it.id, type) }
 
         val resolved = preferred
             ?: services.entries
                 .firstOrNull { (id, service) ->
-                    service.hasType(type) && !config.isServiceDisabled(id, type)
+                    service.hasRole(type) && !config.isServiceDisabled(id, type)
                 }
                 ?.let { ActiveService(it.key, it.value) }
 
-        // Unchecked because T is erased. The capability check above is the real guard: a service
-        // is only returned for a capability it declares, and registration refuses to register a
-        // service whose declared capabilities it does not implement.
+        // Unchecked because T is erased. The hasRole check above is the real guard, and it is now
+        // an honest one: a role means the service implements that role's interface, so returning
+        // it as T is exactly the cast the type system would have made.
         return resolved as? ActiveService<T>
     }
 
     /** As [getActive], for the callers that only need the service itself. */
-    fun <T : Service> getActiveService(type: ServiceType): T? = getActive<T>(type)?.service
+    fun <T : Service> getActiveService(type: ServiceRole): T? = getActive<T>(type)?.service
 }
