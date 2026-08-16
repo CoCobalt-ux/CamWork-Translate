@@ -5,11 +5,12 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
+import com.github.ahatem.qtranslate.plugins.common.sendJson
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.ahatem.qtranslate.plugins.google.common.*
 import com.github.michaelbull.result.Err
@@ -21,7 +22,7 @@ import java.util.*
 class GoogleOCRService(
     private val pluginContext: PluginContext,
     private val settings: GoogleSettings,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val languageMapper: GoogleLanguageMapper,
     private val apiConfig: ApiConfig
 ) : OCR {
@@ -67,10 +68,10 @@ class GoogleOCRService(
                 )
             )
 
-            val responseString = httpClient.postTyped(
+            val responseString = httpClient.sendJson(
                 url = VISION_ENDPOINT,
-                body = requestBody,
                 headers = apiConfig.createJsonHeaders(),
+                body = requestBody,
                 queryParams = mapOf("key" to settings.visionApiKey)
             ).bind()
 

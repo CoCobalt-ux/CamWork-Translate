@@ -1,12 +1,16 @@
-package com.github.ahatem.qtranslate.plugins.common
+package com.github.ahatem.qtranslate.core.plugin.http
 
-import com.github.ahatem.qtranslate.api.plugin.PluginContext
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
+import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.getOrElse
 import io.ktor.client.*
+// Both this file's supertype and Ktor's own client are called HttpClient. Ours is now imported by
+// name, which beats the star import below, so Ktor's needs an alias to stay reachable.
+import io.ktor.client.HttpClient as KtorClient
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.plugins.*
@@ -21,19 +25,20 @@ import io.ktor.util.reflect.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import java.io.Closeable
 
-class KtorHttpClient(
-    private val pluginContext: PluginContext,
-    @PublishedApi internal val json: Json = Json {
+internal class KtorHttpClient(
+    private val logger: Logger,
+    private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
         coerceInputValues = true
         explicitNulls = false
     },
     private val config: HttpClientConfig = HttpClientConfig()
-) : HttpClient {
+) : HttpClient, Closeable {
 
-    private val client = HttpClient(CIO) {
+    private val client = KtorClient(CIO) {
         install(ContentNegotiation) {
             json(json)
         }
@@ -76,10 +81,10 @@ class KtorHttpClient(
             }
             handleResponse(response, url)
         } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("POST request timeout for $url", e)
+            logger.error("POST request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            pluginContext.logger.error("POST request failed for $url", e)
+            logger.error("POST request failed for $url", e)
             Err(ServiceError.NetworkError("Network error: ${e.message}", e))
         }
     }
@@ -102,57 +107,12 @@ class KtorHttpClient(
             }
             handleResponse(response, url)
         } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("GET request timeout for $url", e)
+            logger.error("GET request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            pluginContext.logger.error("GET request failed for $url", e)
+            logger.error("GET request failed for $url", e)
             Err(ServiceError.NetworkError("Network error: ${e.message}", e))
         }
-    }
-
-    // ========== JSON UTILITY METHODS ==========
-
-    /**
-     * Performs a GET request and parses the JSON response into type [T].
-     */
-    suspend inline fun <reified T> fetchJson(
-        url: String,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any> = emptyMap()
-    ): Result<T, ServiceError> {
-        val responseString = get(url, headers, queryParams).getOrElse { return Err(it) }
-
-        return runCatching {
-            Ok(json.decodeFromString<T>(responseString))
-        }.getOrElse { error ->
-            Err(ServiceError.InvalidResponseError("Failed to parse JSON response", error))
-        }
-    }
-
-    /**
-     * Performs a POST request with JSON body.
-     */
-    suspend inline fun <reified T> sendJson(
-        url: String,
-        headers: Map<String, String> = emptyMap(),
-        body: T? = null,
-        queryParams: Map<String, Any?> = emptyMap()
-    ): Result<String, ServiceError> {
-        val encodedBody = body?.let { json.encodeToString(it) }
-        val jsonHeaders = headers + ("Content-Type" to "application/json")
-        return post(url, jsonHeaders, encodedBody, queryParams)
-    }
-
-    /**
-     * POST request with typed body (automatically serialized to JSON).
-     */
-    suspend inline fun <reified T> postTyped(
-        url: String,
-        body: T,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap()
-    ): Result<String, ServiceError> {
-        return postTypedImpl(url, body, typeInfo<T>(), headers, queryParams)
     }
 
     // ========== FORM DATA UTILITY METHODS ==========
@@ -160,12 +120,12 @@ class KtorHttpClient(
     /**
      * Performs a POST request with form-urlencoded data.
      */
-    suspend fun postForm(
+    override suspend fun postForm(
         url: String,
         formData: Map<String, String>,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap(),
-        cookies: Map<String, String> = emptyMap()
+        headers: Map<String, String>,
+        queryParams: Map<String, Any?>,
+        cookies: Map<String, String>
     ): Result<String, ServiceError> = withContext(Dispatchers.IO) {
         try {
 
@@ -186,10 +146,10 @@ class KtorHttpClient(
 
             handleResponse(response, url)
         } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("POST form request timeout for $url", e)
+            logger.error("POST form request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            pluginContext.logger.error("POST form request failed for $url", e)
+            logger.error("POST form request failed for $url", e)
             Err(ServiceError.NetworkError("Network error: ${e.message}", e))
         }
     }
@@ -197,45 +157,17 @@ class KtorHttpClient(
 
     // ========== SPECIALIZED POST METHODS ==========
 
-    /**
-     * POST request with raw text content.
-     */
-    suspend fun postText(
-        url: String,
-        text: String,
-        contentType: String = "text/plain",
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap()
-    ): Result<String, ServiceError> {
-        val textHeaders = headers + ("Content-Type" to contentType)
-        return post(url, textHeaders, text, queryParams)
-    }
-
-    /**
-     * POST request with XML content.
-     */
-    suspend fun postXml(
-        url: String,
-        xml: String,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap()
-    ): Result<String, ServiceError> {
-        val xmlHeaders = headers + ("Content-Type" to "application/xml")
-        return post(url, xmlHeaders, xml, queryParams)
-    }
-
-
     // ========== OTHER UTILITY METHODS ==========
 
     /**
      * Performs a POST request with form-urlencoded data, returning raw bytes (useful for audio, etc.).
      */
-    suspend fun postFormBytes(
+    override suspend fun postFormBytes(
         url: String,
         formData: Map<String, String>,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap(),
-        cookies: Map<String, String> = emptyMap()
+        headers: Map<String, String>,
+        queryParams: Map<String, Any?>,
+        cookies: Map<String, String>
     ): Result<ByteArray, ServiceError> = withContext(Dispatchers.IO) {
         try {
             val response: HttpResponse = client.post(url) {
@@ -255,10 +187,10 @@ class KtorHttpClient(
 
             handleResponseBytes(response, url)
         } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("POST form bytes request timeout for $url", e)
+            logger.error("POST form bytes request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            pluginContext.logger.error("POST form bytes request failed for $url", e)
+            logger.error("POST form bytes request failed for $url", e)
             Err(ServiceError.NetworkError("Network error: ${e.message}", e))
         }
     }
@@ -266,10 +198,10 @@ class KtorHttpClient(
     /**
      * GET request that returns raw bytes (useful for audio, images, etc.)
      */
-    suspend fun getBytes(
+    override suspend fun getBytes(
         url: String,
-        headers: Map<String, String> = emptyMap(),
-        queryParams: Map<String, Any?> = emptyMap()
+        headers: Map<String, String>,
+        queryParams: Map<String, Any?>
     ): Result<ByteArray, ServiceError> = withContext(Dispatchers.IO) {
         try {
             val response: HttpResponse = client.get(url) {
@@ -280,41 +212,10 @@ class KtorHttpClient(
             }
             handleResponseBytes(response, url)
         } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("GET bytes request timeout for $url", e)
+            logger.error("GET bytes request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            pluginContext.logger.error("GET bytes request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
-        }
-    }
-
-    // ========== INTERNAL IMPLEMENTATIONS ==========
-
-    @PublishedApi
-    internal suspend fun <T> postTypedImpl(
-        url: String,
-        body: T,
-        typeInfo: TypeInfo,
-        headers: Map<String, String>,
-        queryParams: Map<String, Any?>
-    ): Result<String, ServiceError> = withContext(Dispatchers.IO) {
-        try {
-            val response: HttpResponse = client.post(url) {
-                headers.forEach { (key, value) -> header(key, value) }
-                queryParams.forEach { (key, value) ->
-                    value?.let { parameter(key, it.toString()) }
-                }
-                contentType(ContentType.Application.Json)
-                setBody(body, typeInfo)
-            }
-            pluginContext.logger.info("POST typed request succeeded for ${response.request.url}")
-            pluginContext.logger.info("POST typed request succeeded for ${response.request.content}")
-            handleResponse(response, url)
-        } catch (e: HttpRequestTimeoutException) {
-            pluginContext.logger.error("POST typed request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
-        } catch (e: Exception) {
-            pluginContext.logger.error("POST typed request failed for $url", e)
+            logger.error("GET bytes request failed for $url", e)
             Err(ServiceError.NetworkError("Network error: ${e.message}", e))
         }
     }
@@ -337,7 +238,7 @@ class KtorHttpClient(
 
             HttpStatusCode.PaymentRequired -> {
                 val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                pluginContext.logger.error("HTTP 402 (Payment Required) for $url — $errorBody")
+                logger.error("HTTP 402 (Payment Required) for $url — $errorBody")
                 Err(
                     ServiceError.AuthenticationError(
                         "Insufficient credits. " +
@@ -349,7 +250,7 @@ class KtorHttpClient(
 
             else -> {
                 val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                pluginContext.logger.error("HTTP ${response.status.value} for $url — $errorBody")
+                logger.error("HTTP ${response.status.value} for $url — $errorBody")
                 Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for $url\n$errorBody"))
             }
         }
@@ -371,13 +272,13 @@ class KtorHttpClient(
 
             else -> {
                 val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                pluginContext.logger.error("HTTP ${response.status.value} for $url — $errorBody")
+                logger.error("HTTP ${response.status.value} for $url — $errorBody")
                 Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for $url\n$errorBody"))
             }
         }
     }
 
-    fun close() {
+    override fun close() {
         client.close()
     }
 }
