@@ -5,9 +5,7 @@
 name = "English"
 native_name = "English"
 locale = "en-US"
-version = "1.0.0"
-author = "QTranslate Team <ahatem925@gmail.com>"
-last_updated = "2026-08-15"
+translators = ["ahatem"]
 rtl = false
 
 # ===================================================================
@@ -45,7 +43,7 @@ error = "Error"
 browse = "Browse..."
 delete = "Delete"
 rename = "Rename..."
-new = "New..."
+new_title = "New Translation"
 configure = "Configure"
 clear_all = "Clear All"
 select_all = "Select All"
@@ -214,6 +212,15 @@ clear_history_hint = "Saved translations are permanently deleted on exit when th
 language_group = "Language"
 interface_language = "Interface Language:"
 language_hint = "Changes apply immediately. Some labels may require a restart to update fully."
+edit_tooltip = "Edit this translation"
+new_tooltip = "Start a new translation"
+builtin_english = "English (built-in)"
+edit_english_tooltip = "English is the source translation and cannot be edited"
+# %1$s = comma separated list of GitHub handles
+translated_by = "Translated by %s on GitHub"
+name_separator = ", "
+# %1$s = percent translated, %2$s = number of strings still in English
+translation_incomplete = "%s%% translated — %s strings still show English"
 theme_group = "Theme"
 theme_label = "Theme:"
 theme_sync_os = "Sync with OS (follow system dark/light)"
@@ -670,3 +677,50 @@ image_search_failed = "Image search failed: %s"
 tab_input_tooltip = "Source text (%s)"
 tab_output_tooltip = "Translation (%s)"
 tab_extra_tooltip = "Extra output (%s)"
+# ===================================================================
+# LANGUAGE EDITOR
+# ===================================================================
+[language_editor]
+title = "Language Editor"
+# %1$s = language name, %2$s = language code
+title_for = "Edit Translation — %s (%s)"
+new_title = "New Translation"
+delete = "Delete"
+name = "Name:"
+native_name = "Native name:"
+locale = "Locale:"
+translators = "Translators:"
+translators_placeholder = "GitHub handles, comma separated"
+rtl = "Right-to-left language"
+col_key = "Key"
+col_english = "English"
+col_translation = "Translation"
+show_details = "Details"
+hide_details = "Hide details"
+dir_ltr = "Left-to-right"
+dir_rtl = "Right-to-left"
+placeholder_mismatch = "The %s placeholders differ from the English text. This will fail when the string is used."
+# %1$s = number of rows with mismatched placeholders
+mismatch_warning = "%s strings have placeholders that do not match the English. They will fail when used."
+unreadable_title = "Translation could not be read"
+# %1$s = language code, %2$s = file path
+unreadable = "The translation for %s could not be read, so it cannot be edited safely.
+
+The file is at:
+%s"
+search = "Search keys and text..."
+only_untranslated = "Only untranslated"
+# %1$s = translated count, %2$s = total, %3$s = percent
+coverage = "%s / %s  (%s%%)"
+suggest = "Suggest translation"
+suggest_tooltip = "Translate the selected rows with the active service. Suggestions are editable and are not saved until you save."
+reset_row = "Clear"
+reset_row_tooltip = "Clear the selected rows so they fall back to English"
+save = "Save"
+close = "Close"
+saved = "Translation saved."
+new_prompt = "Language code for the new translation, such as vi-VN:"
+new_exists = "A translation with that code already exists."
+# %1$s = language code
+delete_confirm = "Delete the translation for %s? This cannot be undone."
+discard_confirm = "Discard unsaved changes?"

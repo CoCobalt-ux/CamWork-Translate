@@ -1,12 +1,16 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.icons.FlatOptionPaneWarningIcon
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.localization.TranslationCoverage
 import com.github.ahatem.qtranslate.core.settings.data.FontConfig
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager.Companion.OS_DEFAULT_THEME_ID
+import com.github.ahatem.qtranslate.ui.swing.shared.util.WrapLayout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -20,7 +24,13 @@ class AppearancePanel(
     private val store: SettingsStore,
     private val themeManager: ThemeManager,
     private val localizationManager: LocalizationManager,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    /**
+     * Opens the language editor, and returns once it closes so the picker can pick up whatever
+     * changed. Absent in contexts that have no dialog to parent it to, which hides the button
+     * rather than offering one that does nothing.
+     */
+    private val openEditor: ((languageCode: String?) -> Unit)? = null
 ) : SettingsPanel() {
 
     private val groupedItems: List<ThemeItem> = buildGroupedItems()
@@ -37,6 +47,9 @@ class AppearancePanel(
         configured.ifBlank { localizationManager.activeLanguage.tag }
 
     private lateinit var languageCombo:     JComboBox<LanguageInfo>
+    private lateinit var translatorCredit:  JPanel
+    /** Held so it can be disabled for English, which has no file to edit. */
+    private var editButton: JButton? = null
     private lateinit var themeCombo:        JComboBox<ThemeItem>
     private lateinit var syncWithOsCheck:   JCheckBox
     private lateinit var titleBarCheck:     JCheckBox
@@ -61,14 +74,52 @@ class AppearancePanel(
             isEnabled = false
             renderer  = languageRenderer()
             addActionListener {
+                // Follows the selection whether or not the user made it, so the credit always
+                // describes the language actually showing rather than the last one chosen by hand.
+                updateTranslatorCredit(selectedItem as? LanguageInfo)
                 if (!isUpdatingFromState) {
                     val selected = selectedItem as? LanguageInfo ?: return@addActionListener
                     applyDraft(store) { it.copy(interfaceLanguage = selected.code) }
                 }
             }
         }
-        addRow(localizationManager.getString("settings_appearance.interface_language"), languageCombo)
-        addHint(localizationManager.getString("settings_appearance.language_hint"))
+        val actions = if (openEditor == null) emptyList() else listOf(
+            pickerAction(
+                "icons/lucide/pen-line.svg",
+                localizationManager.getString("settings_appearance.edit_tooltip")
+            ) {
+                openEditor.invoke((languageCombo.selectedItem as? LanguageInfo)?.code)
+                loadLanguageListAsync()
+            }.also { editButton = it },
+            pickerAction(
+                "icons/lucide/plus.svg",
+                localizationManager.getString("settings_appearance.new_tooltip")
+            ) {
+                openEditor.invoke(null)
+                loadLanguageListAsync()
+            }
+        )
+        addPickerRow(
+            localizationManager.getString("settings_appearance.interface_language"),
+            languageCombo,
+            actions
+        )
+
+        // One line under the picker, and only when there is something to say.
+        //
+        // There were three, all in small dimmed text. The hint apologised permanently for a bug
+        // to every user on every visit and contradicted itself in one sentence. The credit is an
+        // acknowledgement rather than a setting, and now rides on the picker's own tooltip. What
+        // survives is the only one of the three the reader can act on.
+        //
+        // WrapLayout, not FlowLayout: FlowLayout reports a single row's height whatever it holds,
+        // so the GridBag row was sized for one line and anything that wrapped was clipped away.
+        translatorCredit = JPanel(WrapLayout(FlowLayout.LEADING, 4, 2)).apply {
+            isOpaque = false
+            isVisible = false
+        }
+        gb.nextRow().spanLine().weightX(1.0).fill(GridBagConstraints.HORIZONTAL)
+            .insets(6, 2, 2, 0).add(translatorCredit)
 
         // ---- Theme ----
         addSeparator(localizationManager.getString("settings_appearance.theme_group"))
@@ -177,14 +228,25 @@ class AppearancePanel(
 
 
     private suspend fun buildLanguageList(): List<LanguageInfo> {
-        val builtIn = listOf(LanguageInfo("en", "English (built-in)"))
+        val builtIn = listOf(
+            LanguageInfo(
+                code = "en",
+                displayName = localizationManager.getString("settings_appearance.builtin_english"),
+                coverage = localizationManager.coverageOf(LanguageCode.ENGLISH)
+            )
+        )
 
         val external = localizationManager.availableLanguages
             .filter { it != "en" }
             .map { code ->
                 val meta    = localizationManager.readLanguageMeta(LanguageCode(code))
                 val display = if (meta != null) "${meta.name} (${meta.nativeName})" else code
-                LanguageInfo(code, display)
+                LanguageInfo(
+                    code = code,
+                    displayName = display,
+                    translators = meta?.translators.orEmpty(),
+                    coverage = localizationManager.coverageOf(LanguageCode(code))
+                )
             }
             .sortedBy { it.displayName }
 
@@ -267,6 +329,107 @@ class AppearancePanel(
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
             text = (value as? LanguageInfo)?.displayName ?: ""
             return this
+        }
+    }
+
+    /**
+     * Names the people behind the chosen translation, each linking to their GitHub profile.
+     *
+     * Translators had no credit anywhere in the application: the file recorded a name and nothing
+     * ever read it. An earlier attempt put the handles in the dropdown beside every language,
+     * which was worse than nothing: a bare word like `bovirus` next to a language does not read as
+     * a person, and nothing said where it came from or that it led anywhere.
+     *
+     * So it sits under the picker instead, describing the one language the user has chosen. The
+     * sentence says what the names are and which site they are on, each handle is a link with the
+     * profile address on hover, and the row disappears entirely when a translation credits nobody
+     * rather than leaving a label with nothing after it.
+     */
+    private fun updateTranslatorCredit(info: LanguageInfo?) {
+        // English is the source every other translation is completed from and has no file on
+        // disk. Editing it opened a dialog with 546 empty rows, and saving that wrote a phantom
+        // file the picker then filtered out of sight.
+        editButton?.isEnabled = info != null && info.code != "en"
+        editButton?.toolTipText = localizationManager.getString(
+            if (info?.code == "en") "settings_appearance.edit_english_tooltip"
+            else "settings_appearance.edit_tooltip"
+        )
+
+        translatorCredit.removeAll()
+        val handles = info?.translators.orEmpty()
+        val coverage = info?.coverage
+
+        // The acknowledgement rides on the control rather than taking a line of its own. One
+        // format string, not a sentence assembled from fragments, so a translator can order the
+        // words as their language requires instead of being handed "Translated by" and "on
+        // GitHub" as fixed bookends.
+        languageCombo.toolTipText = if (handles.isEmpty()) null else {
+            localizationManager.getString(
+                "settings_appearance.translated_by",
+                handles.joinToString(localizationManager.getString("settings_appearance.name_separator"))
+            )
+        }
+
+        // Said plainly, and only when it is true. A missing string falls back to English, so an
+        // unfinished translation works — it just quietly shows a language the user did not pick,
+        // and nothing anywhere admitted it.
+        if (coverage != null && !coverage.isComplete && coverage.total > 0) {
+            translatorCredit.add(
+                incompleteWarning(
+                    localizationManager.getString(
+                        "settings_appearance.translation_incomplete",
+                        coverage.percent,
+                        coverage.missing
+                    )
+                )
+            )
+        }
+
+        translatorCredit.isVisible = translatorCredit.componentCount > 0
+        translatorCredit.revalidate()
+        translatorCredit.repaint()
+    }
+
+    /**
+     * Sits beside the credit rather than in the dropdown.
+     *
+     * In the list it would be one more thing on every row, and the only moment it matters is when
+     * the user has settled on a language: this is the point at which "some of this will still be
+     * English" is worth knowing.
+     */
+    private fun incompleteWarning(text: String) = JLabel(text).apply {
+        icon = ScaledIcon(FlatOptionPaneWarningIcon(), UIScale.scale(13))
+        iconTextGap = 5
+        foreground = UIManager.getColor("Component.warning.focusedBorderColor")
+            ?: UIManager.getColor("Label.foreground")
+        font = font.deriveFont(font.size - 1f)
+    }
+
+    /**
+     * Draws an icon at a size it was not built for.
+     *
+     * FlatLaf's warning icon is the one the option pane uses, so it comes at that size and offers
+     * no way to ask for another. It is drawn rather than bitmapped, so scaling it costs nothing in
+     * quality, and borrowing the look and feel's own glyph keeps this consistent with every other
+     * warning in the application and correct in whatever theme is loaded.
+     */
+    private class ScaledIcon(private val delegate: Icon, private val size: Int) : Icon {
+        override fun getIconWidth() = size
+        override fun getIconHeight() = size
+
+        override fun paintIcon(c: Component?, g: Graphics, x: Int, y: Int) {
+            val g2 = g.create() as Graphics2D
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+                g2.translate(x, y)
+                // Against the delegate's own reported width, which the look and feel has already
+                // scaled for the display, so this does not scale a second time on top of that.
+                val factor = size.toDouble() / delegate.iconWidth
+                g2.scale(factor, factor)
+                delegate.paintIcon(c, g2, 0, 0)
+            } finally {
+                g2.dispose()
+            }
         }
     }
 
@@ -370,7 +533,14 @@ class AppearancePanel(
         }
     }
 
-    private data class LanguageInfo(val code: String, val displayName: String) {
+    private data class LanguageInfo(
+        val code: String,
+        val displayName: String,
+        /** GitHub handles of everyone who worked on this translation. Empty for the built-in. */
+        val translators: List<String> = emptyList(),
+        val coverage: TranslationCoverage = TranslationCoverage(0, 0)
+    ) {
         override fun toString() = displayName
     }
+
 }
