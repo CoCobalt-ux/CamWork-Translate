@@ -35,6 +35,8 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeCellRenderer
 import javax.swing.tree.DefaultTreeModel
 import javax.swing.tree.TreeSelectionModel
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconSet
 
 class SettingsDialog(
     owner: JFrame,
@@ -100,24 +102,24 @@ class SettingsDialog(
      * separated by Plugins and Hotkeys.
      */
     private val navTree: List<Nav> = listOf(
-        Nav.Page(label("general"), "icons/lucide/sliders-horizontal.svg"),
-        Nav.Page(label("appearance"), "icons/lucide/palette.svg"),
+        Nav.Page(label("general"), Icons.GENERAL),
+        Nav.Page(label("appearance"), Icons.APPEARANCE),
         Nav.Group(
             label("group_translation"), listOf(
-                Nav.Page(label("services"), "icons/lucide/zap.svg"),
-                Nav.Page(label("behavior"), "icons/lucide/languages.svg"),
-                Nav.Page(label("languages"), "icons/lucide/globe.svg"),
+                Nav.Page(label("services"), Icons.SERVICE),
+                Nav.Page(label("behavior"), Icons.TRANSLATE),
+                Nav.Page(label("languages"), Icons.LANGUAGE),
             )
         ),
         Nav.Group(
             label("group_interface"), listOf(
-                Nav.Page(label("layout"), "icons/lucide/layout-dashboard.svg"),
-                Nav.Page(label("popups"), "icons/lucide/message-square.svg"),
+                Nav.Page(label("layout"), Icons.LAYOUT),
+                Nav.Page(label("popups"), Icons.POPUP),
             )
         ),
-        Nav.Page(label("hotkeys"), "icons/lucide/keyboard.svg"),
-        Nav.Page(label("plugins"), "icons/lucide/package.svg"),
-        Nav.Page(label("network"), "icons/lucide/link-2.svg"),
+        Nav.Page(label("hotkeys"), Icons.KEYBOARD),
+        Nav.Page(label("plugins"), Icons.PLUGIN),
+        Nav.Page(label("network"), Icons.NETWORK),
     )
 
     /** Every selectable page, flattened, in sidebar order. */
@@ -140,7 +142,7 @@ class SettingsDialog(
     private val sidebarIcons: Map<String, Icon> by lazy {
         sidebarIconPaths.mapNotNull { (name, path) ->
             runCatching {
-                val icon = FlatSVGIcon(path, 14, 14, javaClass.classLoader)
+                val icon = IconSet.load(path, 14, 14)
                 icon.colorFilter =
                     FlatSVGIcon.ColorFilter { UIManager.getColor("Label.disabledForeground") ?: Color.GRAY }
                 name to (icon as Icon)
