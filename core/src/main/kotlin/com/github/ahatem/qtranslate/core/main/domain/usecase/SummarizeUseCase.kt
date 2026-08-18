@@ -2,16 +2,18 @@ package com.github.ahatem.qtranslate.core.main.domain.usecase
 
 import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
+import com.github.ahatem.qtranslate.api.plugin.StandardOptions
 import com.github.ahatem.qtranslate.api.summarizer.SummarizeRequest
 import com.github.ahatem.qtranslate.api.summarizer.Summarizer
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.StatusCode
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.fold
 import kotlinx.coroutines.withTimeoutOrNull
+import com.github.ahatem.qtranslate.core.shared.util.shortSummary
 
 class SummarizeUseCase(
     private val activeServiceManager: ActiveServiceManager,
@@ -24,7 +26,7 @@ class SummarizeUseCase(
         config: Configuration,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit
     ): String {
-        val summarizer = activeServiceManager.getActiveService<Summarizer>(ServiceType.SUMMARIZER)
+        val summarizer = activeServiceManager.getActiveService<Summarizer>(ServiceRole.SUMMARIZER)
         if (summarizer == null) {
             logger.warn("No summarizer service available")
             onStatusUpdate(StatusCode.NoSummarizerActive, NotificationType.WARNING, true)
@@ -36,8 +38,10 @@ class SummarizeUseCase(
         val result = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
             summarizer.summarize(
                 SummarizeRequest(
-                    text   = text,
-                    length = config.summaryLength
+                    text = text,
+                    // The service declares which lengths it offers; the host only passes the id
+                    // the user picked, so a plugin-defined length travels through unchanged.
+                    options = mapOf(StandardOptions.KEY_SUMMARY_LENGTH to config.summaryLength)
                 )
             )
         }
@@ -56,7 +60,7 @@ class SummarizeUseCase(
             },
             failure = { error ->
                 logger.error("Summarize failed: ${error.message}", error.cause)
-                val summary = error.message?.lines()?.firstOrNull()?.take(120) ?: "Unknown error"
+                val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.SummarizeFailed(summary), NotificationType.ERROR, true)
                 ""
             }

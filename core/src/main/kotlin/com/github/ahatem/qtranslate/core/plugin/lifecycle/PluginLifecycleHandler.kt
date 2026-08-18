@@ -4,8 +4,11 @@ import com.github.ahatem.qtranslate.core.plugin.LoadedPluginResult
 import com.github.ahatem.qtranslate.core.plugin.PluginStatus
 import com.github.ahatem.qtranslate.core.plugin.ScopedPluginContext
 import com.github.ahatem.qtranslate.core.plugin.registry.PluginContainer
+import com.github.ahatem.qtranslate.core.plugin.registry.ServiceValidator
 import com.github.ahatem.qtranslate.core.plugin.registry.PluginError
+import com.github.ahatem.qtranslate.core.plugin.http.HttpClientConfig
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginKeyValueStore
+import com.github.ahatem.qtranslate.core.plugin.text.PluginTextResolver
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
 import com.github.michaelbull.result.fold
@@ -25,7 +28,16 @@ internal class PluginLifecycleHandler(
     private val appDataDirectory: File,
     private val pluginKeyValueStore: PluginKeyValueStore,
     private val notificationBus: NotificationBus,
-    private val loggerFactory: LoggerFactory
+    private val textResolver: PluginTextResolver,
+
+    private val loggerFactory: LoggerFactory,
+    /**
+     * The network settings to build each plugin's client from, read at the moment a context
+     * is created rather than captured once. A plugin installed or re-enabled after the user
+     * changes their proxy then gets the new one without a restart; the ones already running
+     * keep the client they were handed, which is what the settings page says happens.
+     */
+    private val httpConfig: () -> HttpClientConfig = { HttpClientConfig() }
 ) {
     private val logger = loggerFactory.getLogger("PluginLifecycleHandler")
 
@@ -44,14 +56,24 @@ internal class PluginLifecycleHandler(
      * The context is created once and reused across enable/disable cycles;
      * only the internal scope is reset on each enable.
      */
-    fun createContext(result: LoadedPluginResult): ScopedPluginContext =
-        ScopedPluginContext(
+    fun createContext(result: LoadedPluginResult): ScopedPluginContext {
+        // Every container is built from a context, and this is the only place that has both the
+        // plugin's id and the loader that can read the bundle out of its JAR.
+        textResolver.onPluginLoaded(result.manifest.id, result.classLoader)
+
+        return ScopedPluginContext(
             pluginId = result.manifest.id,
             appDataDirectory = appDataDirectory,
             pluginKeyValueStore = pluginKeyValueStore,
             notificationBus = notificationBus,
-            logger = loggerFactory.getLogger(result.manifest.id)
+            textResolver = textResolver,
+            logger = loggerFactory.getLogger(result.manifest.id),
+            httpConfig = httpConfig()
         )
+    }
+
+    /** Drops a plugin's cached translations, for when it is uninstalled. */
+    fun forgetLocalization(pluginId: String) = textResolver.onPluginRemoved(pluginId)
 
     // -------------------------------------------------------------------------
     // Initialization
@@ -151,10 +173,31 @@ internal class PluginLifecycleHandler(
             onSuccess = { result ->
                 result.fold(
                     success = {
-                        container.services = container.plugin.getServices()
-                        container.declaredServices = container.services
+                        val declared = container.plugin.getServices()
+
+                        // A service with no key, or implementing no service interface, can never be
+                        // reached by the user. Dropping it here keeps the plugin's other services
+                        // usable and puts the reason in the log instead of leaving something
+                        // registered that nothing can ever select.
+                        val (valid, invalid) = declared.partition { ServiceValidator.validate(it).isEmpty() }
+                        invalid.forEach { service ->
+                            ServiceValidator.validate(service).forEach { problem ->
+                                logger.error("Plugin '${container.id}': $problem — service not registered")
+                            }
+                        }
+
+                        container.services = valid
+                        container.declaredServices = valid
                         container.status = PluginStatus.ENABLED
-                        container.lastError = null
+                        container.lastError = invalid
+                            .takeIf { it.isNotEmpty() }
+                            ?.let {
+                                PluginError.EnableFailure(
+                                    pluginId = container.id,
+                                    message = "${it.size} service(s) cannot be offered to the user",
+                                    cause = null
+                                )
+                            }
                         logger.info(
                             "Plugin '${container.id}' enabled with ${container.services.size} service(s)."
                         )
@@ -231,6 +274,9 @@ internal class PluginLifecycleHandler(
             withTimeoutOrNull(10_000) {
                 runCatching { container.plugin.shutdown() }
             } ?: logger.error("Plugin '${container.id}' shutdown timed out")
+
+            // After the plugin has had its say, since it may still make requests on the way out.
+            (container.context as? ScopedPluginContext)?.closeHttp()
 
         } catch (e: Throwable) {
             logger.error("Unexpected exception shutting down plugin '${container.id}'", e)

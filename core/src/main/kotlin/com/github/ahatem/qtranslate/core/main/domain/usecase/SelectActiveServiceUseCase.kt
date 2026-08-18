@@ -6,11 +6,12 @@ import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.api.translator.Translator
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceSelectionState
+import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.isServiceDisabled
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
-import com.github.ahatem.qtranslate.core.shared.util.mapServiceToType
+import com.github.ahatem.qtranslate.core.shared.util.roles
 import com.github.michaelbull.result.getOr
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -40,10 +41,19 @@ import kotlinx.coroutines.launch
 class SelectActiveServiceUseCase(
     private val activeServices: StateFlow<Map<String, Service>>,
     private val settingsState: StateFlow<Configuration>,
+    private val activeServiceManager: ActiveServiceManager,
     private val scope: CoroutineScope,
     loggerFactory: LoggerFactory
 ) {
     private val logger = loggerFactory.getLogger("SelectActiveServiceUseCase")
+
+    private companion object {
+        /**
+         * The roles whose services carry user-facing options today. Reading every role would work
+         * but calls the resolver eight times per emission for two answers.
+         */
+        val OPTION_BEARING_ROLES = listOf(ServiceRole.SUMMARIZER, ServiceRole.REWRITER)
+    }
 
     // Cache for Dynamic language results, keyed by service ID.
     // MutableStateFlow so that combine() re-emits when the cache updates.
@@ -59,27 +69,46 @@ class SelectActiveServiceUseCase(
      */
     fun observe(): Flow<ServiceSelectionState> =
         combine(activeServices, settingsState, dynamicLanguageCache) { services, config, langCache ->
-            val availableServices = services.values
-                .filterNot { service ->
-                    val type = mapServiceToType(service) ?: return@filterNot false
-                    config.isServiceDisabled(service.id, type)
-                }
-                .mapNotNull { toServiceInfo(it) }
+            // One entry per role, not per service: a service that both translates and defines
+            // words is offered in both pickers, and can be disabled in one without losing the
+            // other.
+            val availableServices = services.entries.flatMap { (id, service) ->
+                service.roles
+                    .filterNot { role -> config.isServiceDisabled(id, role) }
+                    .map { role ->
+                        ServiceInfo(
+                            id = id,
+                            name = service.name,
+                            iconPath = service.iconPath,
+                            type = role
+                        )
+                    }
+            }
 
             val activePreset = config.getActivePreset() ?: config.servicePresets.firstOrNull()
-            val selectedTranslatorId = activePreset?.selectedServices?.get(ServiceType.TRANSLATOR)
-            val translator = (services[selectedTranslatorId] as? Translator)
-                ?.takeUnless { config.isServiceDisabled(it.id, ServiceType.TRANSLATOR) }
+            val selectedTranslatorId = activePreset?.selectedServices?.get(ServiceRole.TRANSLATOR)
+            val translator = selectedTranslatorId
+                ?.takeUnless { config.isServiceDisabled(it, ServiceRole.TRANSLATOR) }
+                ?.let { services[it] as? Translator }
 
-            val languages = if (translator != null) {
-                resolveLanguages(translator, langCache)
+            val languages = if (translator != null && selectedTranslatorId != null) {
+                resolveLanguages(selectedTranslatorId, translator, langCache)
             } else {
                 emptyList()
             }
 
             ServiceSelectionState(
                 availableServices = availableServices,
-                availableLanguages = languages
+                availableLanguages = languages,
+                // Options are declared on the service, but a service can hold several roles and
+                // an option rarely means anything outside one of them. Without this filter, a
+                // service that both summarizes and rewrites would offer summary length while
+                // rewriting. An option that names no role applies to all of them.
+                serviceOptions = OPTION_BEARING_ROLES.associateWith { role ->
+                    activeServiceManager.getActive<Service>(role)?.service?.options
+                        ?.filter { it.role == null || it.role == role }
+                        .orEmpty()
+                }
             )
         }
 
@@ -91,8 +120,8 @@ class SelectActiveServiceUseCase(
     suspend fun getLanguagesFor(serviceId: String?): List<LanguageCode> {
         if (serviceId == null) return emptyList()
         val translator = activeServices.value[serviceId] as? Translator ?: return emptyList()
-        if (settingsState.value.isServiceDisabled(translator.id, ServiceType.TRANSLATOR)) return emptyList()
-        return resolveLanguagesSuspending(translator)
+        if (settingsState.value.isServiceDisabled(serviceId, ServiceRole.TRANSLATOR)) return emptyList()
+        return resolveLanguagesSuspending(serviceId, translator)
     }
 
     // -------------------------------------------------------------------------
@@ -105,6 +134,7 @@ class SelectActiveServiceUseCase(
      * The [combine] operator will re-emit once the cache is populated.
      */
     private fun resolveLanguages(
+        serviceId: String,
         translator: Translator,
         cache: Map<String, List<LanguageCode>>
     ): List<LanguageCode> =
@@ -112,14 +142,14 @@ class SelectActiveServiceUseCase(
             is SupportedLanguages.All      -> LanguageCode.commonLanguages()
             is SupportedLanguages.Specific -> supported.languages.toList()
             is SupportedLanguages.Dynamic  -> {
-                val cached = cache[translator.id]
+                val cached = cache[serviceId]
                 if (cached != null) {
                     cached
                 } else {
                     // Not yet fetched — kick off a fetch and return empty for now.
                     // Once the fetch completes, dynamicLanguageCache updates and
                     // combine() re-emits with the real list.
-                    fetchAndCacheDynamicLanguages(translator)
+                    fetchAndCacheDynamicLanguages(serviceId, translator)
                     emptyList()
                 }
             }
@@ -128,27 +158,30 @@ class SelectActiveServiceUseCase(
     /**
      * Suspending version for direct calls (e.g. [getLanguagesFor]).
      */
-    private suspend fun resolveLanguagesSuspending(translator: Translator): List<LanguageCode> =
+    private suspend fun resolveLanguagesSuspending(
+        serviceId: String,
+        translator: Translator
+    ): List<LanguageCode> =
         when (val supported = translator.supportedLanguages) {
             is SupportedLanguages.All      -> LanguageCode.commonLanguages()
             is SupportedLanguages.Specific -> supported.languages.toList()
             is SupportedLanguages.Dynamic  -> {
-                dynamicLanguageCache.value[translator.id]
+                dynamicLanguageCache.value[serviceId]
                     ?: translator.fetchSupportedLanguages()
                         .getOr(emptySet())
                         .toList()
                         .also { languages ->
-                            dynamicLanguageCache.value += (translator.id to languages)
+                            dynamicLanguageCache.value += (serviceId to languages)
                         }
             }
         }
 
-    private fun fetchAndCacheDynamicLanguages(translator: Translator) {
+    private fun fetchAndCacheDynamicLanguages(serviceId: String, translator: Translator) {
         // Guard: don't re-fetch if already in flight or cached
-        if (dynamicLanguageCache.value.containsKey(translator.id)) return
+        if (dynamicLanguageCache.value.containsKey(serviceId)) return
 
         // Put an empty list as a sentinel so concurrent calls don't double-fetch
-        dynamicLanguageCache.value += (translator.id to emptyList())
+        dynamicLanguageCache.value += (serviceId to emptyList())
 
         scope.launch {
             logger.debug("Fetching dynamic language list for '${translator.name}'")
@@ -156,14 +189,9 @@ class SelectActiveServiceUseCase(
                 .getOr(emptySet())
                 .toList()
 
-            dynamicLanguageCache.value += (translator.id to languages)
+            dynamicLanguageCache.value += (serviceId to languages)
             logger.debug("Cached ${languages.size} languages for '${translator.name}'")
         }
-    }
-
-    private fun toServiceInfo(service: Service): ServiceInfo? {
-        val type = mapServiceToType(service) ?: return null
-        return ServiceInfo(id = service.id, name = service.name, iconPath = service.iconPath, type = type)
     }
 }
 

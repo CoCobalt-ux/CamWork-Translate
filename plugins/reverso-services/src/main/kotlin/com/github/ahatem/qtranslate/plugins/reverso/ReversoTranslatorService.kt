@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.plugins.reverso
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
@@ -13,7 +14,7 @@ import com.github.michaelbull.result.toResultOr
 internal class ReversoTranslatorService(
     private val client: ReversoClient
 ) : Translator {
-    override val id = "reverso-services-translation"
+    override val key = "reverso-services-translation"
     override val name = "Reverso Translation"
     override val version = "1.0.0"
     override val iconPath = "assets/reverso.png"

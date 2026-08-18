@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
+import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyBinding
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyScope
@@ -32,7 +33,7 @@ import java.util.UUID
  *   Swing InputMap/ActionMap; this listener only provides the binding list
  *   via [getLocalBindings]. Local bindings never intercept keys from other apps.
  *
- * ### Per-action scope (Dinar's request)
+ * ### Per-action scope
  * Users can choose per action whether it should be global or local. This prevents
  * shortcuts like Ctrl+L from being stolen from browsers when set to LOCAL.
  *
@@ -45,6 +46,7 @@ import java.util.UUID
  */
 class MainGlobalKeyListener(
     private val scope: CoroutineScope,
+    private val logger: Logger,
     private val onShowApp: (String) -> Unit,
     private val onShowQuickTranslate: (String) -> Unit,
     private val onListenToText: (String) -> Unit,
@@ -52,6 +54,7 @@ class MainGlobalKeyListener(
     private val onReplaceWithTranslation: (String) -> Unit,
     private val onCycleTargetLanguage: () -> Unit,
     private val onShowDictionary: (String) -> Unit = {},
+    private val onShowImages: (String) -> Unit = {},
     private val onTranslate: () -> Unit = {},
     private val onSelectionDetected: (String, Point) -> Unit = { _, _ -> },
     private val onPointerPressed: (Point) -> Unit = {}
@@ -79,8 +82,7 @@ class MainGlobalKeyListener(
             initJNativeHook()
         } catch (e: Exception) {
             initialized.set(false)   // allow retry if initialization itself failed
-            System.err.println("Hotkey initialization failed: ${e.message}")
-            e.printStackTrace()
+            logger.error("Hotkey initialization failed", e)
         }
     }
 
@@ -91,7 +93,7 @@ class MainGlobalKeyListener(
             provider?.reset()
             registerGlobalHotkeys()
         } catch (e: Exception) {
-            System.err.println("Failed to update hotkey bindings: ${e.message}")
+            logger.error("Failed to update hotkey bindings", e)
         }
     }
 
@@ -100,8 +102,6 @@ class MainGlobalKeyListener(
         if (hotkeysEnabled.getAndSet(enabled) == enabled) return
         if (enabled) enableHotkeys() else disableHotkeys()
     }
-
-    fun areHotkeysEnabled(): Boolean = hotkeysEnabled.get()
 
     /** Enables or disables the floating translate button shown after a text selection. */
     fun setSelectionIconEnabled(enabled: Boolean) {
@@ -129,7 +129,7 @@ class MainGlobalKeyListener(
                 nativeHookRegistered = false
             }
         } catch (e: Exception) {
-            System.err.println("Hotkey manager shutdown error: ${e.message}")
+            logger.error("Hotkey manager shutdown error", e)
         } finally {
             initialized.set(false)
         }
@@ -162,10 +162,10 @@ class MainGlobalKeyListener(
                         if (!hotkeysEnabled.get()) return@register
                         dispatchAction(action)
                     }
-                    println("[Hotkeys] Registered GLOBAL ${action.name}: $keyStroke")
+                    logger.debug("Registered global hotkey ${action.name}: $keyStroke")
                 }.onFailure { ex ->
-                    System.err.println(
-                        "[Hotkeys] Failed to register GLOBAL ${action.name} ($keyStroke): ${ex.message}"
+                    logger.warn(
+                        "Failed to register global hotkey ${action.name} ($keyStroke): ${ex.message}"
                     )
                 }
             }
@@ -191,6 +191,8 @@ class MainGlobalKeyListener(
                 onCycleTargetLanguage()
             HotkeyAction.SHOW_DICTIONARY ->
                 scope.launch { handleSelectedText(onShowDictionary) }
+            HotkeyAction.SHOW_IMAGES ->
+                scope.launch { handleSelectedText(onShowImages) }
             HotkeyAction.TRANSLATE ->
                 onTranslate()
             // Focus actions are LOCAL-scope only — handled by MainContentView's InputMap.
@@ -211,12 +213,12 @@ class MainGlobalKeyListener(
 
     private fun enableHotkeys() {
         try { provider?.reset(); registerGlobalHotkeys() }
-        catch (e: Exception) { System.err.println("Enable hotkeys failed: ${e.message}") }
+        catch (e: Exception) { logger.error("Enable hotkeys failed", e) }
     }
 
     private fun disableHotkeys() {
         try { provider?.reset() }
-        catch (e: Exception) { System.err.println("Disable hotkeys failed: ${e.message}") }
+        catch (e: Exception) { logger.error("Disable hotkeys failed", e) }
     }
 
     private fun initJNativeHook() {
@@ -246,9 +248,37 @@ class MainGlobalKeyListener(
         private var lastCtrlTime = 0L
         private val threshold = 400
 
+        /** True once a key other than Ctrl is pressed while Ctrl is held. */
+        private var ctrlWasPartOfCombination = false
+        private var ctrlIsDown = false
+
+        override fun nativeKeyPressed(e: NativeKeyEvent) {
+            if (e.keyCode == NativeKeyEvent.VC_CONTROL) {
+                ctrlIsDown = true
+                ctrlWasPartOfCombination = false
+            } else if (ctrlIsDown) {
+                ctrlWasPartOfCombination = true
+            }
+        }
+
         override fun nativeKeyReleased(e: NativeKeyEvent) {
-            if (!hotkeysEnabled.get()) return
             if (e.keyCode != NativeKeyEvent.VC_CONTROL) return
+            ctrlIsDown = false
+
+            // The Ctrl that ends a shortcut is not a tap. Every hotkey in this application is a
+            // Ctrl combination, so counting those releases meant two shortcuts pressed within the
+            // threshold — Ctrl+Q twice, or Ctrl+Q then Ctrl+D — read as a double-Ctrl and summoned
+            // the main window on top of the popup the user actually asked for.
+            //
+            // The time is cleared as well as ignored, so the release that ends a shortcut cannot
+            // pair with a genuine tap that follows it either.
+            if (ctrlWasPartOfCombination) {
+                ctrlWasPartOfCombination = false
+                lastCtrlTime = 0L
+                return
+            }
+
+            if (!hotkeysEnabled.get()) return
 
             // Only fire if the binding exists, is enabled, AND the user
             // has not opted out of the double-Ctrl mechanism specifically.
@@ -258,6 +288,8 @@ class MainGlobalKeyListener(
             val now = System.currentTimeMillis()
             if (now - lastCtrlTime < threshold) {
                 scope.launch { handleSelectedText(onShowApp) }
+                lastCtrlTime = 0L
+                return
             }
             lastCtrlTime = now
         }
@@ -277,10 +309,13 @@ class MainGlobalKeyListener(
         private var dragged = false
 
         override fun nativeMousePressed(event: NativeMouseEvent) {
-            if (!selectionIconEnabled.get()) return
-            // Any press dismisses a button left over from an earlier selection; the
-            // caller ignores presses that land on the button itself so clicks still work.
+            // Reported before the selection-icon check, not after. This is the only notice the
+            // application gets of a press that lands in another program, and the floating popups
+            // rely on it to close when the user clicks away. Tying it to the selection button
+            // meant turning that button off also stopped popups noticing clicks outside them.
             onPointerPressed(event.point)
+
+            if (!selectionIconEnabled.get()) return
             if (event.button != NativeMouseEvent.BUTTON1) return
             pressedAt = event.point
             dragged = false
@@ -367,7 +402,7 @@ class MainGlobalKeyListener(
             robot.keyRelease(KeyEvent.VK_C)
             robot.keyRelease(copyModifier)
             robot.waitForIdle()
-        }.onFailure { System.err.println("Copy simulation failed: ${it.message}") }
+        }.onFailure { logger.warn("Copy simulation failed: ${it.message}") }
     }
 
     private companion object {

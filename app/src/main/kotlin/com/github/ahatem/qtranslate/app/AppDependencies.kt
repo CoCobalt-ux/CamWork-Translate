@@ -10,19 +10,24 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.PerformSpellCheckUs
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SelectActiveServiceUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SwapLanguagesUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.LookupWordUseCase
+import com.github.ahatem.qtranslate.core.main.domain.usecase.SearchImagesUseCase
+import com.github.ahatem.qtranslate.core.main.domain.usecase.FetchInlineDefinitionUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.RewriteUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SummarizeUseCase
+import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateStringUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateTextUseCase
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
+import com.github.ahatem.qtranslate.core.plugin.text.LocalizedPluginTextResolver
+import com.github.ahatem.qtranslate.core.plugin.text.PluginLocalization
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprintRepository
+import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginKeyValueStore
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.core.shared.AppConstants
-import com.github.ahatem.qtranslate.core.shared.events.AppEventBus
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
 import com.github.ahatem.qtranslate.core.updater.Updater
@@ -54,12 +59,17 @@ import com.github.ahatem.qtranslate.core.document.DocumentTranslationUseCase
 class AppDependencies(
     val appScope: CoroutineScope,
     val mainStore: MainStore,
+    val translateStringUseCase: TranslateStringUseCase,
     val settingsStore: SettingsStore,
     val pluginManager: PluginManager,
     val iconManager: IconManager,
     val themeManager: ThemeManager,
     val localizationManager: LocalizationManager,
-    val notificationBus: NotificationBus
+    val notificationBus: NotificationBus,
+    /** The application's own secrets, distinct from any plugin's. */
+    val appSecrets: AppSecretStore,
+    /** Where languages, themes and icon sets are read from. */
+    val appDataDirectory: File
 )
 
 /**
@@ -111,22 +121,40 @@ suspend fun buildDependencies(
     // ---- 3. Infrastructure ----
 
     val notificationBus = NotificationBus()
-    val appEventBus     = AppEventBus()
+
+    // Built before the plugin manager, which needs it to resolve the DisplayText plugins hand
+    // back for notifications and option labels.
+    val localizationManager = LocalizationManager(
+        appDataDirectory = appData,
+        parser           = LanguageTomlParser(logger = loggerFactory.getLogger("LanguageTomlParser")),
+        logger           = loggerFactory.getLogger("LocalizationManager")
+    )
+
+    // One instance, shared: the settings dialog writes the proxy password and the plugin
+    // manager reads it back when building each plugin's client.
+    val keyValueStore = PluginKeyValueStore(appData)
+    val appSecrets = AppSecretStore(keyValueStore)
 
     val pluginManager = PluginManager(
         appDataDirectory            = appData,
         settingsRepository          = settingsRepo,
         pluginFingerprintRepository = PluginFingerprintRepository(appData, Json { ignoreUnknownKeys = true; isLenient = true }),
-        pluginKeyValueStore         = PluginKeyValueStore(appData),
+        pluginKeyValueStore         = keyValueStore,
         loggerFactory               = loggerFactory,
-        notificationBus             = notificationBus
+        notificationBus             = notificationBus,
+        textResolver                = LocalizedPluginTextResolver(
+            localizationManager = localizationManager,
+            pluginLocalization  = PluginLocalization(
+                parser = LanguageTomlParser(logger = loggerFactory.getLogger("PluginLocalization")),
+                logger = loggerFactory.getLogger("PluginLocalization")
+            )
+        )
     )
 
     // ---- 4. Settings store + reactive config ----
 
     val settingsStore = SettingsStore(
         settingsRepository   = settingsRepo,
-        eventBus             = appEventBus,
         logger               = loggerFactory.getLogger("SettingsStore"),
         scope                = appScope,
         initialConfiguration = initialConfig
@@ -156,12 +184,6 @@ suspend fun buildDependencies(
         repoName   = "qtranslate",
         httpClient = httpClient,
         logger     = loggerFactory.getLogger("Updater")
-    )
-
-    val localizationManager = LocalizationManager(
-        appDataDirectory = appData,
-        parser           = LanguageTomlParser(logger = loggerFactory.getLogger("LanguageTomlParser")),
-        logger           = loggerFactory.getLogger("LocalizationManager")
     )
 
     val themeManager = ThemeManager(
@@ -205,6 +227,8 @@ suspend fun buildDependencies(
         loggerFactory        = loggerFactory
     )
 
+    val translateStringUseCase = TranslateStringUseCase(activeServiceManager)
+
     val translateUseCase = TranslateTextUseCase(
         scope                = appScope,
         settingsState        = configState,
@@ -221,6 +245,18 @@ suspend fun buildDependencies(
         loggerFactory        = loggerFactory
     )
 
+    val fetchInlineDefinitionUseCase = FetchInlineDefinitionUseCase(
+        scope                = appScope,
+        activeServiceManager = activeServiceManager,
+        loggerFactory        = loggerFactory
+    )
+
+    val searchImagesUseCase = SearchImagesUseCase(
+        scope                = appScope,
+        activeServiceManager = activeServiceManager,
+        loggerFactory        = loggerFactory
+    )
+
     // ---- 8. Stores ----
 
     val mainStore = MainStore(
@@ -231,10 +267,11 @@ suspend fun buildDependencies(
         handleTextToSpeechUseCase  = handleTtsUseCase,
         performSpellCheckUseCase   = PerformSpellCheckUseCase(activeServiceManager, loggerFactory),
         selectActiveServiceUseCase = SelectActiveServiceUseCase(
-            activeServices = pluginManager.activeServices,
-            settingsState  = configState,
-            scope          = appScope,
-            loggerFactory  = loggerFactory
+            activeServices       = pluginManager.activeServices,
+            settingsState        = configState,
+            activeServiceManager = activeServiceManager,
+            scope                = appScope,
+            loggerFactory        = loggerFactory
         ),
         translateTextUseCase       = translateUseCase,
         swapLanguagesUseCase       = SwapLanguagesUseCase(),
@@ -242,14 +279,19 @@ suspend fun buildDependencies(
         summarizeUseCase           = summarizeUseCase,
         rewriteUseCase             = rewriteUseCase,
         lookupWordUseCase          = lookupWordUseCase,
+        searchImagesUseCase        = searchImagesUseCase,
+        fetchInlineDefinitionUseCase = fetchInlineDefinitionUseCase,
         documentTranslationUseCase = DocumentTranslationUseCase(activeServiceManager, loggerFactory)
     )
 
     return AppDependencies(
         appScope            = appScope,
         mainStore           = mainStore,
+        translateStringUseCase = translateStringUseCase,
         settingsStore       = settingsStore,
         pluginManager       = pluginManager,
+        appSecrets          = appSecrets,
+        appDataDirectory    = appData,
         iconManager         = iconManager,
         themeManager        = themeManager,
         localizationManager = localizationManager,

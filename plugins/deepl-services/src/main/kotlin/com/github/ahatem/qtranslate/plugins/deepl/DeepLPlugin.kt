@@ -1,6 +1,7 @@
 package com.github.ahatem.qtranslate.plugins.deepl
 
 import com.github.ahatem.qtranslate.api.plugin.Plugin
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.PluginSettings
 import com.github.ahatem.qtranslate.api.plugin.Service
@@ -10,7 +11,6 @@ import com.github.ahatem.qtranslate.api.settings.Setting
 import com.github.ahatem.qtranslate.api.settings.SettingType
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.fold
@@ -21,16 +21,15 @@ import kotlinx.coroutines.runBlocking
 
 class DeepLPlugin : Plugin<DeepLSettings> {
     private lateinit var context: PluginContext
-    private lateinit var httpClient: KtorHttpClient
+    private val httpClient: HttpClient get() = context.http
     private var settings = DeepLSettings()
     private var services: List<Service> = emptyList()
 
     override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
         this.context = context
         settings = DeepLSettings(
-            apiKey = context.getValue(KEY_API_KEY).orEmpty()
-        )
-        httpClient = KtorHttpClient(context)
+            apiKey = context.secrets.get(KEY_API_KEY).orEmpty()
+        )
         settings.updateMode(if (settings.apiKey.isBlank()) DeepLMode.FREE_WEB else DeepLMode.OFFICIAL)
         settings.attach(context) { httpClient }
         return Ok(Unit)
@@ -48,7 +47,7 @@ class DeepLPlugin : Plugin<DeepLSettings> {
 
     override suspend fun onSettingsChanged(settings: DeepLSettings): Result<Unit, ServiceError> {
         val apiKey = settings.apiKey.trim()
-        if (apiKey.isBlank()) context.deleteValue(KEY_API_KEY) else context.storeValue(KEY_API_KEY, apiKey)
+        if (apiKey.isBlank()) context.secrets.remove(KEY_API_KEY) else context.secrets.put(KEY_API_KEY, apiKey)
         this.settings = settings.copy(apiKey = apiKey).also {
             it.updateMode(if (apiKey.isBlank()) DeepLMode.FREE_WEB else DeepLMode.OFFICIAL)
             it.attach(context) { httpClient }
@@ -60,8 +59,7 @@ class DeepLPlugin : Plugin<DeepLSettings> {
         services = emptyList()
     }
 
-    override suspend fun shutdown() {
-        httpClient.close()
+    override suspend fun shutdown() {
     }
 
     override fun getServices(): List<Service> = services
@@ -92,9 +90,9 @@ data class DeepLSettings(
 ) : PluginSettings.Configurable() {
     private var mode: DeepLMode = if (apiKey.isBlank()) DeepLMode.FREE_WEB else DeepLMode.OFFICIAL
     @Transient private var context: PluginContext? = null
-    @Transient private var clientProvider: (() -> KtorHttpClient)? = null
+    @Transient private var clientProvider: (() -> HttpClient)? = null
 
-    internal fun attach(context: PluginContext, clientProvider: () -> KtorHttpClient) {
+    internal fun attach(context: PluginContext, clientProvider: () -> HttpClient) {
         this.context = context
         this.clientProvider = clientProvider
     }

@@ -87,8 +87,13 @@ val prepareManualQaPlugins by tasks.registering(Sync::class) {
     into(manualQaDirectory.map { it.dir("app-data/plugins") })
 
     manualQaPluginProjects.forEach { pluginProject ->
+        // The name is read now, at configuration time, rather than inside rename. A lambda that
+        // reads pluginProject.name runs during execution and so holds on to the Project itself,
+        // which the configuration cache cannot serialize — that made this task fail the build
+        // before it ever launched the app.
+        val stagedName = "${pluginProject.name}-plugin.jar"
         from(pluginProject.tasks.named<Jar>("jar").flatMap { it.archiveFile }) {
-            rename { "${pluginProject.name}-plugin.jar" }
+            rename { stagedName }
         }
     }
     from(externalPluginsDirectory) {
@@ -96,8 +101,42 @@ val prepareManualQaPlugins by tasks.registering(Sync::class) {
     }
 }
 
+/**
+ * Stages the language files and themes beside the plugins.
+ *
+ * The app reads both from its data directory, which for manual QA is `build/manual-qa/app-data`.
+ * Only plugins were being staged, so the directories existed — `LocalizationManager` creates them
+ * — and were empty. The interface-language list came up with nothing in it, and no theme but the
+ * built-in ones was selectable, which made every manual pass on localization or theming
+ * impossible to run against a plugin build.
+ *
+ * Sync rather than Copy so a language file deleted from the repository disappears here too.
+ */
+val prepareManualQaLanguages by tasks.registering(Sync::class) {
+    group = "application"
+    description = "Stages the language files for manual QA."
+    from(rootProject.layout.projectDirectory.dir("languages"))
+    into(manualQaDirectory.map { it.dir("app-data/languages") })
+}
+
+val prepareManualQaThemes by tasks.registering(Sync::class) {
+    group = "application"
+    description = "Stages the bundled themes for manual QA."
+    from(rootProject.layout.projectDirectory.dir("themes"))
+    into(manualQaDirectory.map { it.dir("app-data/themes") })
+}
+
+val prepareManualQaIcons by tasks.registering(Sync::class) {
+    group = "application"
+    description = "Stages the icon sets for manual QA."
+    // Only the sets that are not bundled. Lucide ships inside the module's resources, the way the
+    // English strings do, so the application is never iconless however the data directory looks.
+    from(rootProject.layout.projectDirectory.dir("icons"))
+    into(manualQaDirectory.map { it.dir("app-data/icons") })
+}
+
 val prepareManualQaRuntime by tasks.registering(Delete::class) {
-    dependsOn(prepareManualQaPlugins)
+    dependsOn(prepareManualQaPlugins, prepareManualQaLanguages, prepareManualQaThemes, prepareManualQaIcons)
     // Always inspect freshly staged JARs while retaining the tester's other settings.
     delete(manualQaDirectory.map { it.file("app-data/datastore/plugin_registry.preferences_pb") })
 }

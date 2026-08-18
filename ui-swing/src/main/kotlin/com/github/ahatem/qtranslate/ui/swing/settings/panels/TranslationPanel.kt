@@ -1,13 +1,15 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
 import com.github.ahatem.qtranslate.api.language.LanguageCode
-import com.github.ahatem.qtranslate.api.rewriter.RewriteStyle
-import com.github.ahatem.qtranslate.api.summarizer.SummaryLength
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputSource
+import com.github.ahatem.qtranslate.api.plugin.StandardOptions
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
+import com.github.ahatem.qtranslate.ui.swing.shared.util.ServiceOptionChoice
+import com.github.ahatem.qtranslate.ui.swing.shared.util.choices
 import java.awt.*
 import javax.swing.*
 
@@ -20,32 +22,41 @@ import javax.swing.*
  * 2. **Extra Output** — selects the second output type (backward translation,
  *    summarise, or rewrite), with conditional sub-settings for summary length
  *    and rewrite style.
+ * 3. **Dictionary lookup** — what happens after a translation, and which side of it
+ *    gets looked up.
  *
- * Language-specific settings (pinned languages, translation rules, dictionary
- * auto-lookup) live in [LanguagesPanel].
+ * Language configuration itself (defaults, pinned languages, translation rules)
+ * lives in [LanguagesPanel].
  */
 class TranslationPanel(
     private val store: SettingsStore,
     private val localizationManager: LocalizationManager
 ) : SettingsPanel() {
 
-    private val summaryLengths by lazy {
+    private val dictAutoSources by lazy {
         listOf(
-            SummaryLengthInfo(SummaryLength.SHORT,   localizationManager.getString("settings_translation.summary_length_short")),
-            SummaryLengthInfo(SummaryLength.MEDIUM,  localizationManager.getString("settings_translation.summary_length_medium")),
-            SummaryLengthInfo(SummaryLength.LONG,    localizationManager.getString("settings_translation.summary_length_long"))
+            DictionaryAutoSourceInfo(DictionaryAutoSource.OFF, localizationManager.getString("settings_translation.dict_auto_source_off")),
+            DictionaryAutoSourceInfo(DictionaryAutoSource.TRANSLATED, localizationManager.getString("settings_translation.dict_auto_source_translated")),
+            DictionaryAutoSourceInfo(DictionaryAutoSource.SOURCE, localizationManager.getString("settings_translation.dict_auto_source_source")),
         )
     }
 
-    private val rewriteStyles by lazy {
-        listOf(
-            RewriteStyleInfo(RewriteStyle.FORMAL,     localizationManager.getString("settings_translation.rewrite_style_formal")),
-            RewriteStyleInfo(RewriteStyle.CASUAL,     localizationManager.getString("settings_translation.rewrite_style_casual")),
-            RewriteStyleInfo(RewriteStyle.CONCISE,    localizationManager.getString("settings_translation.rewrite_style_concise")),
-            RewriteStyleInfo(RewriteStyle.DETAILED,   localizationManager.getString("settings_translation.rewrite_style_detailed")),
-            RewriteStyleInfo(RewriteStyle.SIMPLIFIED, localizationManager.getString("settings_translation.rewrite_style_simplified"))
-        )
-    }
+    private lateinit var dictAutoSourceCombo: JComboBox<DictionaryAutoSourceInfo>
+    private lateinit var dictAutoPopupCheck: JCheckBox
+
+    private data class DictionaryAutoSourceInfo(val source: DictionaryAutoSource, val displayName: String)
+
+    /**
+     * The standard vocabularies, not the active service's.
+     *
+     * This dialog sets a preference that outlives any particular service, and it has no live
+     * service to ask — the picker in the extra-output pane is the one that offers what the
+     * service actually declares, including anything a plugin invented. Both write the same id, so
+     * a choice made here still applies when a service offering it is selected.
+     */
+    private val summaryLengths by lazy { StandardOptions.SUMMARY_LENGTH.choices(localizationManager) }
+
+    private val rewriteStyles by lazy { StandardOptions.REWRITE_STYLE.choices(localizationManager) }
 
     private val types by lazy {
         listOf(
@@ -65,9 +76,9 @@ class TranslationPanel(
 
     // Conditional setting rows — shown only for the relevant extra output type
     private lateinit var summaryLengthRow:    JPanel
-    private lateinit var summaryLengthCombo:  JComboBox<SummaryLengthInfo>
+    private lateinit var summaryLengthCombo:  JComboBox<ServiceOptionChoice>
     private lateinit var rewriteStyleRow:     JPanel
-    private lateinit var rewriteStyleCombo:   JComboBox<RewriteStyleInfo>
+    private lateinit var rewriteStyleCombo:   JComboBox<ServiceOptionChoice>
 
     init { buildUI() }
 
@@ -116,11 +127,11 @@ class TranslationPanel(
         addHint(localizationManager.getString("settings_translation.extra_output_hint"))
 
         // Summary length — only visible when type = Summarize
-        summaryLengthCombo = JComboBox<SummaryLengthInfo>(summaryLengths.toTypedArray()).apply {
-            setRenderer { _, value, _, _, _ -> JLabel(value?.displayName ?: "") }
+        summaryLengthCombo = JComboBox<ServiceOptionChoice>(summaryLengths.toTypedArray()).apply {
+            setRenderer { _, value, _, _, _ -> JLabel(value?.label ?: "") }
             addActionListener {
                 if (!isUpdatingFromState) {
-                    val length = (selectedItem as? SummaryLengthInfo)?.length ?: return@addActionListener
+                    val length = (selectedItem as? ServiceOptionChoice)?.id ?: return@addActionListener
                     applyDraft(store) { it.copy(summaryLength = length) }
                 }
             }
@@ -135,11 +146,11 @@ class TranslationPanel(
             .insets(4, 0, 0, 0).add(summaryLengthRow)
 
         // Rewrite style — only visible when type = Rewrite
-        rewriteStyleCombo = JComboBox<RewriteStyleInfo>(rewriteStyles.toTypedArray()).apply {
-            setRenderer { _, value, _, _, _ -> JLabel(value?.displayName ?: "") }
+        rewriteStyleCombo = JComboBox<ServiceOptionChoice>(rewriteStyles.toTypedArray()).apply {
+            setRenderer { _, value, _, _, _ -> JLabel(value?.label ?: "") }
             addActionListener {
                 if (!isUpdatingFromState) {
-                    val style = (selectedItem as? RewriteStyleInfo)?.style ?: return@addActionListener
+                    val style = (selectedItem as? ServiceOptionChoice)?.id ?: return@addActionListener
                     applyDraft(store) { it.copy(rewriteStyle = style) }
                 }
             }
@@ -178,6 +189,30 @@ class TranslationPanel(
         gb.nextRow().add(JLabel(localizationManager.getString("settings_translation.extra_output_source")))
         gb.weightX(1.0).fill(GridBagConstraints.HORIZONTAL).anchor(GridBagConstraints.LINE_START).add(radioPanel)
 
+        // ── Dictionary lookup ────────────────────────────────────────────────
+        // Moved here from Languages. It decides what happens after a translation, which is
+        // behaviour; its localization keys were already `settings_translation.*`, so it had
+        // drifted away from where it was written to belong.
+        addSeparator(localizationManager.getString("settings_languages.dict_auto_lookup_group"))
+        addHint(localizationManager.getString("settings_languages.dict_auto_lookup_hint"))
+
+        dictAutoSourceCombo = JComboBox<DictionaryAutoSourceInfo>(dictAutoSources.toTypedArray()).apply {
+            setRenderer { _, value, _, _, _ -> JLabel(value?.displayName ?: "") }
+            addActionListener {
+                if (!isUpdatingFromState) {
+                    val src = (selectedItem as? DictionaryAutoSourceInfo)?.source ?: return@addActionListener
+                    applyDraft(store) { it.copy(dictionaryAutoSource = src) }
+                }
+            }
+        }
+        addRow(localizationManager.getString("settings_languages.dict_auto_lookup_source"), dictAutoSourceCombo)
+
+        dictAutoPopupCheck = addCheckbox(
+            text = localizationManager.getString("settings_languages.dict_auto_popup_enabled"),
+            selected = true,
+            onChange = { enabled -> applyDraft(store) { it.copy(isDictionaryAutoPopupEnabled = enabled) } }
+        )
+
         finishLayout()
     }
 
@@ -201,10 +236,14 @@ class TranslationPanel(
             useTranslated.isEnabled = extraEnabled
             useInput.isEnabled      = extraEnabled
 
-            summaryLengthCombo.selectedItem = summaryLengths.find { it.length == c.summaryLength }
-            rewriteStyleCombo.selectedItem  = rewriteStyles.find { it.style == c.rewriteStyle }
+            summaryLengthCombo.selectedItem = summaryLengths.find { it.id == c.summaryLength }
+            rewriteStyleCombo.selectedItem  = rewriteStyles.find { it.id == c.rewriteStyle }
             summaryLengthRow.isVisible      = c.extraOutputType == ExtraOutputType.Summarize
             rewriteStyleRow.isVisible       = c.extraOutputType == ExtraOutputType.Rewrite
+
+            dictAutoSourceCombo.selectedItem = dictAutoSources.find { it.source == c.dictionaryAutoSource }
+            dictAutoPopupCheck.isSelected    = c.isDictionaryAutoPopupEnabled
+            dictAutoPopupCheck.isEnabled     = c.dictionaryAutoSource != DictionaryAutoSource.OFF
         }
     }
 
@@ -213,8 +252,6 @@ class TranslationPanel(
     // -------------------------------------------------------------------------
 
     private data class ExtraOutputTypeInfo(val type: ExtraOutputType, val displayName: String)
-    private data class SummaryLengthInfo(val length: SummaryLength, val displayName: String)
-    private data class RewriteStyleInfo(val style: RewriteStyle, val displayName: String)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,12 +1,15 @@
 package com.github.ahatem.qtranslate.plugins.deepl
 
+import com.github.ahatem.qtranslate.plugins.common.FakePluginContext
+
 import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
-import com.github.ahatem.qtranslate.plugins.common.HttpClient
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
+import com.github.ahatem.qtranslate.plugins.common.TextHttpClient
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
@@ -76,7 +79,7 @@ class DeepLTranslatorServiceTest {
             Ok(WEB_SUCCESS),
             Ok(WEB_SUCCESS)
         ))
-        val context = RecordingPluginContext()
+        val context = FakePluginContext()
         val modes = mutableListOf<DeepLMode>()
         val settings = DeepLSettings(apiKey = "expired-key")
         val service = createService(client, settings, modes::add, context)
@@ -157,7 +160,7 @@ class DeepLTranslatorServiceTest {
         client: HttpClient,
         settings: DeepLSettings,
         onModeChanged: (DeepLMode) -> Unit,
-        context: PluginContext = RecordingPluginContext()
+        context: PluginContext = FakePluginContext()
     ) = DeepLTranslatorService(
         context = context,
         httpClient = client,
@@ -178,7 +181,7 @@ class DeepLTranslatorServiceTest {
 
 private class ScriptedHttpClient(
     private val responses: MutableList<Result<String, ServiceError>>
-) : HttpClient {
+) : TextHttpClient() {
     val urls = mutableListOf<String>()
     val headers = mutableListOf<Map<String, String>>()
     val bodies = mutableListOf<String>()
@@ -208,7 +211,7 @@ private class ScriptedHttpClient(
     }
 }
 
-private class EchoWebHttpClient : HttpClient {
+private class EchoWebHttpClient : TextHttpClient() {
     var requestCount = 0
 
     override suspend fun get(
@@ -234,21 +237,3 @@ private class EchoWebHttpClient : HttpClient {
     }
 }
 
-private class RecordingPluginContext : PluginContext {
-    val notifications = mutableListOf<String>()
-    override val logger: Logger = object : Logger {
-        override fun debug(message: String) = Unit
-        override fun info(message: String) = Unit
-        override fun warn(message: String) = Unit
-        override fun error(message: String, error: Throwable?) = Unit
-    }
-    override val scope = CoroutineScope(Dispatchers.Unconfined)
-
-    override suspend fun notify(title: String, body: String, type: NotificationType) {
-        notifications += "$title: $body"
-    }
-    override suspend fun storeValue(key: String, value: String) = Unit
-    override suspend fun getValue(key: String): String? = null
-    override suspend fun deleteValue(key: String) = Unit
-    override fun getPluginDataDirectory(): File = File(System.getProperty("java.io.tmpdir"))
-}

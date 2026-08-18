@@ -1,5 +1,7 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
+import com.formdev.flatlaf.util.UIScale
+import com.github.ahatem.qtranslate.ui.swing.shared.util.clearBorder
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -7,8 +9,8 @@ import com.github.ahatem.qtranslate.api.plugin.Service
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.plugin.*
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
-import com.github.ahatem.qtranslate.core.shared.util.type
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
+import com.github.ahatem.qtranslate.core.shared.util.role
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.util.applyForegroundColorFilter
 import com.github.ahatem.qtranslate.ui.swing.shared.util.GridBag
@@ -26,6 +28,8 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 import javax.swing.filechooser.FileNameExtensionFilter
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconSet
 
 /**
  * Settings panel for installed plugins.
@@ -73,11 +77,15 @@ class PluginsPanel(
     override fun getScrollableTracksViewportHeight() = true   // no vertical outer scroll → actionBar stays fixed
 
     // ── Internal state ────────────────────────────────────────────────────────
+    /** The filter row above the list; its underline is rebuilt on every theme change. */
+    private lateinit var listHeaderPanel: JPanel
+
     private val pluginRows = JPanel()
     private val searchField = JTextField()
     private val categoryCombo = JComboBox(PluginCategory.entries.toTypedArray())
     private val resultCount = JLabel()
-    private val leftPanel: JPanel          // kept for theme-refresh of right border
+    private val leftPanel: JPanel          // holds the divider line; refreshed on theme change
+    private val rightPanel: JPanel         // padded to sit clear of that line
     private val detailScroll: JScrollPane  // scrollable detail area
     private val actionBar = JPanel()       // fixed footer — never scrolls
     private var selectedPlugin: PluginState? = null
@@ -91,6 +99,24 @@ class PluginsPanel(
         }
     }
 
+    /**
+     * Recomputes everything whose side depends on the layout direction.
+     *
+     * The panel is built before the dialog flips it, so the constructor's call to
+     * [refreshLeftBorder] always ran while this was still left-to-right. The divider was baked
+     * onto the list's right edge and nothing revisited it, which left the line on the wrong side
+     * of the list in Arabic. `applyComponentOrientation` sets the property and repaints; it does
+     * not know that a border was derived from it, so the derivation has to run again here.
+     */
+    override fun applyComponentOrientation(orientation: ComponentOrientation) {
+        super.applyComponentOrientation(orientation)
+        // Guarded because a superclass constructor may reach this before the fields it touches
+        // have been assigned.
+        if (!::listHeaderPanel.isInitialized) return
+        refreshLeftBorder()
+        refreshPluginRows()
+    }
+
     init {
         // PluginsPanel overrides the SettingsPanel GridBag layout
         removeAll()
@@ -101,7 +127,7 @@ class PluginsPanel(
             putClientProperty(FlatClientProperties.PLACEHOLDER_TEXT,
                 localizationManager.getString("settings_plugins.search_placeholder"))
             putClientProperty(FlatClientProperties.TEXT_FIELD_LEADING_ICON,
-                themedAppIcon("icons/lucide/search.svg", 15))
+                themedAppIcon(Icons.SEARCH, 15))
             document.addDocumentListener(object : DocumentListener {
                 override fun insertUpdate(e: DocumentEvent?) = refreshPluginRows()
                 override fun removeUpdate(e: DocumentEvent?) = refreshPluginRows()
@@ -123,7 +149,7 @@ class PluginsPanel(
             add(searchField)
             add(categoryCombo)
         }
-        val listHeader = JPanel(BorderLayout(0, 7)).apply {
+        listHeaderPanel = JPanel(BorderLayout(0, 7)).apply {
             border = BorderFactory.createEmptyBorder(10, 10, 8, 10)
             add(filterPanel, BorderLayout.CENTER)
             add(resultCount.apply {
@@ -139,7 +165,7 @@ class PluginsPanel(
 
         val dropHandler = PluginJarTransferHandler()
         val listScroll = JScrollPane(pluginRows).apply {
-            border = null
+            clearBorder()
             viewportBorder = null
             horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBar.unitIncrement = 16
@@ -149,7 +175,7 @@ class PluginsPanel(
 
         val installBtn = JButton(
             localizationManager.getString("settings_plugins.install_plugin"),
-            themedAppIcon("icons/lucide/package.svg", 16)
+            themedAppIcon(Icons.PLUGIN, 16)
         ).apply { addActionListener { onInstall() } }
 
         val browseLink = JLabel(
@@ -169,7 +195,7 @@ class PluginsPanel(
         val dropHint = JLabel(localizationManager.getString("settings_plugins.drop_hint"), SwingConstants.CENTER).apply {
             foreground = UIManager.getColor("Label.disabledForeground")
             font = font.deriveFont(font.size - 1f)
-            icon = themedAppIcon("icons/lucide/package.svg", 13)
+            icon = themedAppIcon(Icons.PLUGIN, 13)
             iconTextGap = 6
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createDashedBorder(
@@ -189,30 +215,31 @@ class PluginsPanel(
         }
 
         leftPanel = JPanel(BorderLayout()).apply {
-            preferredSize = Dimension(320, 0)
+            preferredSize = Dimension(UIScale.scale(320), 0)
             minimumSize   = Dimension(270, 0)
             maximumSize   = Dimension(350, Int.MAX_VALUE)
-            add(listHeader, BorderLayout.NORTH)
+            add(listHeaderPanel, BorderLayout.NORTH)
             add(listScroll, BorderLayout.CENTER)
             add(leftBottom, BorderLayout.SOUTH)
             transferHandler = dropHandler
         }
-        refreshLeftBorder()
         UIManager.addPropertyChangeListener(themeListener)
 
         // ── Right: detail scroll + fixed action bar ───────────────────────────
         // Placeholder empty content — replaced by rebuildDetail()
         detailScroll = JScrollPane().apply {
-            border = null
+            clearBorder()
             viewportBorder = null
             horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
             verticalScrollBar.unitIncrement = 16
         }
 
-        val rightPanel = JPanel(BorderLayout()).apply {
+        rightPanel = JPanel(BorderLayout()).apply {
             add(detailScroll, BorderLayout.CENTER)
             add(actionBar,    BorderLayout.SOUTH)
         }
+
+        refreshLeftBorder()
 
         add(leftPanel,  BorderLayout.LINE_START)
         add(rightPanel, BorderLayout.CENTER)
@@ -234,9 +261,48 @@ class PluginsPanel(
 
     // ── Theme helpers ─────────────────────────────────────────────────────────
 
+    /**
+     * Draws the line dividing the list from the detail panel, and the gap either side of it.
+     *
+     * Rebuilt on every theme change rather than set once, because a border keeps the colour it was
+     * given and a new look and feel does not revisit it — the line would hold the old theme's grey
+     * against the new background. This is the same failure the service selector had.
+     *
+     * `MatteBorder` and `EmptyBorder` both take absolute sides and neither knows about layout
+     * direction, so the sides are picked here: the line goes on the list's trailing edge and the
+     * detail panel's padding on its leading edge, which puts both between the two panels whichever
+     * way round the layout runs.
+     */
     private fun refreshLeftBorder() {
-        leftPanel.border = BorderFactory.createEmptyBorder(0, 0, 0, 10)
+        val line = UIManager.getColor("Component.borderColor") ?: Color.GRAY
+        val leftToRight = componentOrientation.isLeftToRight
+        val gap = UIScale.scale(14)
+
+        // The list's contents carry their own insets, so the line sits at the panel edge.
+        leftPanel.border = BorderFactory.createMatteBorder(
+            0,
+            if (leftToRight) 0 else 1,
+            0,
+            if (leftToRight) 1 else 0,
+            line
+        )
+        rightPanel.border = BorderFactory.createEmptyBorder(
+            0,
+            if (leftToRight) gap else 0,
+            0,
+            if (leftToRight) 0 else gap
+        )
+
+        // Separates the filter row from the list it filters. Without it the search box, the
+        // category picker and the result count read as the first entry in the list rather than as
+        // the controls above it.
+        listHeaderPanel.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 1, 0, line),
+            BorderFactory.createEmptyBorder(10, 10, 8, 10)
+        )
+
         leftPanel.revalidate()
+        leftPanel.repaint()
     }
 
     private fun refreshActionBarBorder() {
@@ -302,7 +368,7 @@ class PluginsPanel(
             }
         }.apply {
             maximumSize = Dimension(Int.MAX_VALUE, 62)
-            preferredSize = Dimension(290, 62)
+            preferredSize = Dimension(UIScale.scale(290), UIScale.scale(62))
             isOpaque = false
             border = BorderFactory.createEmptyBorder(7, 9, 7, 7)
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -314,9 +380,9 @@ class PluginsPanel(
             })
         }
         val foreground = if (selected) UIManager.getColor("List.selectionForeground") else UIManager.getColor("Label.foreground")
-        val serviceId = plugin.services.firstOrNull()?.id
+        val serviceId = plugin.services.firstOrNull()?.let(plugin::serviceIdOf)
         val icon = plugin.manifest.icon?.let { path -> serviceId?.let { iconManager.getIcon(it, path, 24, 24) } }
-            ?: themedAppIcon("icons/lucide/package.svg", 24)
+            ?: themedAppIcon(Icons.PLUGIN, 24)
         val categories = PluginPanelModel.categories(plugin).joinToString(" · ") { categoryName(it) }
         val text = JPanel().apply {
             layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -329,7 +395,20 @@ class PluginsPanel(
             add(JLabel("v${plugin.manifest.version} · $categories").apply {
                 font = font.deriveFont(font.size - 1f)
                 this.foreground = if (selected) foreground else UIManager.getColor("Label.disabledForeground")
-                border = BorderFactory.createEmptyBorder(3, 32, 0, 0)
+                // Indented to sit under the plugin's name rather than under its icon. That is a
+                // leading-edge inset, so it swaps sides with the layout: written absolutely, the
+                // line hung off the wrong edge in a right-to-left interface and stopped lining up
+                // with the name it belongs to.
+                //
+                // The direction is read from the panel, not from this label. A component that has
+                // not been added to anything yet reports ComponentOrientation.UNKNOWN, whose
+                // isLeftToRight is true, so asking the label always answered left-to-right and the
+                // indent never moved.
+                border = if (this@PluginsPanel.componentOrientation.isLeftToRight) {
+                    BorderFactory.createEmptyBorder(3, NAME_INDENT, 0, 0)
+                } else {
+                    BorderFactory.createEmptyBorder(3, 0, 0, NAME_INDENT)
+                }
             })
         }
         val controls = JPanel(FlowLayout(FlowLayout.TRAILING, 2, 0)).apply {
@@ -347,7 +426,7 @@ class PluginsPanel(
                         }
                     }
                 })
-                add(JButton(themedAppIcon("icons/lucide/settings.svg", 15)).apply {
+                add(JButton(themedAppIcon(Icons.SETTINGS, 15)).apply {
                     putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
                     toolTipText = localizationManager.getString("settings_plugins.btn_configure")
                     addActionListener { onConfigure(plugin) }
@@ -375,7 +454,7 @@ class PluginsPanel(
     )
 
     private fun themedAppIcon(path: String, size: Int): Icon =
-        FlatSVGIcon(path, size, size, javaClass.classLoader).applyForegroundColorFilter()
+        IconSet.load(path, size, size).applyForegroundColorFilter()
 
     // ── Detail rebuild ────────────────────────────────────────────────────────
 
@@ -402,11 +481,11 @@ class PluginsPanel(
 
         // ─ Plugin icon (small, left of name) + name + status badge ───────────
         val pluginIconPath = plugin.manifest.icon
-        val serviceId      = plugin.services.firstOrNull()?.id
+        val serviceId      = plugin.services.firstOrNull()?.let(plugin::serviceIdOf)
         val headerIcon: Icon = if (pluginIconPath != null && serviceId != null)
             iconManager.getIcon(serviceId, pluginIconPath, 24, 24)
         else
-            themedAppIcon("icons/lucide/package.svg", 24)
+            themedAppIcon(Icons.PLUGIN, 24)
 
         val nameLabel = JLabel(plugin.manifest.name).apply {
             font = font.deriveFont(Font.BOLD, font.size + 2f)
@@ -481,7 +560,7 @@ class PluginsPanel(
                 layout = BoxLayout(this, BoxLayout.Y_AXIS)
                 isOpaque = false
                 plugin.services.forEach { svc ->
-                    add(buildServiceLine(svc))
+                    add(buildServiceLine(plugin.serviceIdOf(svc), svc))
                 }
             }
             g.nextRow().spanLine().weightX(1.0).fill(GridBagConstraints.HORIZONTAL)
@@ -538,7 +617,7 @@ class PluginsPanel(
                 insets = Insets(6, 0, 6, 0)
             }
             val pkgIcon = runCatching {
-                val ico = FlatSVGIcon("icons/lucide/package.svg", 36, 36, javaClass.classLoader)
+                val ico = IconSet.load(Icons.PLUGIN, 36, 36)
                 ico.colorFilter = FlatSVGIcon.ColorFilter { UIManager.getColor("Label.disabledForeground") ?: Color.GRAY }
                 ico as Icon
             }.getOrNull()
@@ -658,34 +737,36 @@ class PluginsPanel(
         }
     }
 
-    private fun buildServiceLine(service: Service): JComponent = JPanel(BorderLayout(8, 0)).apply {
+    private fun buildServiceLine(serviceId: String, service: Service): JComponent = JPanel(BorderLayout(8, 0)).apply {
         isOpaque = false
         alignmentX = Component.LEFT_ALIGNMENT
         maximumSize = Dimension(Int.MAX_VALUE, 27)
         border = BorderFactory.createEmptyBorder(3, 0, 3, 0)
-        val serviceIcon = service.iconPath?.let { iconManager.getIcon(service.id, it, 15, 15) }
-            ?: service.type?.let(::capabilityIcon)
-            ?: themedAppIcon("icons/lucide/package.svg", 15)
+        val serviceIcon = service.iconPath?.let { iconManager.getIcon(serviceId, it, 15, 15) }
+            ?: service.role?.let(::roleIcon)
+            ?: themedAppIcon(Icons.PLUGIN, 15)
         add(JLabel(service.name, serviceIcon, SwingConstants.LEADING).apply {
             font = font.deriveFont(Font.BOLD, font.size - 0.5f)
             iconTextGap = 7
         }, BorderLayout.CENTER)
-        val typeName = service.type?.readableName(localizationManager)
+        val typeName = service.role?.readableName(localizationManager)
         if (typeName != null && typeName != service.name) add(JLabel(typeName).apply {
             foreground = UIManager.getColor("Label.disabledForeground")
             font = font.deriveFont(font.size - 1f)
         }, BorderLayout.LINE_END)
     }
 
-    private fun capabilityIcon(type: ServiceType): Icon = themedAppIcon(
+    private fun roleIcon(type: ServiceRole): Icon = themedAppIcon(
         when (type) {
-            ServiceType.TRANSLATOR -> "icons/lucide/languages.svg"
-            ServiceType.TTS -> "icons/lucide/volume.svg"
-            ServiceType.OCR -> "icons/lucide/scan-text.svg"
-            ServiceType.SPELL_CHECKER -> "icons/lucide/check.svg"
-            ServiceType.DICTIONARY -> "icons/lucide/book-open.svg"
-            ServiceType.SUMMARIZER -> "icons/lucide/text-align-start.svg"
-            ServiceType.REWRITER -> "icons/lucide/pen-line.svg"
+            ServiceRole.TRANSLATOR -> Icons.TRANSLATE
+            ServiceRole.TTS -> Icons.SPEAK
+            ServiceRole.OCR -> Icons.OCR
+            ServiceRole.SPELL_CHECKER -> Icons.CHECK
+            ServiceRole.DICTIONARY -> Icons.DICTIONARY
+            ServiceRole.SUMMARIZER -> Icons.SUMMARIZE
+            ServiceRole.REWRITER -> Icons.EDIT
+            // No service declares this yet; the generic icon is a placeholder until one does.
+            ServiceRole.IMAGE_SEARCH -> Icons.SEARCH
         },
         15
     )
@@ -704,7 +785,7 @@ class PluginsPanel(
             wrapStyleWord = true
             rows = 1
             columns = 18
-            border = null
+            clearBorder()
             font = UIManager.getFont("Label.font").deriveFont(Font.BOLD)
             foreground = UIManager.getColor("Label.foreground")
             toolTipText = tooltip
@@ -812,81 +893,23 @@ class PluginsPanel(
             return true
         }
     }
-}
 
-// ── WrapLayout ────────────────────────────────────────────────────────────────
-
-/**
- * A [FlowLayout] subclass that correctly reports [preferredLayoutSize] when items
- * wrap to multiple rows.
- *
- * Standard [FlowLayout.preferredLayoutSize] always returns a single-row height,
- * so its containing [GridBagLayout] row never grows tall enough to show wrapped
- * items — they simply disappear below the allocated space.
- *
- * This class recalculates preferred height by simulating the actual row breaks
- * for the current container width, matching what the layout engine will actually
- * produce at paint time.
- */
-private class WrapLayout(
-    align: Int = LEADING,
-    hgap: Int  = 5,
-    vgap: Int  = 5
-) : FlowLayout(align, hgap, vgap) {
-
-    override fun preferredLayoutSize(target: Container): Dimension =
-        computeSize(target, preferred = true)
-
-    override fun minimumLayoutSize(target: Container): Dimension =
-        computeSize(target, preferred = false).also { it.width -= (hgap + 1) }
-
-    private fun computeSize(target: Container, preferred: Boolean): Dimension {
-        synchronized(target.treeLock) {
-            // Use the actual current width if available; fall back to "infinite"
-            // on the very first pass (before the component has been sized).
-            val containerWidth = target.size.width.takeIf { it > 0 } ?: Int.MAX_VALUE
-            val insets = target.insets
-            val horizontalInsets = insets.left + insets.right + hgap * 2
-            val maxRowWidth = containerWidth - horizontalInsets
-
-            var rowWidth  = 0
-            var rowHeight = 0
-            var totalWidth  = 0
-            var totalHeight = insets.top + insets.bottom + vgap * 2
-
-            for (i in 0 until target.componentCount) {
-                val m = target.getComponent(i)
-                if (!m.isVisible) continue
-                val d = if (preferred) m.preferredSize else m.minimumSize
-                // Would this component exceed the row limit?
-                if (rowWidth > 0 && rowWidth + hgap + d.width > maxRowWidth) {
-                    totalWidth   = maxOf(totalWidth, rowWidth)
-                    totalHeight += rowHeight + vgap
-                    rowWidth  = 0
-                    rowHeight = 0
-                }
-                if (rowWidth > 0) rowWidth += hgap
-                rowWidth  += d.width
-                rowHeight  = maxOf(rowHeight, d.height)
-            }
-            // Flush the last row
-            totalWidth   = maxOf(totalWidth, rowWidth)
-            totalHeight += rowHeight
-
-            return Dimension(totalWidth + horizontalInsets, totalHeight)
-        }
+    private companion object {
+        /** Aligns a plugin's version line under its name rather than under its icon. */
+        const val NAME_INDENT = 32
     }
 }
 
 // ── Extension ─────────────────────────────────────────────────────────────────
 
-fun ServiceType.readableName(localizationManager: LocalizationManager): String =
+fun ServiceRole.readableName(localizationManager: LocalizationManager): String =
     when (this) {
-        ServiceType.TRANSLATOR    -> localizationManager.getString("settings_services.translator").removeSuffix(":")
-        ServiceType.TTS           -> localizationManager.getString("settings_services.tts").removeSuffix(":")
-        ServiceType.OCR           -> localizationManager.getString("settings_services.ocr").removeSuffix(":")
-        ServiceType.SPELL_CHECKER -> localizationManager.getString("settings_services.spell_checker").removeSuffix(":")
-        ServiceType.DICTIONARY    -> localizationManager.getString("settings_services.dictionary").removeSuffix(":")
-        ServiceType.SUMMARIZER    -> localizationManager.getString("settings_services.summarizer").removeSuffix(":")
-        ServiceType.REWRITER      -> localizationManager.getString("settings_services.rewriter").removeSuffix(":")
+        ServiceRole.TRANSLATOR    -> localizationManager.getString("settings_services.translator").removeSuffix(":")
+        ServiceRole.TTS           -> localizationManager.getString("settings_services.tts").removeSuffix(":")
+        ServiceRole.OCR           -> localizationManager.getString("settings_services.ocr").removeSuffix(":")
+        ServiceRole.SPELL_CHECKER -> localizationManager.getString("settings_services.spell_checker").removeSuffix(":")
+        ServiceRole.DICTIONARY    -> localizationManager.getString("settings_services.dictionary").removeSuffix(":")
+        ServiceRole.SUMMARIZER    -> localizationManager.getString("settings_services.summarizer").removeSuffix(":")
+        ServiceRole.REWRITER      -> localizationManager.getString("settings_services.rewriter").removeSuffix(":")
+        ServiceRole.IMAGE_SEARCH  -> localizationManager.getString("settings_services.image_search").removeSuffix(":")
     }

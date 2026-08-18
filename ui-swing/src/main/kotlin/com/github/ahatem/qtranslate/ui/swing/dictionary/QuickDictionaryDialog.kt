@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.dictionary
 
+import com.formdev.flatlaf.util.UIScale
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import com.github.ahatem.qtranslate.core.settings.data.DictionaryAutoSource
@@ -9,12 +10,17 @@ import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.util.*
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ComponentMover
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ComponentResizer
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.FloatingPopupBehavior
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.InlineLoadingBar
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import java.awt.*
 import java.awt.event.*
 import javax.swing.*
 import javax.swing.border.EmptyBorder
-import kotlin.math.abs
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ServiceInfoRenderer
+import com.github.ahatem.qtranslate.ui.swing.shared.util.connectedScreenBounds
+import com.github.ahatem.qtranslate.ui.swing.shared.util.isPositionReachable
 
 /**
  * Floating, always-on-top dictionary popup.
@@ -29,41 +35,56 @@ import kotlin.math.abs
  * - Pin button to keep it visible
  */
 class QuickDictionaryDialog(
+    /**
+     * The main window, used only to position against. It is deliberately NOT this dialog's
+     * owner -- see FloatingPopupBehavior for why a tray application must not own these.
+     */
     private val owner: Frame,
     private val iconManager: IconManager
-) : JDialog(owner, ModalityType.MODELESS), Renderable<QuickDictionaryDialogState> {
+) : JDialog(null as Frame?, ModalityType.MODELESS), Renderable<QuickDictionaryDialogState> {
 
     private companion object {
         const val RESIZE_HANDLE_SIZE = 8
         const val PINNED_BORDER_WIDTH = 4
         const val FADE_MS = 160
         const val FADE_STEPS = 8
-        const val IDLE_HIDE_MS = 8000
         const val RESIZE_SAVE_DEBOUNCE_MS = 180
     }
 
     // Theme colors
-    private val borderColor = UIManager.getColor("Component.borderColor")
-    private val accentBorderColor = UIManager.getColor("Component.focusedBorderColor")
-        ?: UIManager.getColor("Component.accentColor")
-        ?: borderColor
-    private val toolbarSelectedBg = UIManager.getColor("Button.toolbar.selectedBackground")
-    private val toolbarSelectedFg = UIManager.getColor("Button.toolbar.selectedForeground")
-    private val labelFg = UIManager.getColor("Label.foreground")
-    private val disabledFg = UIManager.getColor("Label.disabledForeground")
+    // Accessors rather than fields. This dialog is built once and lives for the whole session, so
+    // a colour captured here would be the one the theme had at startup, and every border and
+    // dimmed label would keep it after a theme switch. See refreshTheme.
+    private val borderColor: Color? get() = UIManager.getColor("Component.borderColor")
+    private val accentBorderColor: Color?
+        get() = UIManager.getColor("Component.focusedBorderColor")
+            ?: UIManager.getColor("Component.accentColor")
+            ?: borderColor
+    private val toolbarSelectedBg: Color? get() = UIManager.getColor("Button.toolbar.selectedBackground")
+    private val toolbarSelectedFg: Color? get() = UIManager.getColor("Button.toolbar.selectedForeground")
+    private val labelFg: Color? get() = UIManager.getColor("Label.foreground")
+    private val disabledFg: Color? get() = UIManager.getColor("Label.disabledForeground")
+
+    /** Held so it can be detached; also the reason this is not an inline lambda. */
+    private val themeListener = java.beans.PropertyChangeListener { event ->
+        if (event.propertyName == "lookAndFeel") SwingUtilities.invokeLater { refreshTheme() }
+    }
+
+    /** The header, kept so its divider can be recoloured when the theme changes. */
+    private var headerPanel: JPanel? = null
 
     // Header widgets
     private val titleLabel = JLabel("").apply {
         putClientProperty("FlatLaf.styleClass", "h4")
     }
-    private val pinButton = createButtonWithIcon(iconManager, "icons/lucide/pin.svg", 14)
-    private val closeButton = createButtonWithIcon(iconManager, "icons/lucide/close.svg", 16)
+    private val pinButton = createButtonWithIcon(iconManager, Icons.PIN, 14)
+    private val closeButton = createButtonWithIcon(iconManager, Icons.CLOSE, 16)
 
     // Auto-source cycling button — mirrors DictionaryPanel
     private val activeLinkIcon: FlatSVGIcon =
-        (iconManager.getIcon("icons/lucide/link-2.svg", 13, 13) as FlatSVGIcon).applyForegroundColorFilter()
+        (iconManager.getIcon(Icons.NETWORK, 13, 13) as FlatSVGIcon).applyForegroundColorFilter()
     private val offUnlinkIcon: FlatSVGIcon =
-        (iconManager.getIcon("icons/lucide/unlink.svg", 13, 13) as FlatSVGIcon).apply {
+        (iconManager.getIcon(Icons.UNPIN, 13, 13) as FlatSVGIcon).apply {
             colorFilter = FlatSVGIcon.ColorFilter { UIManager.getColor("Label.disabledForeground") }
         }
     private val autoSourceButton = JButton().apply {
@@ -85,7 +106,7 @@ class QuickDictionaryDialog(
     private var updatingFromState = false
     private val serviceCombo = JComboBox<ServiceInfo>().apply {
         putClientProperty("JComboBox.isTableCellEditor", true)
-        setRenderer { _, value, _, _, _ -> JLabel(value?.name ?: "") }
+        renderer = ServiceInfoRenderer(iconManager)
     }
     private val serviceRow = JPanel(BorderLayout(6, 0)).apply {
         isOpaque = false
@@ -107,7 +128,8 @@ class QuickDictionaryDialog(
     }
 
     // Results
-    private val resultView = DictionaryResultView()
+    private val loadingBar = InlineLoadingBar()
+    private val resultView = DictionaryResultView(iconManager)
     private val cardPanel = JPanel(CardLayout())
 
     // Word chips
@@ -116,30 +138,54 @@ class QuickDictionaryDialog(
         currentState?.onLookup?.invoke(word)
     }
 
+    /**
+     * Window flags, fading, idle-hide, pointer presence — shared with the other two popups.
+     *
+     * Declared ahead of [isPinned], whose setter writes into it: Kotlin initialises properties in
+     * declaration order, and the other way round leaves a window in which assigning isPinned
+     * would dereference null.
+     */
+    private val popup = FloatingPopupBehavior(
+        window = this,
+        owner = owner,
+        minimumSize = Dimension(PopupSizing.minWidth(), UIScale.scale(240)),
+        pinnedBorderWidth = PINNED_BORDER_WIDTH,
+        resizeHandle = RESIZE_HANDLE_SIZE
+    ).apply {
+        configureIdleHide(
+            delayMs = { (currentState?.config?.idleTimeoutSeconds ?: 8) * 1000 },
+            fadeMs = FADE_MS,
+            restingOpacity = { (100f - (currentState?.config?.transparencyPercentage ?: 0)) / 100f },
+            // Dismissed through the store, so the application does not go on believing the popup
+            // is open after it has gone.
+            onExpired = { currentState?.onClose?.invoke() }
+        )
+    }
+
     // State
+    /**
+     * Mirrored into the popup helper on every change.
+     *
+     * The helper's idle-hide and pointer tracking both consult it, and two copies of "is this
+     * pinned" that drift apart mean a pinned popup that closes itself anyway.
+     */
     private var isPinned = false
+        set(value) {
+            field = value
+            popup.isPinned = value
+        }
     private var wasManuallyMoved = false
     private var isDragging = false
     private var isResizing = false
     private var currentState: QuickDictionaryDialogState? = null
 
     // Timers
-    private var fadeTimer: Timer? = null
-    private var idleHideTimer: Timer? = null
     private var resizeSaveTimer: Timer? = null
-    private var mouseExitDebounceTimer: Timer? = null
-
-    // Mouse over detection
-    private var awtMouseListener: AWTEventListener? = null
-    private var isMouseOver = false
 
     private val topPanel: JPanel
     private val mainPanel: JPanel
 
     init {
-        isUndecorated = true
-        isAlwaysOnTop = true
-        minimumSize = Dimension(320, 200)
         focusableWindowState = false
 
         val wrapperPanel = JPanel(BorderLayout()).apply {
@@ -165,10 +211,18 @@ class QuickDictionaryDialog(
 
         // Restructure: top=header, center=body (search+chips+results)
         mainPanel.removeAll()
-        mainPanel.add(topPanel, BorderLayout.NORTH)
+        mainPanel.add(
+            JPanel(BorderLayout()).apply {
+                isOpaque = false
+                add(topPanel, BorderLayout.CENTER)
+                add(loadingBar, BorderLayout.SOUTH)
+            },
+            BorderLayout.NORTH
+        )
         mainPanel.add(contentArea, BorderLayout.CENTER)
 
         setupWindowBehavior()
+        UIManager.addPropertyChangeListener(themeListener)
         updatePinButtonStyle(false)
     }
 
@@ -197,10 +251,24 @@ class QuickDictionaryDialog(
         if (!isVisible) return
 
         val pinChanged = this.isPinned != state.isPinned
+        val retriggered = lastTriggerCount != state.triggerCount
+        lastTriggerCount = state.triggerCount
+
         currentState = state
         updateContent(state)
         if (pinChanged) handlePinState(state)
+
+        // The user asked for this popup again while it was already open. Refresh in place and
+        // give them the full countdown back — but only on a real trigger, since render runs for
+        // every unrelated state change and resetting on all of them would disable auto-hide.
+        if (retriggered) {
+            fadeTo(1f, FADE_MS)
+            noteUserActivity()
+        }
     }
+
+    /** The trigger this popup last reacted to; see [QuickDictionaryDialogState.triggerCount]. */
+    private var lastTriggerCount = 0
 
     private fun updateContent(state: QuickDictionaryDialogState) {
         isPinned = state.isPinned
@@ -263,9 +331,13 @@ class QuickDictionaryDialog(
             updatingFromState = false
         }
 
-        // Card
+        // Definitions already on screen stay there while the next lookup runs, with the hairline
+        // bar carrying the "working" signal instead. Swapping to the loading card would take away
+        // what the reader was in the middle of and give them a spinner in exchange.
+        loadingBar.isLoading = state.isLoading
+
         val card = when {
-            state.isLoading -> "loading"
+            state.isLoading && state.entries.isEmpty() -> "loading"
             state.entries.isNotEmpty() -> "results"
             else -> "hint"
         }
@@ -279,9 +351,14 @@ class QuickDictionaryDialog(
                     chips.clear()
                     searchField.text = word
                     state.onLookup(word)
-                }
+                },
+                listenTooltip = state.strings.listenTooltip,
+                stopTooltip = state.strings.stopListeningTooltip,
+                onListen = state.onListen,
+                onStopListening = state.onStopListening
             )
         }
+        resultView.setSpeaking(state.isTtsPlaying)
     }
 
     fun setSearchWord(word: String) {
@@ -352,18 +429,23 @@ class QuickDictionaryDialog(
 
         return JPanel(BorderLayout(8, 0)).apply {
             isOpaque = false
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, borderColor),
-                EmptyBorder(6, 10, 6, 6)
-            )
+            border = headerBorder()
             add(titleLabel, BorderLayout.CENTER)
             add(rightPanel, BorderLayout.LINE_END)
+            headerPanel = this
         }
     }
 
     private fun createSearchPanel(): JPanel {
         searchField.addActionListener { triggerLookup() }
         lookupButton.addActionListener { triggerLookup() }
+
+        // Typing is the clearest possible sign the popup is still wanted, and it used to count
+        // for nothing: with the pointer parked outside, a word typed slowly disappeared under the
+        // person typing it.
+        searchField.addKeyListener(object : KeyAdapter() {
+            override fun keyPressed(e: KeyEvent) = noteUserActivity()
+        })
         serviceCombo.addActionListener {
             if (!updatingFromState) {
                 val selected = serviceCombo.selectedItem as? ServiceInfo ?: return@addActionListener
@@ -451,10 +533,15 @@ class QuickDictionaryDialog(
         // set initial opacity from config before making visible (no animation on first show)
         val pct = currentState?.config?.transparencyPercentage ?: 0
         opacity = (100f - pct) / 100f
-        isVisible = true
+        // Set before showing. Changing focusableWindowState on a window already on screen makes
+        // AWT discard the native peer and build a new one, which flickers and can drop the focus
+        // the popup has just taken.
         focusableWindowState = true
+        isVisible = true
         installAwtMouseListener()
-        if (!isPinned) startIdleHide()
+        // Not if the pointer is already inside it -- the popup opens at the cursor, so it often
+        // is, and starting the countdown then hides the popup out from under the reader.
+        if (!isPinned && !popup.isPointerOver) startIdleHide()
     }
 
     private fun hideDialog() {
@@ -465,104 +552,48 @@ class QuickDictionaryDialog(
         focusableWindowState = false
         val pos = location
         val sz = size
-        currentState?.onSavePosition?.invoke(Position(pos.x.coerceAtLeast(0), pos.y.coerceAtLeast(0)))
+        currentState?.onSavePosition?.invoke(Position(pos.x, pos.y))
         currentState?.onSaveSize?.invoke(Size(sz.width, sz.height))
     }
 
-    private fun startIdleHide() {
-        idleHideTimer?.stop()
-        val idleMs = (currentState?.config?.idleTimeoutSeconds ?: 8) * 1000
-        idleHideTimer = Timer(idleMs) { event ->
-            if (!isPinned) {
-                fadeTo(0f, FADE_MS)
-                Timer(FADE_MS + 20) {
-                    if (!isPinned) currentState?.onClose?.invoke()
-                    (it.source as Timer).stop()
-                }.apply { isRepeats = false; start() }
-            }
-            (event.source as Timer).stop()
-        }.apply { isRepeats = false; start() }
+    private fun startIdleHide() = popup.startIdleHide()
+
+    private fun stopIdleHide() = popup.stopIdleHide()
+
+    /** Restarts the idle countdown because the user is doing something — typing counts. */
+    private fun noteUserActivity() = popup.noteActivity()
+
+    private fun headerBorder() = BorderFactory.createCompoundBorder(
+        BorderFactory.createMatteBorder(0, 0, 1, 0, borderColor),
+        EmptyBorder(6, 10, 6, 6)
+    )
+
+    /**
+     * Re-applies every colour this dialog painted itself with.
+     *
+     * A border keeps whatever colour it was handed, and a new look and feel does not revisit it,
+     * so without this the popup goes on showing the previous theme's divider and dimmed text
+     * against the new background — the same fault the service selector had.
+     */
+    private fun refreshTheme() {
+        headerPanel?.border = headerBorder()
+        hintLabel.foreground = disabledFg
+        loadingLabel.foreground = disabledFg
+        updatePinButtonStyle(isPinned)
+        revalidate()
+        repaint()
     }
 
-    private fun stopIdleHide() {
-        idleHideTimer?.stop()
-    }
-
-    private fun fadeTo(targetOpacity: Float, durationMs: Int) {
-        // Always cancel any in-progress fade and restart — both callers run on EDT
-        // so there is no threading race to protect against. The old fadeLock guard
-        // was placed before fadeTimer?.stop(), which caused the fade-back-to-
-        // transparency to be silently dropped whenever a fade-to-opaque was still
-        // animating (e.g. quick mouse-in then mouse-out within 160 ms).
-        fadeTimer?.stop()
-        val start = opacity
-        val steps = FADE_STEPS.coerceAtLeast(1)
-        val stepDelay = (durationMs / steps).coerceAtLeast(10)
-        var step = 0
-        fadeTimer = Timer(stepDelay) {
-            step++
-            val t = step.toFloat() / steps
-            val value = start + (targetOpacity - start) * t
-            if (abs(opacity - value) > 0.01f) opacity = value
-            if (step >= steps) (it.source as Timer).stop()
-        }.apply { isRepeats = true; start() }
-    }
+    private fun fadeTo(targetOpacity: Float, durationMs: Int) = popup.fadeTo(targetOpacity, durationMs)
 
     // -----------------------------------------------------------------------
     // Mouse over detection
     // -----------------------------------------------------------------------
 
-    private fun installAwtMouseListener() {
-        if (awtMouseListener != null) return
-        awtMouseListener = AWTEventListener { ev ->
-            val me = ev as? MouseEvent ?: return@AWTEventListener
-            if (me.id != MouseEvent.MOUSE_MOVED &&
-                me.id != MouseEvent.MOUSE_ENTERED &&
-                me.id != MouseEvent.MOUSE_EXITED) return@AWTEventListener
-            SwingUtilities.invokeLater {
-                if (!isVisible) return@invokeLater
-                val p = MouseInfo.getPointerInfo()?.location ?: return@invokeLater
-                // Use dialog screen bounds directly — more reliable than coordinate conversion
-                // and avoids edge-case oscillation from rounding in convertPointFromScreen.
-                val over = bounds.contains(p)
-                if (over == isMouseOver) return@invokeLater  // no state change — do nothing
+    private fun installAwtMouseListener() = popup.installPointerTracking()
 
-                isMouseOver = over
-                if (over) {
-                    // Mouse entered: cancel any pending exit-debounce, stop idle, fade to full opacity.
-                    mouseExitDebounceTimer?.stop()
-                    stopIdleHide()
-                    fadeTo(1f, FADE_MS)
-                } else {
-                    // Mouse exited: debounce before fading so that brief exits at the window
-                    // border (mouse wiggle) don't cause flickering. If the mouse comes back
-                    // within the debounce window the timer is cancelled by the enter-branch above.
-                    mouseExitDebounceTimer?.stop()
-                    mouseExitDebounceTimer = Timer(120) {
-                        if (!isMouseOver && !isPinned) {
-                            applyTransparency()
-                            startIdleHide()
-                        }
-                        (it.source as Timer).stop()
-                    }.apply { isRepeats = false; start() }
-                }
-            }
-        }
-        Toolkit.getDefaultToolkit().addAWTEventListener(
-            awtMouseListener,
-            AWTEvent.MOUSE_MOTION_EVENT_MASK or AWTEvent.MOUSE_EVENT_MASK
-        )
-    }
+    private fun uninstallAwtMouseListener() = popup.uninstallPointerTracking()
 
-    private fun uninstallAwtMouseListener() {
-        mouseExitDebounceTimer?.stop()
-        mouseExitDebounceTimer = null
-        awtMouseListener?.let {
-            Toolkit.getDefaultToolkit().removeAWTEventListener(it)
-            awtMouseListener = null
-            isMouseOver = false
-        }
-    }
 
     // -----------------------------------------------------------------------
     // Size / position
@@ -580,7 +611,12 @@ class QuickDictionaryDialog(
         }
         when {
             !config.autoPositionEnabled -> {
-                location = config.lastKnownPosition.toPoint()
+                val saved = config.lastKnownPosition
+                if (isPositionReachable(Rectangle(saved.x, saved.y, width, height), connectedScreenBounds())) {
+                    location = saved.toPoint()
+                } else {
+                    setLocationRelativeTo(owner)
+                }
             }
             !config.positionNearMouse -> {
                 // Auto-triggered from translation — position adjacent to the owner window
@@ -658,7 +694,7 @@ class QuickDictionaryDialog(
                 isDragging = false
                 val pos = location
                 currentState?.onSavePosition?.invoke(
-                    Position(pos.x.coerceAtLeast(0), pos.y.coerceAtLeast(0))
+                    Position(pos.x, pos.y)
                 )
                 if (!isPinned) startIdleHide()
             }
@@ -675,7 +711,10 @@ class QuickDictionaryDialog(
 
         addWindowListener(object : WindowAdapter() {
             override fun windowClosing(e: WindowEvent) { currentState?.onClose?.invoke() }
-            override fun windowClosed(e: WindowEvent) { uninstallAwtMouseListener() }
+            override fun windowClosed(e: WindowEvent) {
+                uninstallAwtMouseListener()
+                UIManager.removePropertyChangeListener(themeListener)
+            }
         })
 
         rootPane.registerKeyboardAction(

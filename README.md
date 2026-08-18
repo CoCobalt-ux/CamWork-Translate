@@ -7,6 +7,7 @@
 **The translation tool that Questsoft abandoned. Rebuilt from scratch. Built to last.**
 
 [![Release](https://img.shields.io/github/v/release/ahatem/QTranslate?style=flat-square&color=4A90D9&label=latest)](https://github.com/ahatem/QTranslate/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/ahatem/QTranslate/total?style=flat-square&color=4A90D9&label=downloads)](https://github.com/ahatem/QTranslate/releases)
 [![License](https://img.shields.io/github/license/ahatem/QTranslate?style=flat-square)](LICENSE)
 [![Build](https://img.shields.io/github/actions/workflow/status/ahatem/QTranslate/ci.yml?branch=develop&style=flat-square&label=build)](https://github.com/ahatem/QTranslate/actions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
@@ -63,6 +64,16 @@ For longer work: open the main window, type or paste, translate. Switch engines 
 <sub><b>Settings — Services &amp; Presets</b> — configure engines, presets, and API keys</sub>
 </td>
 </tr>
+<tr>
+<td align="center" width="50%">
+<img src="docs/images/screenshot-side-by-side.png" alt="Side-by-side layout" width="340"><br>
+<sub><b>Side-by-side layout</b> — source and translation in parallel columns</sub>
+</td>
+<td align="center" width="50%">
+<img src="docs/images/screenshot-document.png" alt="Document translation" width="340"><br>
+<sub><b>Document translation</b> — DOCX, PDF, TXT, SRT and VTT, structure preserved</sub>
+</td>
+</tr>
 </table>
 </div>
 
@@ -75,6 +86,7 @@ For longer work: open the main window, type or paste, translate. Switch engines 
 | | |
 |---|---|
 | **Quick Translate popup** | `Ctrl+Q` on any selected text — popup with result, no main window needed |
+| **Image search** | `Ctrl+Shift+Q` on any selected word — a grid of reference pictures from Wikimedia Commons, enlarged in place, licence shown and source page a click away. For the words a definition alone does not settle |
 | **Instant translation** | Translates as you type with configurable debounce |
 | **Inline replace** | `Ctrl+Shift+T` — translates selected text and pastes the result back in place |
 | **Backward translation** | See the round-trip result alongside the main output — spots awkward phrasing instantly |
@@ -105,8 +117,9 @@ For longer work: open the main window, type or paste, translate. Switch engines 
 | **Bing Services** | Translator, TTS, Spell Checker — included |
 | **AI Services** | Translator, Summarizer, Rewriter, Spell Checker, Dictionary, Vision OCR — via [OpenRouter](https://openrouter.ai) (300+ models, one API key) — included. [Setup guide](wiki/AI-Services.md) |
 | **Free translation choices** | Mozhi, MyMemory, DeepL web fallback, Reverso, and Yandex Web work without an API key; unofficial endpoints may change or be rate-limited |
-| **Local translation** | Connect to a local or self-hosted LibreTranslate instance without sending text to a third-party cloud |
-| **Reference services** | Wikipedia and Wiktionary lookups through official MediaWiki APIs |
+| **Fully offline & private** | Point AI Services at a local [Ollama](https://ollama.com) or LM Studio server, or use a self-hosted LibreTranslate instance. No account, no API key, no per-word cost, and nothing leaves your machine — for work under an NDA, proprietary code, or anything else that cannot go to a cloud service. [Setup guide](wiki/AI-Services.md) |
+| **Reference services** | Wikipedia and Wiktionary lookups, and Wikimedia Commons image search, through official MediaWiki APIs |
+| **CSV dictionary** | Point it at your own CSV — a glossary, an abbreviation list, a table of error codes, a set of study notes — and look terms up in it. Which columns hold the term and its meaning is configurable, and nothing leaves your machine |
 
 ### Interface
 
@@ -163,7 +176,7 @@ QTranslate/
         └── ...
 ```
 
-Bundled plugins: Google, Bing, AI Services, DeepL, Mozhi, MyMemory, LibreTranslate Local, Reverso, Yandex Web, and Wikimedia Reference. Configure a service from the service selector or **Settings → Plugins**.
+Bundled plugins: Google, Bing, AI Services, DeepL, Mozhi, MyMemory, LibreTranslate Local, Reverso, Yandex Web, Wikimedia Reference, and CSV Dictionary. Configure a service from the service selector or **Settings → Plugins**.
 
 > **Individual plugin JARs** are also attached to each release. They are only for adding or
 > updating a single plugin in an existing install — you do not need them for a fresh setup.
@@ -184,8 +197,9 @@ Bundled plugins: Google, Bing, AI Services, DeepL, Mozhi, MyMemory, LibreTransla
 2. Select text anywhere on screen
 3. Press `Ctrl+Q` — Quick Translate popup opens with the result ready
 4. Press `Ctrl+D` — open the Dictionary for the selected word
-5. Press `Ctrl+E` — listen to the selected text
-6. Press `Ctrl+I` — draw a screen region to OCR and translate
+5. Press `Ctrl+Shift+Q` — see pictures of the selected word
+6. Press `Ctrl+E` — listen to the selected text
+7. Press `Ctrl+I` — draw a screen region to OCR and translate
 
 Open **Settings** (gear icon) to configure API keys, themes, hotkeys, and service presets.
 
@@ -228,11 +242,11 @@ All bundled plugins are open source under `plugins/`. They provide real-world ex
 
 ## Translate the interface
 
-QTranslate ships with 13 languages built in:
+QTranslate ships with 14 languages built in:
 
-**Arabic · Bengali · Chinese · English · French · German · Hungarian · Italian · Japanese · Portuguese · Russian · Spanish · Turkish**
+**Arabic · Bengali · Chinese · English · French · German · Hungarian · Italian · Japanese · Portuguese · Russian · Spanish · Turkish · Vietnamese**
 
-Want another language? Copy `languages/en.toml`, rename it to your language code, translate the values. No code needed.
+Want another language? Copy `languages/en-GB.toml`, rename it to your language code, translate the values. No code needed.
 
 **Guide** → [Adding a Language](wiki/Adding-a-Language.md)
 

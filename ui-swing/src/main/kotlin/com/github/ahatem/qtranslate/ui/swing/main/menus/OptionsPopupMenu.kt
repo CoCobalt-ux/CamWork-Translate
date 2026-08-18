@@ -17,6 +17,7 @@ data class MenuStrings(
     val viewOptions: String,
     val dictionary: String,
     val isDictionaryPanelOpen: Boolean,
+    val imageSearch: String,
     val history: String,
     val translateDocument: String,
     val settings: String,
@@ -39,6 +40,7 @@ data class MenuActions(
     val onToggleInstantTranslation: (Boolean) -> Unit,
     val onToggleExtraOutput: (Boolean) -> Unit,
     val onShowDictionary: () -> Unit,
+    val onShowImageSearch: () -> Unit,
     val onShowHistory: () -> Unit,
     val onTranslateDocument: () -> Unit,
     val onShowSettings: () -> Unit,
@@ -67,10 +69,7 @@ class LayoutPresetsMenu(
         for (layout in availableLayouts) {
             add(JCheckBoxMenuItem(layout.name).apply {
                 isSelected = layout.id == activeLayoutId
-                addActionListener {
-                    println("clicked on layout ${layout.id}")
-                    onLayoutSelected(layout.id)
-                }
+                addActionListener { onLayoutSelected(layout.id) }
             })
         }
     }
@@ -135,6 +134,11 @@ class MainMenuPopup(
         add(JCheckBoxMenuItem(strings.dictionary).apply {
             isSelected = strings.isDictionaryPanelOpen
             addActionListener { actions.onShowDictionary() }
+        })
+        // Beside the dictionary, because both answer "what is this word" — one in words, one in
+        // pictures — and this menu is where someone goes looking for either.
+        add(JMenuItem(strings.imageSearch).apply {
+            addActionListener { actions.onShowImageSearch() }
         })
         add(JMenuItem(strings.history).apply {
             addActionListener { actions.onShowHistory() }

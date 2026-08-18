@@ -1,6 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.bing
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -8,7 +10,6 @@ import com.github.ahatem.qtranslate.api.translator.TranslationRequest
 import com.github.ahatem.qtranslate.api.translator.TranslationResponse
 import com.github.ahatem.qtranslate.api.translator.Translator
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.coroutines.coroutineBinding
@@ -16,13 +17,14 @@ import com.github.michaelbull.result.toResultOr
 
 class BingTranslatorService(
     private val pluginContext: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val authManager: BingAuthManager,
     private val languageMapper: BingLanguageMapper,
     private val apiConfig: ApiConfig
 ) : Translator {
 
-    override val id: String = "bing-translator"
+
+    override val key: String = "bing-translator"
     override val name: String = "Bing Translate"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/bing-translate-icon.svg"

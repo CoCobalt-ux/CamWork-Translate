@@ -1,14 +1,20 @@
 package com.github.ahatem.qtranslate.app
 
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
+import com.github.ahatem.qtranslate.core.shared.notification.AppNotification
+import com.github.ahatem.qtranslate.core.shared.notification.NotificationCode
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.ui.swing.main.MainAppFrame
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconSet
+import com.github.michaelbull.result.fold
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import java.io.File
 import javax.swing.SwingUtilities
 
 fun main() = runBlocking {
@@ -34,8 +40,15 @@ fun main() = runBlocking {
     AppUiSetup.setSystemProperties()
     AppUiSetup.setRenderingHints()
 
-    val appData    = AppDataDirectory.resolve()
-    val logFactory = ConsoleLoggerFactory(ConsoleLoggerFactory.LogLevel.DEBUG)
+    val appData = AppDataDirectory.resolve()
+
+    // Before the first logger is asked for. Logback reads its configuration lazily, on the first
+    // SLF4J call, and `logback.xml` resolves the log directory from this property with a fallback
+    // of a relative `logs/`. Setting it late means the fallback wins and the log lands in whatever
+    // the working directory happens to be, which for a double-clicked JAR is anyone's guess.
+    System.setProperty("logDir", File(appData, "logs").absolutePath)
+
+    val logFactory = LogbackLoggerFactory()
     val logger     = logFactory.getLogger("Main")
 
     logger.info("QTranslate ${AppConstants.APP_VERSION} starting...")
@@ -44,10 +57,12 @@ fun main() = runBlocking {
     val json         = Json { ignoreUnknownKeys = true; isLenient = true }
     val settingsRepo = SettingsRepository(appData, json, logFactory.getLogger("SettingsRepository"))
 
+    var configLoadTimedOut = false
     val initialConfig = withTimeoutOrNull(AppConstants.CONFIG_LOAD_TIMEOUT_MS) {
         settingsRepo.loadInitialConfiguration()
     } ?: run {
         logger.warn("Configuration load timed out after ${AppConstants.CONFIG_LOAD_TIMEOUT_MS}ms — using defaults")
+        configLoadTimedOut = true
         Configuration.DEFAULT
     }
 
@@ -61,16 +76,48 @@ fun main() = runBlocking {
     )
     AppUiSetup.apply(initialConfig, deps.themeManager)
 
-    val savedLanguage = if (initialConfig.interfaceLanguage == LanguageCode.ENGLISH.tag) {
+    // Starting with defaults when settings existed is not a detail to leave in a log file. From
+    // the user's side the app looks freshly installed, and the natural response — setting
+    // everything up again — overwrites the file that still holds the original.
+    settingsRepo.lastRecovery?.let { recovery ->
+        logger.error("Configuration recovery: ${recovery.reason}")
+        deps.notificationBus.post(
+            AppNotification(
+                type = NotificationType.ERROR,
+                code = NotificationCode.Custom(
+                    title = "Settings could not be loaded",
+                    body = recovery.reason
+                )
+            )
+        )
+    }
+    if (configLoadTimedOut) {
+        deps.notificationBus.post(
+            AppNotification(
+                type = NotificationType.WARNING,
+                code = NotificationCode.Custom(
+                    title = "Settings took too long to load",
+                    body = "QTranslate started with default settings so it would not hang. " +
+                        "Your saved settings are still on disk — restarting may load them."
+                )
+            )
+        )
+    }
+
+    // Only when the user has not chosen. Keying this off "en" meant an explicit choice of English
+    // was read as no choice at all, so detection ran again on every launch and put the interface
+    // back into the machine's language.
+    val savedLanguage = if (initialConfig.interfaceLanguage.isBlank()) {
         OsLanguageDetector.detect(deps.localizationManager.availableLanguages)
     } else {
         LanguageCode(initialConfig.interfaceLanguage)
     }
     runCatching {
         deps.localizationManager.loadLanguage(savedLanguage)
-        logger.info("Interface language loaded: ${initialConfig.interfaceLanguage}")
+        // The resolved tag, not the stored one, which is blank until the user chooses.
+        logger.info("Interface language loaded: ${savedLanguage.tag}")
     }.onFailure { e ->
-        logger.warn("Failed to load interface language '${initialConfig.interfaceLanguage}': ${e.message}")
+        logger.warn("Failed to load interface language '${savedLanguage.tag}': ${e.message}")
     }
 
     // The window is shown before plugins are loaded. Everything it needs to paint — theme,
@@ -79,6 +126,12 @@ fun main() = runBlocking {
     // their own as plugins finish initialising. Waiting here instead would leave the screen
     // empty for as long as the slowest plugin takes, and several do network work at startup.
     SwingUtilities.invokeLater {
+        // Chosen before anything is drawn: icons are built once and held by the components
+        // showing them, so this has to be set while there is still nothing on screen.
+        // The folder the extra sets live in, beside languages and themes.
+        IconSet.installTo(deps.appDataDirectory)
+        IconSet.use(deps.settingsStore.state.value.workingConfiguration.iconSetId)
+
         frame = MainAppFrame(
             mainStore        = deps.mainStore,
             settingsStore    = deps.settingsStore,
@@ -86,7 +139,15 @@ fun main() = runBlocking {
             themeManager     = deps.themeManager,
             localizer        = deps.localizationManager,
             pluginManager    = deps.pluginManager,
-            notificationBus  = deps.notificationBus
+            notificationBus  = deps.notificationBus,
+            logger           = logFactory.getLogger("MainAppFrame"),
+            appSecrets       = deps.appSecrets,
+            translateString  = { text, target ->
+                deps.translateStringUseCase(text, target).fold(
+                    success = { Result.success(it) },
+                    failure = { Result.failure(IllegalStateException(it.message)) }
+                )
+            }
         )
         logger.info("Main window launched")
     }

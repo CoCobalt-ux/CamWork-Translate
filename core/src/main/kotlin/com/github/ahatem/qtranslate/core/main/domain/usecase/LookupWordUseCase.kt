@@ -11,7 +11,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.StatusCode
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.fold
 import kotlinx.coroutines.CancellationException
@@ -42,11 +42,11 @@ class LookupWordUseCase(
             return
         }
 
-        val dictionary = activeServiceManager.getActiveService<Dictionary>(ServiceType.DICTIONARY)
+        val dictionary = activeServiceManager.getActiveService<Dictionary>(ServiceRole.DICTIONARY)
         if (dictionary == null) {
             logger.warn("No dictionary service available")
             onStatusUpdate(StatusCode.NoDictionaryServiceActive, NotificationType.ERROR, true)
-            updateState { copy(isDictionaryLoading = false, dictionaryFailed = true) }
+            updateState { copy(isDictionaryLoading = false, dictionaryFailed = true, dictionaryEntries = emptyList()) }
             return
         }
 
@@ -55,18 +55,23 @@ class LookupWordUseCase(
         lookupJob = scope.launch {
             try {
                 onStatusUpdate(StatusCode.LookingUpWord, NotificationType.INFO, false)
+                // The previous definitions stay up while this one runs. They are still readable,
+                // and a popup that empties itself the moment you ask it for something else takes
+                // away what you were reading in exchange for a blank panel. They are replaced
+                // when the new result lands, and cleared only if it turns out there is nothing
+                // to replace them with.
                 updateState {
                     copy(
                         isDictionaryLoading = true,
-                        dictionaryEntries = emptyList(),
                         dictionaryWord = word,
+                        dictionaryLanguage = language,
                         dictionaryFailed = false
                     )
                 }
 
                 val result = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
                     val bilingualRequest = targetLanguage?.let { target ->
-                        dictionary.getCapability(BilingualDictionary::class.java)?.let { it to target }
+                        (dictionary as? BilingualDictionary)?.let { it to target }
                     }
                     if (bilingualRequest != null) {
                         val (bilingual, target) = bilingualRequest
@@ -79,7 +84,7 @@ class LookupWordUseCase(
                 if (result == null) {
                     logger.warn("Dictionary lookup timed out for '$word'")
                     onStatusUpdate(StatusCode.DictionaryTimeout, NotificationType.WARNING, true)
-                    updateState { copy(isDictionaryLoading = false, dictionaryFailed = true) }
+                    updateState { copy(isDictionaryLoading = false, dictionaryFailed = true, dictionaryEntries = emptyList()) }
                     return@launch
                 }
 
@@ -105,7 +110,7 @@ class LookupWordUseCase(
                         val msg = error.toString()
                         logger.warn("Dictionary lookup failed for '$word': $msg")
                         onStatusUpdate(StatusCode.DictionaryFailed(msg), NotificationType.ERROR, true)
-                        updateState { copy(isDictionaryLoading = false, dictionaryFailed = true) }
+                        updateState { copy(isDictionaryLoading = false, dictionaryFailed = true, dictionaryEntries = emptyList()) }
                     }
                 )
             } catch (e: CancellationException) {
@@ -114,7 +119,7 @@ class LookupWordUseCase(
                 val msg = e.message ?: "Unknown error"
                 logger.warn("Unexpected error during dictionary lookup: $msg")
                 onStatusUpdate(StatusCode.DictionaryFailed(msg), NotificationType.ERROR, true)
-                updateState { copy(isDictionaryLoading = false, dictionaryFailed = true) }
+                updateState { copy(isDictionaryLoading = false, dictionaryFailed = true, dictionaryEntries = emptyList()) }
             }
         }
     }

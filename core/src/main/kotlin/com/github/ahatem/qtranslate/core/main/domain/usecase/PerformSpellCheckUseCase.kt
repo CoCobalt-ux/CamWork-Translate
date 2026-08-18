@@ -8,10 +8,11 @@ import com.github.ahatem.qtranslate.api.spellchecker.SpellChecker
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.shared.StatusCode
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.fold
 import kotlinx.coroutines.withTimeoutOrNull
+import com.github.ahatem.qtranslate.core.shared.util.shortSummary
 
 class PerformSpellCheckUseCase(
     private val activeServiceManager: ActiveServiceManager,
@@ -43,7 +44,7 @@ class PerformSpellCheckUseCase(
             return emptyList()
         }
 
-        val spellChecker = activeServiceManager.getActiveService<SpellChecker>(ServiceType.SPELL_CHECKER)
+        val spellChecker = activeServiceManager.getActiveService<SpellChecker>(ServiceRole.SPELL_CHECKER)
         if (spellChecker == null) {
             logger.debug("No spell checker service available — skipping")
             return emptyList()
@@ -72,7 +73,7 @@ class PerformSpellCheckUseCase(
             },
             failure = { error ->
                 logger.error("Spell check failed: ${error.message}", error.cause)
-                val summary = error.message?.lines()?.firstOrNull()?.take(120) ?: "Unknown error"
+                val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.SpellCheckFailed(summary), NotificationType.WARNING, true)
                 emptyList()
             }

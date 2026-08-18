@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.plugins.mymemory
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
@@ -8,7 +9,7 @@ import com.github.ahatem.qtranslate.api.translator.TranslationRequest
 import com.github.ahatem.qtranslate.api.translator.TranslationResponse
 import com.github.ahatem.qtranslate.api.translator.Translator
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.HttpClient
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
@@ -25,7 +26,7 @@ internal class MyMemoryTranslatorService(
     private val apiConfig: ApiConfig,
     private val minimumRequestIntervalMillis: Long = 350
 ) : Translator {
-    override val id = "mymemory-services-translate"
+    override val key = "mymemory-services-translate"
     override val name = "MyMemory (Free)"
     override val iconPath = "assets/mymemory.svg"
     override val version = "1.0.0"

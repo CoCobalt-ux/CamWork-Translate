@@ -1,15 +1,16 @@
 package com.github.ahatem.qtranslate.ui.swing.shared.widgets
 
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.spellchecker.Correction
 import com.github.ahatem.qtranslate.ui.swing.shared.util.isRTL
+import com.github.ahatem.qtranslate.ui.swing.shared.util.DroppedContent
+import com.github.ahatem.qtranslate.ui.swing.shared.util.DroppedContentClassifier
 import java.awt.*
-import java.awt.datatransfer.DataFlavor
 import java.awt.event.*
 import java.awt.font.FontRenderContext
 import java.awt.geom.AffineTransform
 import java.awt.image.BufferedImage
 import java.io.File
-import javax.imageio.ImageIO
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -219,35 +220,41 @@ class FontFallbackDocumentListener(
     private fun applyFontFallback(doc: StyledDocument, offset: Int, length: Int, primary: Font, fallback: Font) {
         if (length <= 0) return
         val text = doc.getText(offset, length)
-        var pos  = 0
-        while (pos < text.length) {
-            val remaining        = text.substring(pos)
-            val primaryFailIndex = primary.canDisplayUpTo(remaining)
+        // Copied once, then scanned in place. The previous version called text.substring(pos)
+        // once per run, copying everything still to be scanned each time, which made a run-heavy
+        // document quadratic in allocation — while this method's own documentation claimed it
+        // allocated nothing per character. canDisplayUpTo takes an offset only for char arrays,
+        // which is why this is an array rather than the string.
+        val chars = text.toCharArray()
+        val end = chars.size
+        var pos = 0
 
-            if (primaryFailIndex == -1) {
-                applyRunAttributes(doc, offset + pos, remaining.length, primary)
+        while (pos < end) {
+            val primaryFail = primary.canDisplayUpTo(chars, pos, end)
+
+            if (primaryFail == -1) {
+                applyRunAttributes(doc, offset + pos, end - pos, primary)
                 break
             }
-            if (primaryFailIndex > 0) {
-                applyRunAttributes(doc, offset + pos, primaryFailIndex, primary)
-                pos += primaryFailIndex
+            if (primaryFail > pos) {
+                applyRunAttributes(doc, offset + pos, primaryFail - pos, primary)
+                pos = primaryFail
                 continue
             }
 
-            val fallbackFailIndex = fallback.canDisplayUpTo(remaining)
-            if (fallbackFailIndex == -1) {
-                applyRunAttributes(doc, offset + pos, remaining.length, fallback)
+            val fallbackFail = fallback.canDisplayUpTo(chars, pos, end)
+            if (fallbackFail == -1) {
+                applyRunAttributes(doc, offset + pos, end - pos, fallback)
                 break
             }
-            if (fallbackFailIndex > 0) {
-                applyRunAttributes(doc, offset + pos, fallbackFailIndex, fallback)
-                pos += fallbackFailIndex
+            if (fallbackFail > pos) {
+                applyRunAttributes(doc, offset + pos, fallbackFail - pos, fallback)
+                pos = fallbackFail
                 continue
             }
 
             // Neither font can display this code point — skip it and let the system handle it.
-            val cpLen = Character.charCount(remaining.codePointAt(0))
-            pos += cpLen
+            pos += Character.charCount(Character.codePointAt(chars, pos))
         }
     }
 
@@ -263,14 +270,8 @@ class FontFallbackDocumentListener(
     }
 }
 
-private fun toBufferedImage(image: Image): BufferedImage {
-    if (image is BufferedImage) return image
-    val buffered = BufferedImage(image.getWidth(null), image.getHeight(null), BufferedImage.TYPE_INT_ARGB)
-    val g = buffered.createGraphics()
-    g.drawImage(image, 0, 0, null)
-    g.dispose()
-    return buffered
-}
+/** Shared because it is only ever read; a fresh one per paint was pure garbage. */
+private val EMPTY_INSETS = Insets(0, 0, 0, 0)
 
 private fun File.isImageFile(): Boolean =
     extension.lowercase() in setOf("png", "jpg", "jpeg", "bmp", "gif", "tiff", "tif", "webp")
@@ -280,6 +281,8 @@ class AdvancedTextPane(
     private val onTranslateRequest: (text: String) -> Unit,
     private val onListenRequest: (text: String) -> Unit,
     private val onImageDropped: ((BufferedImage) -> Unit)? = null,
+    /** Ctrl+V with a document on the clipboard. Null falls back to pasting its path as text. */
+    private val onDocumentPasted: ((File) -> Unit)? = null,
 ) : JTextPane() {
 
     private val undoManager by lazy { UndoManager() }
@@ -307,6 +310,14 @@ class AdvancedTextPane(
     var showCharCount: Boolean = false
         set(value) { field = value; repaint() }
 
+    // Paint-path caches. This component repaints on every caret blink, so anything allocated in
+    // paintComponent is allocated roughly twice a second per pane, forever.
+    private var cachedCounterFont: Font? = null
+    private var cachedCounterBase: Font? = null
+    private var cachedCounterValue: Int = -1
+    private var cachedCounterText: String = ""
+    private var cachedDisabledFg: Color? = null
+
     private val contextMenu: JPopupMenu by lazy { createContextMenu() }
     private val fallbackListener: FontFallbackDocumentListener
 
@@ -320,6 +331,8 @@ class AdvancedTextPane(
     private lateinit var ctxPasteItem:     JMenuItem
     private lateinit var ctxTranslateItem: JMenuItem
     private lateinit var ctxListenItem:    JMenuItem
+    private lateinit var ctxSelectAllItem: JMenuItem
+    private lateinit var ctxClearItem:     JMenuItem
 
     private var isTextRtl = false
     private var lastRenderedText: String? = null
@@ -338,6 +351,7 @@ class AdvancedTextPane(
         highlighter  = WavyUnderlineHighlighter()
         editorKit    = WrappingEditorKit()
         caret        = AdvancedCaret()
+        applyReadingSpacing()
         // Enable Swing's built-in focus traversal so plain Tab / Shift+Tab are consumed by
         // the KeyboardFocusManager and routed through TextPaneCycleFocusPolicy.
         // By default the JDK also includes Ctrl+Tab / Shift+Ctrl+Tab in the traversal sets,
@@ -368,7 +382,6 @@ class AdvancedTextPane(
         lastEmittedText = this.text
         setupKeyBindings()
         setupMouseListeners()
-        setupTransferHandler()
     }
 
     // -----------------------------------------------------------------------
@@ -398,6 +411,12 @@ class AdvancedTextPane(
                 undoManager.discardAllEdits()
                 textWasChanged = true
 
+                // Aligned while the listeners are detached. Writing paragraph attributes fires
+                // changedUpdate, which the fallback listener answers by rescanning the whole
+                // document — so doing this afterwards paid for a full rescan of text that had
+                // just been scanned.
+                applyParagraphDirections()
+
                 document.addDocumentListener(documentListener)
                 document.addDocumentListener(fallbackListener)
             }
@@ -407,10 +426,6 @@ class AdvancedTextPane(
                 lastRenderedCorrections = corrections
             }
 
-            if (textWasChanged) {
-                val rtl = text.isRTL()
-                if (rtl != isTextRtl) updateOrientation(rtl)
-            }
         }
     }
 
@@ -425,11 +440,15 @@ class AdvancedTextPane(
             lastRenderedText = currentText
             onTextChanged(currentText)
 
-            val rtl = currentText.isRTL()
-            // Use invokeLater — this fires inside a document listener and
-            // updateOrientation() calls setParagraphAttributes(), which must
-            // not run while the document write-lock is still held.
-            if (rtl != isTextRtl) SwingUtilities.invokeLater { updateOrientation(rtl) }
+            // Deferred because this fires inside a document listener, and aligning paragraphs
+            // writes attributes, which must not happen while the document's write lock is held.
+            //
+            // Unconditional now rather than gated on the pane's overall direction changing: a
+            // typed paragraph can switch direction on its own without the document's majority
+            // moving, and that case used to go unaligned. The pass itself skips paragraphs that
+            // are already correct, so the common keystroke costs a direction test per paragraph
+            // and no document write at all.
+            SwingUtilities.invokeLater { applyParagraphDirections() }
         }
     }
 
@@ -448,38 +467,68 @@ class AdvancedTextPane(
     // -----------------------------------------------------------------------
 
     override fun paintComponent(g: Graphics) {
-        val g2 = g as Graphics2D
-        g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
-        super.paintComponent(g)
+        // Painted on a copy. Rendering hints set on the Graphics Swing handed us outlive this
+        // method and change how sibling components are drawn afterwards; AdvancedCaret already
+        // saves and restores for the same reason, and this half of the file did not.
+        val g2 = g.create() as Graphics2D
+        try {
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
+            g2.setRenderingHint(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON)
+            super.paintComponent(g2)
 
-        // Use document.length (O(1)) instead of text.length (O(n) serialisation).
-        val docLen     = document.length
-        val insets     = margin ?: Insets(0, 0, 0, 0)
-        val disabledFg = UIManager.getColor("Label.disabledForeground") ?: Color.GRAY
-        val ltr        = componentOrientation.isLeftToRight
+            // Use document.length (O(1)) instead of text.length (O(n) serialisation).
+            val docLen = document.length
+            val hasHint = docLen == 0 && hintText.isNotBlank()
+            val hasCounter = showCharCount && docLen > 0
+            if (!hasHint && !hasCounter) return
 
-        // Placeholder / hint text — drawn only when the pane is empty.
-        if (docLen == 0 && hintText.isNotBlank()) {
-            g2.font  = font
-            g2.color = disabledFg
-            val fm = g2.fontMetrics
-            val x  = if (ltr) insets.left + 2 else width - insets.right - 2 - fm.stringWidth(hintText)
-            val y  = insets.top + fm.ascent
-            g2.drawString(hintText, x, y)
+            // Only touched when something is actually drawn — paint runs on every caret blink.
+            val insets = margin ?: EMPTY_INSETS
+            val disabledFg = cachedDisabledFg
+                ?: (UIManager.getColor("Label.disabledForeground") ?: Color.GRAY).also { cachedDisabledFg = it }
+            val ltr = componentOrientation.isLeftToRight
+
+            if (hasHint) {
+                g2.font = font
+                g2.color = disabledFg
+                val fm = g2.fontMetrics
+                val x = if (ltr) insets.left + 2 else width - insets.right - 2 - fm.stringWidth(hintText)
+                val y = insets.top + fm.ascent
+                g2.drawString(hintText, x, y)
+            }
+
+            if (hasCounter) {
+                val counterFont = counterFont()
+                val counterStr = counterText(docLen)
+                g2.font = counterFont
+                g2.color = disabledFg
+                val fm = g2.getFontMetrics(counterFont)
+                val x = if (ltr) width - insets.right - fm.stringWidth(counterStr) - 2 else insets.left + 2
+                val y = height - insets.bottom - 2
+                g2.drawString(counterStr, x, y)
+            }
+        } finally {
+            g2.dispose()
         }
+    }
 
-        // Character count — drawn in the bottom corner when enabled and there is text.
-        if (showCharCount && docLen > 0) {
-            val counterFont = font.deriveFont(font.size2D - 1f)
-            val counterStr  = docLen.toString()
-            g2.font  = counterFont
-            g2.color = disabledFg
-            val fm = g2.getFontMetrics(counterFont)
-            val x  = if (ltr) width - insets.right - fm.stringWidth(counterStr) - 2 else insets.left + 2
-            val y  = height - insets.bottom - 2
-            g2.drawString(counterStr, x, y)
+    /** Derived once per font rather than on every paint — `deriveFont` is not free. */
+    private fun counterFont(): Font {
+        val base = font
+        if (cachedCounterBase !== base || cachedCounterFont == null) {
+            cachedCounterBase = base
+            cachedCounterFont = base.deriveFont(base.size2D - 1f)
         }
+        return cachedCounterFont!!
+    }
+
+    /** The count changes far less often than the pane repaints, so the string is kept. */
+    private fun counterText(length: Int): String {
+        if (cachedCounterValue != length) {
+            cachedCounterValue = length
+            cachedCounterText = length.toString()
+        }
+        return cachedCounterText
     }
 
     // -----------------------------------------------------------------------
@@ -501,14 +550,69 @@ class AdvancedTextPane(
     // Orientation
     // -----------------------------------------------------------------------
 
-    private fun updateOrientation(isRtlNow: Boolean) {
-        if (isRtlNow == isTextRtl) return
-        componentOrientation = if (isRtlNow) ComponentOrientation.RIGHT_TO_LEFT else ComponentOrientation.LEFT_TO_RIGHT
-        isTextRtl = isRtlNow
+    /**
+     * Opens the line and paragraph spacing to something readable.
+     *
+     * Swing's default sets lines directly against one another, which is legible for a form field
+     * and tiring for a paragraph — and paragraphs here are the whole point. Applied to the
+     * document's default style rather than across the text, so every paragraph inherits it and
+     * nothing has to be rewritten when the text changes.
+     *
+     * Line spacing is a multiple of the line height, so it follows the font size and the zoom
+     * without being told. The gap below a paragraph is in points and is scaled.
+     */
+    private fun applyReadingSpacing() {
+        val default = styledDocument.getStyle(StyleContext.DEFAULT_STYLE) ?: return
+        StyleConstants.setLineSpacing(default, LINE_SPACING)
+        StyleConstants.setSpaceBelow(default, UIScale.scale(PARAGRAPH_GAP))
+    }
 
-        val attributes = SimpleAttributeSet()
-        StyleConstants.setAlignment(attributes, if (isRtlNow) StyleConstants.ALIGN_RIGHT else StyleConstants.ALIGN_LEFT)
-        styledDocument.setParagraphAttributes(0, styledDocument.length, attributes, false)
+    /**
+     * Aligns each paragraph to its own direction, and the component to the document's.
+     *
+     * Direction used to be one flag for the whole pane, with the alignment written across the
+     * entire document. A translation that mixes an Arabic paragraph with an English one then got
+     * a single alignment for both, and the wrong one for half of it. Mixed direction *within* a
+     * line was always fine — Swing's own Bidi handles that — but paragraphs were not.
+     *
+     * Writing per paragraph is also cheaper than it sounds. The old call rewrote attributes over
+     * every character; this touches each paragraph once, and only the ones whose alignment
+     * actually changes, so a document already laid out correctly costs nothing.
+     */
+    private fun applyParagraphDirections() {
+        val root = styledDocument.defaultRootElement
+        val rtlAttributes = SimpleAttributeSet().also {
+            StyleConstants.setAlignment(it, StyleConstants.ALIGN_RIGHT)
+        }
+        val ltrAttributes = SimpleAttributeSet().also {
+            StyleConstants.setAlignment(it, StyleConstants.ALIGN_LEFT)
+        }
+
+        var rtlParagraphs = 0
+        for (i in 0 until root.elementCount) {
+            val paragraph = root.getElement(i)
+            val start = paragraph.startOffset
+            val length = (paragraph.endOffset - start).coerceAtMost(styledDocument.length - start)
+            if (length <= 0) continue
+
+            val paragraphText = runCatching { styledDocument.getText(start, length) }.getOrNull() ?: continue
+            val rtl = paragraphText.isRTL()
+            if (rtl) rtlParagraphs++
+
+            val wanted = if (rtl) StyleConstants.ALIGN_RIGHT else StyleConstants.ALIGN_LEFT
+            if (StyleConstants.getAlignment(paragraph.attributes) == wanted) continue
+            styledDocument.setParagraphAttributes(start, length, if (rtl) rtlAttributes else ltrAttributes, false)
+        }
+
+        // The component follows the majority, since it decides which side the scrollbar and the
+        // caret's home position sit on, and those belong to the pane rather than to a paragraph.
+        val documentIsRtl = rtlParagraphs * 2 > root.elementCount
+        if (documentIsRtl != isTextRtl) {
+            isTextRtl = documentIsRtl
+            componentOrientation =
+                if (documentIsRtl) ComponentOrientation.RIGHT_TO_LEFT else ComponentOrientation.LEFT_TO_RIGHT
+        }
+
         revalidate()
         repaint()
     }
@@ -576,18 +680,22 @@ class AdvancedTextPane(
         inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_X, InputEvent.CTRL_DOWN_MASK), "cut-to-clipboard")
 
         if (onImageDropped != null) {
-            // Input pane: Ctrl+V tries to paste an image first, falls back to text paste.
+            // Paste stays on the pane rather than moving to the frame with drops: it targets
+            // whatever has focus, so it is genuinely this component's business. It shares the
+            // classifier so pasting and dropping agree on what a thing is.
             val pasteAction = createAction(
                 "PasteImageOrText",
                 KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK)
             ) {
-                val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-                val image = runCatching {
-                    if (clipboard.isDataFlavorAvailable(DataFlavor.imageFlavor))
-                        clipboard.getData(DataFlavor.imageFlavor) as? Image
-                    else null
+                val contents = runCatching {
+                    Toolkit.getDefaultToolkit().systemClipboard.getContents(null)
                 }.getOrNull()
-                if (image != null) onImageDropped.invoke(toBufferedImage(image)) else paste()
+
+                when (val content = contents?.let(DroppedContentClassifier::classify)) {
+                    is DroppedContent.Picture -> onImageDropped.invoke(content.image)
+                    is DroppedContent.Document -> onDocumentPasted?.invoke(content.file) ?: paste()
+                    else -> paste()
+                }
             }
             actionMap.put("paste-image-or-text", pasteAction)
             inputMap.put(pasteAction.getValue(Action.ACCELERATOR_KEY) as KeyStroke, "paste-image-or-text")
@@ -612,73 +720,14 @@ class AdvancedTextPane(
     // Transfer handler (drag-and-drop images)
     // -----------------------------------------------------------------------
 
-    private fun setupTransferHandler() {
-        if (onImageDropped == null) return
-        // Capture the default JTextPane TransferHandler BEFORE replacing it.
-        // It handles all text export operations (copy / cut / drag-out).  Our custom
-        // handler only adds image-import support; for everything else it must delegate
-        // back to the original, otherwise Ctrl+C / Ctrl+X silently do nothing because
-        // the base TransferHandler.createTransferable() returns null.
-        val original = transferHandler
-        transferHandler = object : TransferHandler() {
-
-            // ----------------------------------------------------------------
-            // Import — image first, then fall through to the original handler
-            // ----------------------------------------------------------------
-
-            override fun canImport(support: TransferSupport): Boolean {
-                if (isEditable) {
-                    if (support.isDataFlavorSupported(DataFlavor.imageFlavor)) return true
-                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) return true
-                }
-                return original?.canImport(support) ?: false
-            }
-
-            override fun importData(support: TransferSupport): Boolean {
-                if (isEditable) {
-                    if (support.isDataFlavorSupported(DataFlavor.imageFlavor)) {
-                        val image = runCatching {
-                            support.transferable.getTransferData(DataFlavor.imageFlavor) as? Image
-                        }.getOrNull()
-                        if (image != null) { onImageDropped.invoke(toBufferedImage(image)); return true }
-                    }
-                    if (support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)) {
-                        @Suppress("UNCHECKED_CAST")
-                        val files = runCatching {
-                            support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<File>
-                        }.getOrNull()
-                        val imageFile = files?.firstOrNull { it.isImageFile() }
-                        if (imageFile != null) {
-                            val image = runCatching { ImageIO.read(imageFile) }.getOrNull()
-                            if (image != null) { onImageDropped.invoke(image); return true }
-                        }
-                    }
-                }
-                return original?.importData(support) ?: false
-            }
-
-            // ----------------------------------------------------------------
-            // Export (Ctrl+C, Ctrl+X, drag-out) — delegate to original handler
-            // so the selected text is correctly placed on the clipboard / drag.
-            // createTransferable / exportDone are protected in TransferHandler and
-            // cannot be called on an external instance.  Delegating through the two
-            // public entry-points (exportToClipboard + exportAsDrag) avoids the
-            // visibility restriction entirely while achieving the same result.
-            // ----------------------------------------------------------------
-
-            override fun getSourceActions(c: JComponent?): Int =
-                original?.getSourceActions(c) ?: NONE
-
-            override fun exportToClipboard(comp: JComponent?, clip: java.awt.datatransfer.Clipboard?, action: Int) {
-                original?.exportToClipboard(comp, clip, action)
-            }
-
-            override fun exportAsDrag(comp: JComponent?, e: InputEvent?, action: Int) {
-                original?.exportAsDrag(comp, e, action)
-            }
-        }
-        dropTarget?.isActive = true
-    }
+    /**
+     * Drops are the window's business, not this pane's.
+     *
+     * This class used to install its own handler to catch dropped images. Because it accepted
+     * every file list, a document dropped here was taken and then discarded — the frame never saw
+     * it. The frame now handles both kinds for the whole window, and this pane keeps the stock
+     * `JTextPane` handler, which is what makes dragging plain text into the editor work.
+     */
 
     // -----------------------------------------------------------------------
     // Context menu
@@ -719,6 +768,16 @@ class AdvancedTextPane(
         ctxListenItem = JMenuItem("Listen").apply {
             addActionListener { onListenRequest(selectedText ?: text) }
         }
+        ctxSelectAllItem = JMenuItem("Select All").apply { addActionListener { selectAll() } }
+        // Clear replaces the text rather than calling setText, so it goes through the undo
+        // manager and can be taken back — losing a paragraph to a menu click with no way back
+        // would be the worst thing this menu could do.
+        ctxClearItem = JMenuItem("Clear").apply {
+            addActionListener {
+                if (!isEditable) return@addActionListener
+                runCatching { document.remove(0, document.length) }
+            }
+        }
 
         menu.add(ctxUndoItem)
         menu.add(ctxRedoItem)
@@ -726,6 +785,9 @@ class AdvancedTextPane(
         menu.add(ctxCutItem)
         menu.add(ctxCopyItem)
         menu.add(ctxPasteItem)
+        menu.addSeparator()
+        menu.add(ctxSelectAllItem)
+        menu.add(ctxClearItem)
         menu.addSeparator()
         menu.add(ctxTranslateItem)
         menu.add(ctxListenItem)
@@ -742,15 +804,19 @@ class AdvancedTextPane(
                 ctxPasteItem.isEnabled    = isEditable
                 ctxTranslateItem.isEnabled = hasText
                 ctxListenItem.isEnabled   = hasText
+                ctxSelectAllItem.isEnabled = hasText
+                ctxClearItem.isEnabled    = isEditable && hasText
 
                 getContextMenuLabel?.let { get ->
-                    get("undo")?.let      { ctxUndoItem.text      = it }
-                    get("redo")?.let      { ctxRedoItem.text      = it }
-                    get("cut")?.let       { ctxCutItem.text       = it }
-                    get("copy")?.let      { ctxCopyItem.text      = it }
-                    get("paste")?.let     { ctxPasteItem.text     = it }
-                    get("translate")?.let { ctxTranslateItem.text = it }
-                    get("listen")?.let    { ctxListenItem.text    = it }
+                    ctxUndoItem.text      = get("undo")
+                    ctxRedoItem.text      = get("redo")
+                    ctxCutItem.text       = get("cut")
+                    ctxCopyItem.text      = get("copy")
+                    ctxPasteItem.text     = get("paste")
+                    ctxSelectAllItem.text = get("select_all")
+                    ctxClearItem.text     = get("clear")
+                    ctxTranslateItem.text = get("translate")
+                    ctxListenItem.text    = get("listen")
                 }
             }
             override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent?) {}
@@ -781,6 +847,11 @@ class AdvancedTextPane(
     override fun updateUI() {
         super.updateUI()
         putClientProperty(HONOR_DISPLAY_PROPERTIES, true)
+        // A theme switch invalidates the cached colour and the font derived from the old one.
+        // Swing calls this for us then, which is why the caches need no listener of their own.
+        cachedCounterFont = null
+        cachedCounterBase = null
+        cachedDisabledFg = null
     }
 
     override fun getScrollableTracksViewportWidth(): Boolean =
@@ -803,4 +874,17 @@ class AdvancedTextPane(
             init { putValue(ACCELERATOR_KEY, accelerator) }
             override fun actionPerformed(e: ActionEvent) = action(e)
         }
+
+    private companion object {
+        /**
+         * Extra leading, as a fraction of the line height.
+         *
+         * Enough to separate lines of Arabic, whose ascenders and descenders reach further than
+         * Latin ones and collide at Swing's default of zero.
+         */
+        const val LINE_SPACING = 0.18f
+
+        /** Gap below a paragraph, before scaling. */
+        const val PARAGRAPH_GAP = 6f
+    }
 }

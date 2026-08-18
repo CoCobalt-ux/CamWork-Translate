@@ -1,16 +1,17 @@
 package com.github.ahatem.qtranslate.plugins.google
 
+
 import com.github.ahatem.qtranslate.api.dictionary.Definition
 import com.github.ahatem.qtranslate.api.dictionary.Dictionary
 import com.github.ahatem.qtranslate.api.dictionary.DictionaryEntry
 import com.github.ahatem.qtranslate.api.dictionary.DictionaryRequest
 import com.github.ahatem.qtranslate.api.dictionary.DictionaryResponse
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.ahatem.qtranslate.plugins.google.common.GoogleLanguageMapper
 import com.github.ahatem.qtranslate.plugins.google.common.TranslateResponse
@@ -19,12 +20,13 @@ import com.github.michaelbull.result.coroutines.coroutineBinding
 
 class GoogleDictionaryService(
     private val pluginContext: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val languageMapper: GoogleLanguageMapper,
     private val apiConfig: ApiConfig
 ) : Dictionary {
 
-    override val id: String = "google-dictionary"
+
+    override val key: String = "google-dictionary"
     override val name: String = "Google Dictionary"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/google-translate-icon.svg"

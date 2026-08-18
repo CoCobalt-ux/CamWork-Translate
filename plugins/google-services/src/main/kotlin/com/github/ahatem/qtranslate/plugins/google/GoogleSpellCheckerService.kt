@@ -1,6 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.google
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -10,7 +12,6 @@ import com.github.ahatem.qtranslate.api.spellchecker.SpellCheckRequest
 import com.github.ahatem.qtranslate.api.spellchecker.SpellCheckResponse
 import com.github.ahatem.qtranslate.api.spellchecker.SpellChecker
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.ahatem.qtranslate.plugins.google.common.GoogleLanguageMapper
 import com.github.ahatem.qtranslate.plugins.google.common.TranslateResponse
@@ -23,12 +24,13 @@ import java.util.*
 
 class GoogleSpellCheckerService(
     private val pluginContext: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val languageMapper: GoogleLanguageMapper,
     private val apiConfig: ApiConfig
 ) : SpellChecker {
 
-    override val id: String = "google-spell-checker"
+
+    override val key: String = "google-spell-checker"
     override val name: String = "Google Spell Checker"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/google-translate-icon.svg"
@@ -69,7 +71,7 @@ class GoogleSpellCheckerService(
                 }
 
                 val result = checkSentence(sentence, request.language)
-                result.onSuccess {
+                result.onOk {
                     cache[sentence] = Ok(it)
                 }
                 result to sentenceOffset

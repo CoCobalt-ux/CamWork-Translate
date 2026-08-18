@@ -1,6 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.libretranslate
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -9,7 +11,8 @@ import com.github.ahatem.qtranslate.api.translator.BatchTranslationResponse
 import com.github.ahatem.qtranslate.api.translator.BatchTranslator
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
 import com.github.ahatem.qtranslate.api.translator.TranslationResponse
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
+import com.github.ahatem.qtranslate.plugins.common.fetchJson
+import com.github.ahatem.qtranslate.plugins.common.sendJson
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.coroutines.coroutineBinding
@@ -17,11 +20,11 @@ import kotlinx.serialization.json.Json
 
 internal class LibreTranslateService(
     private val context: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val settings: () -> LibreTranslateSettings
 ) : BatchTranslator {
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
-    override val id = "libretranslate-local-translator"
+    override val key = "libretranslate-local-translator"
     override val name = "LibreTranslate Local"
     override val iconPath = "assets/libretranslate.svg"
     override val version = "1.0.0"

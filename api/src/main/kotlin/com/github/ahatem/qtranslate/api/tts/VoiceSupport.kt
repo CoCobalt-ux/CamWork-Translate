@@ -3,7 +3,11 @@ package com.github.ahatem.qtranslate.api.tts
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 
 /**
- * Optional capability interface for [TextToSpeech] services that support explicit voice selection.
+ * Optional behaviour for [TextToSpeech] services that support explicit voice selection.
+ *
+ * This is not a [com.github.ahatem.qtranslate.api.plugin.ServiceRole]. The user selects a
+ * text-to-speech service, not a voice-supporting one; this only changes how that service is
+ * driven once chosen.
  *
  * ### How this connects to TTSRequest
  * [TTSRequest] is a sealed interface with two variants:
@@ -14,8 +18,7 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
  * **The core guarantees** that [TTSRequest.ByVoice] is only ever dispatched to a
  * [TextToSpeech] service that also implements [VoiceSupport]. A service that does not
  * implement [VoiceSupport] will never receive a [TTSRequest.ByVoice] request — the core
- * validates this via [com.github.ahatem.qtranslate.api.plugin.Service.getCapability]
- * before dispatching.
+ * checks with `service as? VoiceSupport` before dispatching.
  *
  * ### Implementing VoiceSupport
  * A service implements both [TextToSpeech] and [VoiceSupport]:
@@ -35,13 +38,11 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
  * ```
  *
  * ### Discovery
- * The core discovers this capability without casting:
  * ```kotlin
- * val voiceSupport = service.getCapability(VoiceSupport::class.java)
- * val availableVoices = voiceSupport?.voices ?: emptyList()
+ * val availableVoices = (service as? VoiceSupport)?.voices.orEmpty()
  * ```
  */
-interface VoiceSupport {
+public interface VoiceSupport {
     /**
      * The complete list of voices this service can synthesize with.
      *
@@ -50,7 +51,7 @@ interface VoiceSupport {
      * be determined at runtime (e.g. fetched from an API), fetch and cache it during
      * [com.github.ahatem.qtranslate.api.plugin.Plugin.onEnable] and return the cached list here.
      */
-    val voices: List<Voice>
+    public val voices: List<Voice>
 }
 
 /**
@@ -63,7 +64,7 @@ interface VoiceSupport {
  * @param language The primary language this voice speaks, as a [LanguageCode].
  * @param gender   The voice's gender, or `null` if unknown or not applicable.
  */
-data class Voice(
+public data class Voice(
     val id: String,
     val name: String,
     val language: LanguageCode,
@@ -71,6 +72,6 @@ data class Voice(
 )
 
 /** The gender of a [Voice], used for filtering and display in the UI. */
-enum class Gender {
+public enum class Gender {
     MALE, FEMALE, NEUTRAL
 }

@@ -1,10 +1,10 @@
 package com.github.ahatem.qtranslate.plugins.ai
 
 import com.github.ahatem.qtranslate.api.plugin.Plugin
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.Service
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
@@ -39,7 +39,7 @@ import com.github.michaelbull.result.Result
 class AIPlugin : Plugin<AISettings> {
 
     private lateinit var pluginContext: PluginContext
-    private lateinit var httpClient: KtorHttpClient
+    private val httpClient: HttpClient get() = pluginContext.http
     private lateinit var serviceClient: AIServiceClient
 
     private var settings: AISettings = AISettings()
@@ -49,15 +49,13 @@ class AIPlugin : Plugin<AISettings> {
         pluginContext = context
 
         settings = AISettings(
-            baseUrl       = context.getValue(KEY_BASE_URL)       ?: AISettings().baseUrl,
-            apiKey        = context.getValue(KEY_API_KEY)        ?: "",
-            model         = context.getValue(KEY_MODEL)          ?: AISettings().model,
-            temperature   = context.getValue(KEY_TEMPERATURE)?.toDoubleOrNull() ?: 0.3,
-            maxTokens     = context.getValue(KEY_MAX_TOKENS)?.toIntOrNull()     ?: 4096,
-            customHeaders = context.getValue(KEY_CUSTOM_HEADERS) ?: AISettings().customHeaders
-        )
-
-        httpClient = KtorHttpClient(context)
+            baseUrl       = context.settings.getString(KEY_BASE_URL) ?: AISettings().baseUrl,
+            apiKey        = context.secrets.get(KEY_API_KEY) ?: "",
+            model         = context.settings.getString(KEY_MODEL) ?: AISettings().model,
+            temperature   = context.settings.getDouble(KEY_TEMPERATURE, 0.3),
+            maxTokens     = context.settings.getInt(KEY_MAX_TOKENS, 4096),
+            customHeaders = context.settings.getString(KEY_CUSTOM_HEADERS) ?: AISettings().customHeaders
+        )
 
         serviceClient = AIServiceClient(
             pluginContext = context,
@@ -72,9 +70,13 @@ class AIPlugin : Plugin<AISettings> {
     }
 
     override suspend fun onEnable(): Result<Unit, ServiceError> {
-        if (settings.apiKey.isBlank()) {
+        // Only a warning when a key is actually needed. A local endpoint runs perfectly well
+        // without one, and warning there would send someone hunting for a problem that is not
+        // there.
+        if (settings.missingKeyError() != null) {
             pluginContext.logger.warn(
-                "AI Plugin enabled without an API key — services will return AuthenticationError until a key is set."
+                "AI Plugin enabled without an API key for ${settings.baseUrl} — " +
+                    "services will report a configuration error until a key is set."
             )
         }
         buildServices()
@@ -86,12 +88,12 @@ class AIPlugin : Plugin<AISettings> {
         val error = validateSettings(settings)
         if (error != null) return Err(error)
 
-        pluginContext.storeValue(KEY_BASE_URL,       settings.baseUrl)
-        pluginContext.storeValue(KEY_API_KEY,        settings.apiKey)
-        pluginContext.storeValue(KEY_MODEL,          settings.model)
-        pluginContext.storeValue(KEY_TEMPERATURE,    settings.temperature.toString())
-        pluginContext.storeValue(KEY_MAX_TOKENS,     settings.maxTokens.toString())
-        pluginContext.storeValue(KEY_CUSTOM_HEADERS, settings.customHeaders)
+        pluginContext.settings.put(KEY_BASE_URL, settings.baseUrl)
+        pluginContext.secrets.put(KEY_API_KEY, settings.apiKey)
+        pluginContext.settings.put(KEY_MODEL, settings.model)
+        pluginContext.settings.put(KEY_TEMPERATURE, settings.temperature)
+        pluginContext.settings.put(KEY_MAX_TOKENS, settings.maxTokens)
+        pluginContext.settings.put(KEY_CUSTOM_HEADERS, settings.customHeaders)
 
         this.settings = settings
 
@@ -107,8 +109,7 @@ class AIPlugin : Plugin<AISettings> {
     }
 
     override suspend fun shutdown() {
-        pluginContext.logger.info("AI Plugin shutting down")
-        httpClient.close()
+        pluginContext.logger.info("AI Plugin shutting down")
     }
 
     override fun getServices(): List<Service> = activeServices

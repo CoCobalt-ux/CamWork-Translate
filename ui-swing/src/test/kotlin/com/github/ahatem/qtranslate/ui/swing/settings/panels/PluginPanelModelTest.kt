@@ -36,7 +36,7 @@ class PluginPanelModelTest {
     )
 
     private object TranslatorStub : Translator {
-        override val id = "translator-stub"
+        override val key = "translator-stub"
         override val name = "Translator Stub"
         override val version = "1.0.0"
         override val supportedLanguages = SupportedLanguages.Specific(setOf(LanguageCode.ENGLISH))

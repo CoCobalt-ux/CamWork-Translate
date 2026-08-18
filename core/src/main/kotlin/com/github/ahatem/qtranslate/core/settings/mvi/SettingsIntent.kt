@@ -2,7 +2,7 @@ package com.github.ahatem.qtranslate.core.settings.mvi
 
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.TranslationRule
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.arch.UiIntent
 
 /**
@@ -70,24 +70,21 @@ sealed interface SettingsIntent : UiIntent {
 
     /**
      * Switches the active service preset to [presetId] and immediately saves.
-     * Emits [AppEvent.ActivePresetChanged] on the event bus.
      */
     data class SetActivePreset(val presetId: String) : SettingsIntent
 
     /**
      * Selects [serviceId] for [type] in the active preset and immediately saves.
      * Pass `null` for [serviceId] to clear the selection (fall back to first available).
-     * Emits [AppEvent.ServiceSelectionChanged] on the event bus.
      */
     data class UpdateServiceInActivePreset(
-        val type: ServiceType,
+        val type: ServiceRole,
         val serviceId: String?
     ) : SettingsIntent
 
     /**
      * Creates a new preset named [name] with default Google services pre-selected,
      * makes it active, and immediately saves.
-     * Emits [AppEvent.ActivePresetChanged] on the event bus.
      */
     data class CreatePreset(val name: String) : SettingsIntent
 
@@ -95,8 +92,7 @@ sealed interface SettingsIntent : UiIntent {
      * Deletes the preset identified by [presetId] and immediately saves.
      * Cannot delete the last remaining preset — dispatching this intent when only
      * one preset exists sends [SettingsEvent.ShowMessage] with an error.
-     * If the deleted preset was active, the first remaining preset becomes active
-     * and [AppEvent.ActivePresetChanged] is emitted.
+     * If the deleted preset was active, the first remaining preset becomes active.
      */
     data class DeletePreset(val presetId: String) : SettingsIntent
 

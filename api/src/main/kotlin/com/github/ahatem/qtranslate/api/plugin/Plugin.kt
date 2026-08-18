@@ -26,7 +26,7 @@ import com.github.michaelbull.result.Result
  * }
  * ```
  */
-sealed class PluginSettings {
+public sealed class PluginSettings {
 
     /**
      * Use as the type parameter for plugins that have no user-configurable settings.
@@ -34,7 +34,7 @@ sealed class PluginSettings {
      *
      * Example: `class MyPlugin : Plugin<PluginSettings.None>`
      */
-    data object None : PluginSettings()
+    public data object None : PluginSettings()
 
     /**
      * Base class for plugins that expose user-configurable settings.
@@ -47,7 +47,7 @@ sealed class PluginSettings {
      *
      * Example: `class MyPlugin : Plugin<MyPluginSettings>`
      */
-    abstract class Configurable : PluginSettings()
+    public abstract class Configurable : PluginSettings()
 }
 
 /**
@@ -105,7 +105,23 @@ sealed class PluginSettings {
  * @see Service
  * @see PluginSettings
  */
-interface Plugin<S : PluginSettings> {
+public interface Plugin<S : PluginSettings> {
+
+    /**
+     * Whether the user may create several independently configured copies of this plugin.
+     *
+     * Each instance gets its own settings and its own credentials, and its services appear
+     * separately, so one plugin can front several providers at once — a Gemini instance beside
+     * an OpenRouter instance, say.
+     *
+     * Leave this false for plugins with nothing to configure. Offering to duplicate a plugin
+     * whose instances would be identical only invites confusion.
+     *
+     * Instances are entirely a host concern: the plugin is constructed once per instance and
+     * sees nothing different. It needs no instance-aware code.
+     */
+    public val supportsMultipleInstances: Boolean
+        get() = false
 
     // -------------------------------------------------------------------------
     // Core Lifecycle
@@ -126,7 +142,7 @@ interface Plugin<S : PluginSettings> {
      * @return `Ok(Unit)` on success. An `Err` permanently prevents this plugin from
      *         loading — the user will be notified and [onEnable] will never be called.
      */
-    suspend fun initialize(context: PluginContext): Result<Unit, ServiceError>
+    public suspend fun initialize(context: PluginContext): Result<Unit, ServiceError>
 
     /**
      * Called after [initialize] succeeds, and again whenever the user re-enables
@@ -138,7 +154,7 @@ interface Plugin<S : PluginSettings> {
      * @return `Ok(Unit)` if services are ready. An `Err` keeps the plugin disabled
      *         and is shown to the user as the reason.
      */
-    suspend fun onEnable(): Result<Unit, ServiceError> = Ok(Unit)
+    public suspend fun onEnable(): Result<Unit, ServiceError> = Ok(Unit)
 
     /**
      * Called when the user disables the plugin, or just before [shutdown] if the
@@ -148,7 +164,7 @@ interface Plugin<S : PluginSettings> {
      * [PluginContext.scope] is cancelled by the core immediately after this returns,
      * so any coroutines you launched in that scope will be cleaned up automatically.
      */
-    suspend fun onDisable() {}
+    public suspend fun onDisable() {}
 
     /**
      * Called **once**, just before the application closes, for final irreversible cleanup.
@@ -156,7 +172,7 @@ interface Plugin<S : PluginSettings> {
      * If the plugin was active, [onDisable] is guaranteed to have been called first.
      * Any exceptions thrown here are caught and logged by the core.
      */
-    suspend fun shutdown() {}
+    public suspend fun shutdown() {}
 
     // -------------------------------------------------------------------------
     // Service Management
@@ -173,7 +189,7 @@ interface Plugin<S : PluginSettings> {
      *         plugin is temporarily unable to provide services (the plugin will
      *         appear enabled but inactive in the UI).
      */
-    fun getServices(): List<Service>
+    public fun getServices(): List<Service>
 
     // -------------------------------------------------------------------------
     // Settings Management
@@ -198,7 +214,7 @@ interface Plugin<S : PluginSettings> {
      * override fun getSettings(): MyPluginSettings = currentSettings
      * ```
      */
-    fun getSettings(): S
+    public fun getSettings(): S
 
     /**
      * Called by the core when the user saves changes to this plugin's settings panel.
@@ -211,5 +227,5 @@ interface Plugin<S : PluginSettings> {
      * @return `Ok(Unit)` if valid and applied. An `Err` rejects the save — the
      *         settings panel stays open and the error message is shown to the user.
      */
-    suspend fun onSettingsChanged(settings: S): Result<Unit, ServiceError> = Ok(Unit)
+    public suspend fun onSettingsChanged(settings: S): Result<Unit, ServiceError> = Ok(Unit)
 }

@@ -3,22 +3,16 @@ package com.github.ahatem.qtranslate.ui.swing.shared.util
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.formdev.flatlaf.extras.FlatSVGIcon.ColorFilter
 import com.formdev.flatlaf.extras.components.FlatButton
-import com.formdev.flatlaf.util.SystemInfo
 import com.github.ahatem.qtranslate.api.ocr.ImageData
 import com.github.ahatem.qtranslate.core.settings.data.FontConfig
 import com.github.ahatem.qtranslate.core.settings.data.Position
 import com.github.ahatem.qtranslate.core.settings.data.Size
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import java.awt.*
-import java.awt.event.ActionEvent
-import java.awt.event.InputEvent
-import java.awt.event.KeyEvent
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import javax.imageio.ImageIO
 import javax.swing.*
-import javax.swing.event.DocumentEvent
-import javax.swing.event.DocumentListener
 
 fun getVirtualScreenBounds(): Rectangle {
     var bounds = Rectangle()
@@ -45,32 +39,6 @@ fun FlatSVGIcon.applyForegroundColorFilter(): FlatSVGIcon {
     }
 }
 
-
-fun singleKey(key: Int): KeyStroke = KeyStroke.getKeyStroke(key, 0)
-fun controlKeyWith(key: Int): KeyStroke = KeyStroke.getKeyStroke(key, Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx)
-fun altKeyWith(key: Int): KeyStroke = KeyStroke.getKeyStroke(key, InputEvent.ALT_DOWN_MASK)
-fun shiftKeyWith(key: Int): KeyStroke = KeyStroke.getKeyStroke(key, InputEvent.SHIFT_DOWN_MASK)
-
-fun KeyStroke.getReadableKeyStrokeText(): String {
-    val sb = StringBuilder()
-
-    if (modifiers and ActionEvent.CTRL_MASK != 0 && keyCode != KeyEvent.VK_CONTROL) {
-        sb.append("Ctrl + ")
-    }
-    if (modifiers and ActionEvent.SHIFT_MASK != 0 && keyCode != KeyEvent.VK_SHIFT) {
-        sb.append("Shift + ")
-    }
-    if (modifiers and ActionEvent.ALT_MASK != 0 && keyCode != KeyEvent.VK_ALT) {
-        sb.append("Alt + ")
-    }
-    if (modifiers and ActionEvent.META_MASK != 0 && keyCode != KeyEvent.VK_META) {
-        sb.append("Meta + ")
-    }
-
-    sb.append(KeyEvent.getKeyText(keyCode))
-    return sb.toString()
-}
-
 fun FontConfig.toFont(): Font {
     return Font(this.name, Font.PLAIN, this.size)
 }
@@ -90,4 +58,16 @@ fun BufferedImage.toImageData(format: String): ImageData {
         width = this.width,
         height = this.height
     )
+}
+/**
+ * Removes this component's border so that a look-and-feel change cannot bring it back.
+ *
+ * `border = null` looks like it does the same thing, but [javax.swing.LookAndFeel.installBorder]
+ * reinstalls the look-and-feel default whenever the current border is `null` or a `UIResource` —
+ * and every component's `updateUI()` runs that on a theme change. Scroll panes and split panes
+ * that were built borderless would suddenly draw a frame around themselves the first time the
+ * user switched themes. An empty border is neither `null` nor a `UIResource`, so it survives.
+ */
+fun JComponent.clearBorder() {
+    border = BorderFactory.createEmptyBorder()
 }

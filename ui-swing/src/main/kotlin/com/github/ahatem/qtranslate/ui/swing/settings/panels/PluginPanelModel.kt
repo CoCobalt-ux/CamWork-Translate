@@ -1,31 +1,37 @@
 package com.github.ahatem.qtranslate.ui.swing.settings.panels
 
 import com.github.ahatem.qtranslate.core.plugin.PluginState
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
-import com.github.ahatem.qtranslate.core.shared.util.type
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
+import com.github.ahatem.qtranslate.core.shared.util.roles
 
-internal enum class PluginCategory(val serviceType: ServiceType?) {
+internal enum class PluginCategory(val serviceRole: ServiceRole?) {
     ALL(null),
-    TRANSLATORS(ServiceType.TRANSLATOR),
-    DICTIONARIES(ServiceType.DICTIONARY),
-    TTS(ServiceType.TTS),
-    OCR(ServiceType.OCR),
-    SPELL_CHECKERS(ServiceType.SPELL_CHECKER),
+    TRANSLATORS(ServiceRole.TRANSLATOR),
+    DICTIONARIES(ServiceRole.DICTIONARY),
+    TTS(ServiceRole.TTS),
+    OCR(ServiceRole.OCR),
+    SPELL_CHECKERS(ServiceRole.SPELL_CHECKER),
     AI(null),
     OTHER(null)
 }
 
 internal object PluginPanelModel {
     fun categories(plugin: PluginState): Set<PluginCategory> {
-        val serviceCategories = plugin.services.mapNotNull { service ->
-            when (service.type) {
-                ServiceType.TRANSLATOR -> PluginCategory.TRANSLATORS
-                ServiceType.DICTIONARY -> PluginCategory.DICTIONARIES
-                ServiceType.TTS -> PluginCategory.TTS
-                ServiceType.OCR -> PluginCategory.OCR
-                ServiceType.SPELL_CHECKER -> PluginCategory.SPELL_CHECKERS
-                ServiceType.SUMMARIZER, ServiceType.REWRITER -> PluginCategory.AI
-                null -> null
+        // Every role, not one per service: a plugin whose single service both translates and
+        // defines words belongs in both categories, and filtering by either should find it.
+        val serviceCategories = plugin.services.flatMap { service ->
+            service.roles.map { role ->
+                when (role) {
+                    ServiceRole.TRANSLATOR -> PluginCategory.TRANSLATORS
+                    ServiceRole.DICTIONARY -> PluginCategory.DICTIONARIES
+                    ServiceRole.TTS -> PluginCategory.TTS
+                    ServiceRole.OCR -> PluginCategory.OCR
+                    ServiceRole.SPELL_CHECKER -> PluginCategory.SPELL_CHECKERS
+                    ServiceRole.SUMMARIZER, ServiceRole.REWRITER -> PluginCategory.AI
+                    // Filed under Other rather than given a category of its own, since Wikimedia
+                    // is the only source and it already appears under Dictionaries.
+                    ServiceRole.IMAGE_SEARCH -> PluginCategory.OTHER
+                }
             }
         }.toSet()
         return serviceCategories.ifEmpty { setOf(PluginCategory.OTHER) }

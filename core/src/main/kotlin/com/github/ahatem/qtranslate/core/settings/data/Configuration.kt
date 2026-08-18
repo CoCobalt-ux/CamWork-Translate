@@ -1,8 +1,8 @@
 package com.github.ahatem.qtranslate.core.settings.data
 
-import com.github.ahatem.qtranslate.api.rewriter.RewriteStyle
-import com.github.ahatem.qtranslate.api.summarizer.SummaryLength
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.StandardOptions
+import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import kotlinx.serialization.Serializable
 import javax.swing.KeyStroke
 import kotlin.uuid.ExperimentalUuidApi
@@ -65,10 +65,22 @@ data class Size(val width: Int, val height: Int) {
     init { require(width > 0 && height > 0) { "Size must be positive, was ${width}x${height}." } }
 }
 
+/**
+ * A saved window position, in the virtual screen coordinates AWT reports.
+ *
+ * Deliberately unconstrained. This used to require both coordinates to be non-negative, which is
+ * simply not true of a real desktop: a display arranged to the left of or above the primary one
+ * occupies negative coordinates, and a window sitting on it has an ordinary, valid, negative
+ * position. The requirement turned that into an IllegalArgumentException thrown from the middle of
+ * saving, so call sites clamped to zero to get past it, which then moved the window to the primary
+ * display on the next launch.
+ *
+ * A position that is no longer on any connected display is a genuine worry, but it belongs to the
+ * moment the window is placed rather than the moment the number is stored, because the displays
+ * can change in between. `isPositionReachable` in ui-swing handles it there.
+ */
 @Serializable
-data class Position(val x: Int, val y: Int) {
-    init { require(x >= 0 && y >= 0) { "Position must be non-negative, was ($x, $y)." } }
-}
+data class Position(val x: Int, val y: Int)
 
 // -------------------------------------------------------------------------
 // Hotkeys
@@ -87,6 +99,7 @@ enum class HotkeyAction {
     REPLACE_WITH_TRANSLATION,  // Rob #2 / Davide — translate and replace selected text
     CYCLE_TARGET_LANGUAGE,     // Yan #3 — cycle through available target languages
     SHOW_DICTIONARY,           // open floating dictionary popup
+    SHOW_IMAGES,               // open floating image popup (default: Ctrl+Shift+Q, GLOBAL)
     TRANSLATE,                 // trigger translation (default: Ctrl+Enter, LOCAL)
     FOCUS_INPUT,               // move keyboard focus to the input text pane (default: Alt+1, LOCAL)
     FOCUS_OUTPUT,              // move keyboard focus to the output text pane (default: Alt+2, LOCAL)
@@ -168,6 +181,9 @@ data class HotkeyBinding(
             HotkeyBinding(HotkeyAction.REPLACE_WITH_TRANSLATION, keyCode = java.awt.event.KeyEvent.VK_T,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK or java.awt.event.InputEvent.SHIFT_DOWN_MASK, scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.CYCLE_TARGET_LANGUAGE,    keyCode = java.awt.event.KeyEvent.VK_L,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.LOCAL),
             HotkeyBinding(HotkeyAction.SHOW_DICTIONARY,          keyCode = java.awt.event.KeyEvent.VK_D,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
+            // Shift+the quick-translate key: this is the same gesture on the same selection,
+            // asking for pictures instead of words. Ctrl+Shift+I would read as a variant of OCR.
+            HotkeyBinding(HotkeyAction.SHOW_IMAGES,              keyCode = java.awt.event.KeyEvent.VK_Q,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK or java.awt.event.InputEvent.SHIFT_DOWN_MASK, scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.TRANSLATE,                keyCode = java.awt.event.KeyEvent.VK_ENTER,            modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.LOCAL),
             HotkeyBinding(HotkeyAction.FOCUS_INPUT,              keyCode = java.awt.event.KeyEvent.VK_1,                modifiers = java.awt.event.InputEvent.ALT_DOWN_MASK,   scope = HotkeyScope.LOCAL),
             HotkeyBinding(HotkeyAction.FOCUS_OUTPUT,             keyCode = java.awt.event.KeyEvent.VK_2,                modifiers = java.awt.event.InputEvent.ALT_DOWN_MASK,   scope = HotkeyScope.LOCAL),
@@ -192,28 +208,31 @@ data class HotkeyBinding(
 data class ServicePreset(
     val id: String,
     val name: String,
-    val selectedServices: Map<ServiceType, String?>
+    val selectedServices: Map<ServiceRole, String?>
 ) {
     companion object {
 
         const val DEFAULT_PRESET_NAME = "__default__" // internal sentinel, never shown to user
 
-        private const val DEFAULT_TRANSLATOR    = "google-translator"
-        private const val DEFAULT_TTS           = "google-tts"
-        private const val DEFAULT_SPELL_CHECKER = "google-spell-checker"
-        private const val DEFAULT_OCR           = "google-ocr"
-        private const val DEFAULT_DICTIONARY    = "google-dictionary"
+        // Composed ids, matching what the registry keys these services under. A fresh install must
+        // be valid on its own rather than depend on a migration to become so.
+        private const val GOOGLE = "google-services"
+        private val DEFAULT_TRANSLATOR    = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-translator")
+        private val DEFAULT_TTS           = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-tts")
+        private val DEFAULT_SPELL_CHECKER = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-spell-checker")
+        private val DEFAULT_OCR           = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-ocr")
+        private val DEFAULT_DICTIONARY    = ServiceId.of(GOOGLE, ServiceId.DEFAULT_INSTANCE, "google-dictionary")
 
         @OptIn(ExperimentalUuidApi::class)
         fun createDefault(name: String = DEFAULT_PRESET_NAME): ServicePreset = ServicePreset(
             id = Uuid.random().toString(),
             name = name,
             selectedServices = mapOf(
-                ServiceType.TRANSLATOR    to DEFAULT_TRANSLATOR,
-                ServiceType.TTS           to DEFAULT_TTS,
-                ServiceType.SPELL_CHECKER to DEFAULT_SPELL_CHECKER,
-                ServiceType.OCR           to DEFAULT_OCR,
-                ServiceType.DICTIONARY    to DEFAULT_DICTIONARY
+                ServiceRole.TRANSLATOR    to DEFAULT_TRANSLATOR,
+                ServiceRole.TTS           to DEFAULT_TTS,
+                ServiceRole.SPELL_CHECKER to DEFAULT_SPELL_CHECKER,
+                ServiceRole.OCR           to DEFAULT_OCR,
+                ServiceRole.DICTIONARY    to DEFAULT_DICTIONARY
             )
         )
     }
@@ -253,13 +272,32 @@ data class Configuration(
     val autoCheckForUpdates: Boolean = true,
     val isGlobalHotkeysEnabled: Boolean = true,
     val isSelectionIconEnabled: Boolean = false,
-    val interfaceLanguage: String = "en",
+    /**
+     * The interface language, or blank for "not chosen yet, follow the operating system".
+     *
+     * Blank rather than "en" because the two have to be told apart and previously could not be.
+     * Configuration is written without its default values, so a user who picked English stored
+     * nothing, which was indistinguishable from never having picked at all — and startup, seeing
+     * "en", ran operating-system detection and overrode them again on every launch. Choosing
+     * English on a non-English machine therefore never stuck.
+     *
+     * With a blank default, picking English stores "en", which differs from the default and so
+     * survives. Detection now runs only when nothing has been chosen, which is what it was for.
+     */
+    val interfaceLanguage: String = "",
     val isInstantTranslationEnabled: Boolean = false,
     val isSpellCheckingEnabled: Boolean = true,
     val extraOutputType: ExtraOutputType = ExtraOutputType.None,
     val extraOutputSource: ExtraOutputSource = ExtraOutputSource.Output,
-    val summaryLength: SummaryLength = SummaryLength.MEDIUM,
-    val rewriteStyle: RewriteStyle = RewriteStyle.FORMAL,
+    /**
+     * Selected ids for the standard summary and rewrite options.
+     *
+     * Strings rather than enums because the vocabulary now belongs to the service: a plugin can
+     * offer "Academic" or "Bullet points" without the host knowing about it. The standard ids
+     * match the names of the enums these replaced, so values already on disk keep working.
+     */
+    val summaryLength: String = StandardOptions.SUMMARY_LENGTH.defaultValue,
+    val rewriteStyle: String = StandardOptions.REWRITE_STYLE.defaultValue,
 
     // ---- Translation ----
     /**
@@ -303,41 +341,90 @@ data class Configuration(
     val showDictionaryPanel: Boolean = false,
     val dictionaryAutoSource: DictionaryAutoSource = DictionaryAutoSource.TRANSLATED,
     val isDictionaryAutoPopupEnabled: Boolean = true,
+
+    /**
+     * Whether clicking away from a floating popup closes it.
+     *
+     * On by default: clicking elsewhere is how people dismiss a transient window, and a popup
+     * that ignores it has to be closed deliberately every time. Off suits anyone who translates
+     * a word and then works in the document beside it — for them, a click in the document
+     * throwing the translation away is the annoyance instead. Pinning still overrides it either
+     * way, which is what pinning is for.
+     */
+    val closePopupsOnClickOutside: Boolean = true,
     val mainWindowSize: Size? = null,
     val mainWindowPosition: Position? = null,
     val uiFontConfig: FontConfig = FontConfig(name = "Rubik", size = 13),
     val uiScale: Int = 100,
     val themeId: String = "os_default",
+    /**
+     * Which icon set to draw with, by folder name under `icons/`.
+     *
+     * A name rather than an index, so adding or reordering sets cannot silently change
+     * somebody's choice, and an unknown one falls back rather than leaving no icons at all.
+     */
+    val iconSetId: String = "lucide",
     val editorFontConfig: FontConfig = FontConfig(name = "Rubik", size = 15),
-    val editorFallbackFontConfig: FontConfig = FontConfig(name = "Rubik", size = 15),
+    /**
+     * The face used for characters the editor font has no glyph for.
+     *
+     * Defaults to the bundled Arabic face rather than to Rubik, which covers no Arabic at all.
+     * Pointing the fallback at a font with the same gap as the primary meant right-to-left output
+     * was left to whatever the platform substituted, so the same translation rendered differently
+     * on Windows, on Linux and in a container with no Arabic font installed.
+     *
+     * Only new installations pick this up; an existing configuration keeps whatever is stored.
+     */
+    val editorFallbackFontConfig: FontConfig = FontConfig(name = "Noto Naskh Arabic", size = 15),
     val useUnifiedTitleBar: Boolean = true,
     val layoutPresetId: String = "classic",
     val toolbarVisibility: ToolbarVisibility = ToolbarVisibility.DEFAULT,
-    val serviceSelectorStyle: ServiceSelectorStyle = ServiceSelectorStyle.CLASSIC,
+    /**
+     * Enhanced by default: it shows which service is active and lets one be swapped in place,
+     * where the classic selector only lists them. Classic remains for anyone who prefers the
+     * denser row.
+     */
+    val serviceSelectorStyle: ServiceSelectorStyle = ServiceSelectorStyle.ENHANCED,
     val serviceSelectorAppearance: ServiceSelectorAppearance = ServiceSelectorAppearance.ICONS_AND_TEXT,
 
     // ---- UI — Quick Panel (Popup) ----
     val isPopupAutoSizeEnabled: Boolean = true,
     val isPopupAutoPositionEnabled: Boolean = true,
     val popupTransparencyPercentage: Int = 5,
-    val popupIdleTimeoutSeconds: Int = 3,
+    /**
+     * How long the translate popup waits before hiding itself.
+     *
+     * Three seconds was not enough to read a translated sentence, let alone a paragraph -- the
+     * popup was gone before most people finished. The countdown restarts on any activity, so a
+     * longer default costs nothing to someone who has already moved on.
+     */
+    val popupIdleTimeoutSeconds: Int = 12,
     val popupLastKnownSize: Size = Size(width = 450, height = 250),
     val popupLastKnownPosition: Position = Position(x = 0, y = 0),
 
     // ---- UI — Quick Dictionary Popup ----
     val quickDictionaryLastKnownSize: Size = Size(width = 420, height = 400),
     val quickDictionaryLastKnownPosition: Position = Position(x = 0, y = 0),
+    /** Wider than the dictionary popup because it holds a grid rather than a column of text. */
+    val imageSearchLastKnownSize: Size = Size(width = 560, height = 460),
+    val imageSearchLastKnownPosition: Position = Position(x = 0, y = 0),
     val isQuickDictionaryPinned: Boolean = false,
     val isQuickDictionaryAutoPositionEnabled: Boolean = true,
-    val quickDictionaryIdleTimeoutSeconds: Int = 8,
+    /** Longer than the translate popup: definitions are read and compared, not glanced at. */
+    val quickDictionaryIdleTimeoutSeconds: Int = 20,
     val quickDictionaryTransparencyPercentage: Int = 5,
+    val isImageSearchAutoPositionEnabled: Boolean = true,
+    val imageSearchTransparencyPercentage: Int = 5,
 
     // ---- Donation nudge ----
     /**
      * Set to `true` the first time the one-time donation nudge is shown.
      * Prevents the nudge from ever appearing again after it has been displayed once.
      */
-    val donationNudgeShown: Boolean = false
+    val donationNudgeShown: Boolean = false,
+
+    // ---- Network ----
+    val network: NetworkConfig = NetworkConfig()
 ) {
     fun getActivePreset(): ServicePreset? =
         servicePresets.find { it.id == activeServicePresetId }
@@ -346,6 +433,7 @@ data class Configuration(
         val DEFAULT: Configuration by lazy {
             val defaultPreset = ServicePreset.createDefault()
             Configuration(
+                configVersion                = ConfigMigrator.CURRENT_VERSION,
                 servicePresets               = listOf(defaultPreset),
                 activeServicePresetId        = defaultPreset.id,
                 disabledServices             = emptySet(),
@@ -359,8 +447,8 @@ data class Configuration(
                 isSpellCheckingEnabled       = true,
                 extraOutputType              = ExtraOutputType.None,
                 extraOutputSource            = ExtraOutputSource.Output,
-                summaryLength                = SummaryLength.MEDIUM,
-                rewriteStyle                 = RewriteStyle.FORMAL,
+                summaryLength                = StandardOptions.SUMMARY_LENGTH.defaultValue,
+                rewriteStyle                 = StandardOptions.REWRITE_STYLE.defaultValue,
                 isRemoveLineBreaksEnabled    = false,
                 pinnedLanguages              = emptyList(),
                 closeButtonBehavior          = CloseButtonBehavior.ASK,
@@ -370,7 +458,7 @@ data class Configuration(
                 themeId                      = "os_default",
                 uiFontConfig                 = FontConfig(name = "Rubik", size = 13),
                 editorFontConfig             = FontConfig(name = "Rubik", size = 15),
-                editorFallbackFontConfig     = FontConfig(name = "Rubik", size = 15),
+                editorFallbackFontConfig     = FontConfig(name = "Noto Naskh Arabic", size = 15),
                 useUnifiedTitleBar           = true,
                 layoutPresetId               = "classic",
                 toolbarVisibility            = ToolbarVisibility.DEFAULT,
@@ -381,5 +469,55 @@ data class Configuration(
                 popupLastKnownPosition       = Position(x = 0, y = 0)
             )
         }
+    }
+}
+
+/**
+ * How the application reaches the network, for every plugin at once.
+ *
+ * Stored here rather than per plugin because that is the whole point: a proxy or a timeout is a
+ * property of where the user is sitting, not of which translation service they happen to be using,
+ * and setting it eight times is seven times too many. Plugins are handed a client built from this,
+ * so none of them has to know it exists.
+ *
+ * The proxy password is deliberately absent. Configuration is written to disk as plain JSON, and a
+ * password belongs in the secret store next to the API keys. See [proxyPasswordKey].
+ */
+@Serializable
+data class NetworkConfig(
+    val proxyEnabled: Boolean = false,
+    /** For example `http://proxy.example:3128`. Credentials are separate fields, not userinfo. */
+    val proxyUrl: String = "",
+    val proxyUsername: String = "",
+
+    val requestTimeoutSeconds: Int = 30,
+    val connectTimeoutSeconds: Int = 15,
+    val socketTimeoutSeconds: Int = 15,
+
+    val retryEnabled: Boolean = true,
+    val maxRetries: Int = 2,
+    /**
+     * Seconds before the first retry. Each attempt after waits twice the last, plus jitter.
+     *
+     * One number rather than a written-out ladder: a fixed interval is the wrong answer for
+     * a rate limit, and a hand-written 5/10/15 is four more values to get wrong that a
+     * server's Retry-After overrides anyway whenever it appears.
+     */
+    val retryInitialDelaySeconds: Int = 1,
+
+    val maxConnectionsPerHost: Int = 8,
+    val maxConnectionsTotal: Int = 64,
+
+    /**
+     * Longer timeouts for particular hosts, keyed by hostname.
+     *
+     * A local model is the case this exists for: it may think for a minute before its first token,
+     * where a cloud endpoint that has not answered in ten seconds is not going to.
+     */
+    val hostTimeoutSeconds: Map<String, Int> = emptyMap()
+) {
+    companion object {
+        /** Where the proxy password lives, in the secret store rather than in this file. */
+        const val proxyPasswordKey: String = "network.proxy.password"
     }
 }

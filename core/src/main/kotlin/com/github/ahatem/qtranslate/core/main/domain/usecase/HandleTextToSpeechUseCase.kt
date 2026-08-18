@@ -15,7 +15,7 @@ import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputSource
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.StatusCode
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.onErr
 import com.github.michaelbull.result.onOk
@@ -23,6 +23,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import com.github.ahatem.qtranslate.core.shared.util.shortSummary
 
 class HandleTextToSpeechUseCase(
     private val activeServiceManager: ActiveServiceManager,
@@ -49,10 +50,14 @@ class HandleTextToSpeechUseCase(
         currentState: MainState,
         textSource: TextSource,
         textOverride: String?,
+        languageOverride: LanguageCode? = null,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit
     ) {
         val textToSynthesize = textOverride ?: getTextFromSource(currentState, textSource)
-        val language = determineLanguage(currentState, textSource)
+        // AUTO is not a language a TTS service can speak, so it falls through to the panel's
+        // language rather than being handed over as-is.
+        val language = languageOverride?.takeIf { it != LanguageCode.AUTO }
+            ?: determineLanguage(currentState, textSource)
 
         if (textToSynthesize.isBlank()) {
             logger.debug("TTS skipped: text is blank")
@@ -66,7 +71,7 @@ class HandleTextToSpeechUseCase(
             return
         }
 
-        val ttsService = activeServiceManager.getActiveService<TextToSpeech>(ServiceType.TTS)
+        val ttsService = activeServiceManager.getActiveService<TextToSpeech>(ServiceRole.TTS)
         if (ttsService == null) {
             logger.warn("No TTS service available")
             onStatusUpdate(StatusCode.NoTtsServiceActive, NotificationType.WARNING, true)
@@ -134,7 +139,7 @@ class HandleTextToSpeechUseCase(
             }
             .onErr { error ->
                 logger.error("TTS failed: ${error.message}", error.cause)
-                val summary = error.message?.lines()?.firstOrNull()?.take(120) ?: "Unknown error"
+                val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.TtsFailed(summary), NotificationType.ERROR, true)
             }
     }

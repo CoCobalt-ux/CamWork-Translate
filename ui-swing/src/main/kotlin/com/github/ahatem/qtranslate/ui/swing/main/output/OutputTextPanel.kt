@@ -6,6 +6,7 @@ import com.github.ahatem.qtranslate.ui.swing.main.widgets.ReadOnlyTextPanelState
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.TextActionsPanel
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.AdvancedTextPane
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.DefinitionStrip
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import java.awt.BorderLayout
 import java.awt.Color
@@ -30,6 +31,7 @@ class OutputTextPanel(
     onListen: (text: String) -> Unit,
     onTranslateRequest: (text: String) -> Unit,
     private val onFindInDictionary: ((String) -> Unit)? = null,
+    private val onSearchImages: ((String) -> Unit)? = null,
     private val onSetAsInput: ((String) -> Unit)? = null,
     private val onEscapePressed: (() -> Unit)? = null,
 ) : JPanel(BorderLayout()), Renderable<OutputTextState> {
@@ -41,6 +43,8 @@ class OutputTextPanel(
     )
     private val actionsPanel = TextActionsPanel(iconManager)
     private val readOnlyPanel = ReadOnlyTextPanel(textPane, actionsPanel)
+    // No rule of its own: the output pane above already draws a border.
+    private val definitionStrip = DefinitionStrip(showDivider = false)
 
     private val noServiceLabel = JLabel()
     private val noServiceAction = JButton().apply {
@@ -57,6 +61,7 @@ class OutputTextPanel(
 
     private var dictMenuItem: JMenuItem? = null
     private var dictMenuSeparator: JSeparator? = null
+    private var imageMenuItem: JMenuItem? = null
     private var setAsInputMenuItem: JMenuItem? = null
     private var setAsInputSeparator: JSeparator? = null
 
@@ -70,6 +75,9 @@ class OutputTextPanel(
     init {
         add(noServiceBanner, BorderLayout.NORTH)
         add(readOnlyPanel, BorderLayout.CENTER)
+        // An aside beneath the translation. Kept out of readOnlyPanel so it never lands in the
+        // clipboard when the translation is copied.
+        add(definitionStrip, BorderLayout.SOUTH)
 
         textPane.hintText = localizationManager.getString("main_window_editor_context_menu.output_hint")
 
@@ -82,9 +90,9 @@ class OutputTextPanel(
         textPane.getContextMenuLabel = { key ->
             localizationManager.getString("main_window_editor_context_menu.$key")
         }
-        if (onFindInDictionary != null || onSetAsInput != null) {
+        if (onFindInDictionary != null || onSearchImages != null || onSetAsInput != null) {
             textPane.onBeforeContextMenuPopup = { menu, clickPosition ->
-                if (onFindInDictionary != null) addFindInDictionaryItem(menu, clickPosition)
+                if (onFindInDictionary != null || onSearchImages != null) addFindInDictionaryItem(menu, clickPosition)
                 if (onSetAsInput != null) addSetAsInputItem(menu)
             }
         }
@@ -92,6 +100,7 @@ class OutputTextPanel(
 
     override fun render(state: OutputTextState) {
         renderNoServiceBanner(state.noService)
+        definitionStrip.render(state.definition)
         readOnlyPanel.render(
             ReadOnlyTextPanelState(
                 text = state.text,
@@ -143,22 +152,31 @@ class OutputTextPanel(
     private fun addFindInDictionaryItem(menu: JPopupMenu, clickPosition: Point) {
         dictMenuItem?.let { menu.remove(it) }
         dictMenuSeparator?.let { menu.remove(it) }
+        imageMenuItem?.let { menu.remove(it) }
         dictMenuItem = null
         dictMenuSeparator = null
+        imageMenuItem = null
 
         val clickOffset = textPane.viewToModel(clickPosition)
         val word = (textPane.selectedText?.trim() ?: "")
             .takeIf { it.isNotBlank() && !it.contains(' ') }
             ?: wordAtOffset(clickOffset)
-        if (word.isNotEmpty()) {
-            val sep = JSeparator()
-            val item = JMenuItem(localizationManager.getString("main_window_editor_context_menu.find_in_dictionary")).apply {
-                addActionListener { onFindInDictionary?.invoke(word) }
-            }
-            dictMenuSeparator = sep
-            dictMenuItem = item
-            menu.add(sep)
-            menu.add(item)
+        if (word.isEmpty()) return
+
+        val sep = JSeparator()
+        dictMenuSeparator = sep
+        menu.add(sep)
+
+        onFindInDictionary?.let { lookup ->
+            dictMenuItem = JMenuItem(
+                localizationManager.getString("main_window_editor_context_menu.find_in_dictionary")
+            ).apply { addActionListener { lookup(word) } }.also(menu::add)
+        }
+
+        onSearchImages?.let { search ->
+            imageMenuItem = JMenuItem(
+                localizationManager.getString("main_window_editor_context_menu.search_images")
+            ).apply { addActionListener { search(word) } }.also(menu::add)
         }
     }
 

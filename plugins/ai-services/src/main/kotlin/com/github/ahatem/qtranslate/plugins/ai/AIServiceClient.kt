@@ -1,13 +1,15 @@
 package com.github.ahatem.qtranslate.plugins.ai
 
 import com.github.ahatem.qtranslate.api.ocr.ImageData
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
+import com.github.ahatem.qtranslate.plugins.common.sendJson
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.andThen
+import com.github.michaelbull.result.map
 import com.github.michaelbull.result.toResultOr
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -36,11 +38,25 @@ import java.util.Base64
  */
 class AIServiceClient(
     private val pluginContext: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val settings: () -> AISettings
 ) {
     private val responseParser = createJsonParser<ChatCompletionResponse>(pluginContext)
     private val headersJson = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    /**
+     * Checks that the configured endpoint, key and model actually work together.
+     *
+     * Sends the smallest real request rather than only inspecting the settings: an endpoint that
+     * rejects the key, or a model name the provider does not have, both look perfectly valid on
+     * paper and only fail when the user tries to translate something.
+     */
+    suspend fun validate(): Result<Unit, ServiceError> {
+        val current = settings()
+        current.missingKeyError()?.let { return Err(it) }
+        return complete(system = "Reply with the single character: 1", userContent = "1")
+            .map { }
+    }
 
     /**
      * Sends a chat-completion request and returns the model's text response.
@@ -54,13 +70,7 @@ class AIServiceClient(
     ): Result<String, ServiceError> {
         val current = settings()
 
-        if (current.apiKey.isBlank()) {
-            return Err(
-                ServiceError.AuthenticationError(
-                    "AI Plugin: API key is not configured. Add your key in Settings → Plugins → AI Plugin."
-                )
-            )
-        }
+        current.missingKeyError()?.let { return Err(it) }
 
         val baseUrl = current.baseUrl.trimEnd('/')
         val endpoint = "$baseUrl/chat/completions"
@@ -134,13 +144,10 @@ class AIServiceClient(
     ): Result<String, ServiceError> {
         val current = settings()
 
-        if (current.apiKey.isBlank()) {
-            return Err(
-                ServiceError.AuthenticationError(
-                    "AI Plugin: API key is not configured. Add your key in Settings → Plugins → AI Plugin."
-                )
-            )
-        }
+        // The same rule as every other call. This one used to have its own check, which meant
+        // Vision OCR still refused to run against a local endpoint after the others had been
+        // fixed — and reported it as an authentication failure rather than a missing setting.
+        current.missingKeyError()?.let { return Err(it) }
 
         val baseUrl  = current.baseUrl.trimEnd('/')
         val endpoint = "$baseUrl/chat/completions"

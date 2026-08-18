@@ -9,6 +9,8 @@ import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Dimension
 import javax.swing.*
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+import com.github.ahatem.qtranslate.ui.swing.shared.widgets.ServiceInfoRenderer
 
 class DictionaryPanel(
     private val iconManager: IconManager,
@@ -24,12 +26,12 @@ class DictionaryPanel(
 
     private val hintLabel = JLabel("", SwingConstants.CENTER)
     private val loadingLabel = JLabel("", SwingConstants.CENTER)
-    private val resultView = DictionaryResultView()
+    private val resultView = DictionaryResultView(iconManager)
     private val cardPanel = JPanel(CardLayout())
 
     private val serviceCombo = JComboBox<ServiceInfo>().apply {
         putClientProperty("JComboBox.isTableCellEditor", true)
-        setRenderer { _, value, _, _, _ -> JLabel(value?.name ?: "") }
+        renderer = ServiceInfoRenderer(iconManager)
     }
     private val serviceRow = JPanel(BorderLayout(6, 0)).apply {
         isOpaque = false
@@ -46,9 +48,9 @@ class DictionaryPanel(
     private var updatingFromState = false
 
     private val activeLinkIconBase: FlatSVGIcon =
-        iconManager.getIcon("icons/lucide/link-2.svg", 13, 13) as FlatSVGIcon
+        iconManager.getIcon(Icons.NETWORK, 13, 13) as FlatSVGIcon
     private val offUnlinkIconBase: FlatSVGIcon =
-        iconManager.getIcon("icons/lucide/unlink.svg", 13, 13) as FlatSVGIcon
+        iconManager.getIcon(Icons.UNPIN, 13, 13) as FlatSVGIcon
 
     private val autoSourceButton = JButton().apply {
         putClientProperty("JButton.buttonType", "toolBarButton")
@@ -158,10 +160,19 @@ class DictionaryPanel(
             ?: UIManager.getColor("Panel.background")?.darker()
             ?: Color.GRAY
 
+        // The rule separates this panel from the content it is docked beside, so it belongs on
+        // whichever edge faces that content — the left in a left-to-right interface, the right in
+        // a right-to-left one, where the panel sits on the other side of the divider.
+        val facingContent = if (componentOrientation.isLeftToRight) 1 else 0
         border = BorderFactory.createCompoundBorder(
-            BorderFactory.createMatteBorder(0, 1, 0, 0, borderColor),
+            BorderFactory.createMatteBorder(0, facingContent, 0, 1 - facingContent, borderColor),
             BorderFactory.createEmptyBorder(12, 12, 12, 12)
         )
+    }
+
+    override fun setComponentOrientation(orientation: java.awt.ComponentOrientation) {
+        super.setComponentOrientation(orientation)
+        refreshBorder()
     }
 
     private fun refreshLabelColors() {
@@ -278,9 +289,14 @@ class DictionaryPanel(
                     chips.clear()
                     searchField.text = word
                     onLookup(word)
-                }
+                },
+                listenTooltip = state.listenTooltip,
+                stopTooltip = state.stopListeningTooltip,
+                onListen = state.onListen,
+                onStopListening = state.onStopListening
             )
         }
+        resultView.setSpeaking(state.isTtsPlaying)
     }
 
     fun setSearchWord(word: String) {

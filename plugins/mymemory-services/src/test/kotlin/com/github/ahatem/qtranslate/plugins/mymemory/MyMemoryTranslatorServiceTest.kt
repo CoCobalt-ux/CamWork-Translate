@@ -1,5 +1,7 @@
 package com.github.ahatem.qtranslate.plugins.mymemory
 
+import com.github.ahatem.qtranslate.plugins.common.FakePluginContext
+
 import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
@@ -7,7 +9,7 @@ import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.HttpClient
+import com.github.ahatem.qtranslate.plugins.common.TextHttpClient
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
@@ -85,7 +87,7 @@ class MyMemoryTranslatorServiceTest {
 
 private class RecordingHttpClient(
     private val response: Result<String, ServiceError>
-) : HttpClient {
+) : TextHttpClient() {
     var lastUrl: String? = null
     var lastQueryParams: Map<String, Any?> = emptyMap()
 
@@ -107,18 +109,5 @@ private class RecordingHttpClient(
     ): Result<String, ServiceError> = response
 }
 
-private object TestPluginContext : PluginContext {
-    override val logger: Logger = object : Logger {
-        override fun debug(message: String) = Unit
-        override fun info(message: String) = Unit
-        override fun warn(message: String) = Unit
-        override fun error(message: String, error: Throwable?) = Unit
-    }
-    override val scope = CoroutineScope(Dispatchers.Unconfined)
 
-    override suspend fun notify(title: String, body: String, type: NotificationType) = Unit
-    override suspend fun storeValue(key: String, value: String) = Unit
-    override suspend fun getValue(key: String): String? = null
-    override suspend fun deleteValue(key: String) = Unit
-    override fun getPluginDataDirectory(): File = File(System.getProperty("java.io.tmpdir"))
-}
+private val TestPluginContext = FakePluginContext()

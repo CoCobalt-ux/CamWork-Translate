@@ -11,7 +11,13 @@ import com.github.ahatem.qtranslate.core.plugin.settings.PluginSettingsManager
 import com.github.ahatem.qtranslate.core.plugin.settings.PluginSettingsModel
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprint
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginFingerprintRepository
+import com.github.ahatem.qtranslate.core.plugin.http.HttpClientConfig
+import com.github.ahatem.qtranslate.core.plugin.http.toHttpClientConfig
+import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
+import com.github.ahatem.qtranslate.core.settings.data.NetworkConfig
+import kotlinx.coroutines.runBlocking
 import com.github.ahatem.qtranslate.core.plugin.storage.PluginKeyValueStore
+import com.github.ahatem.qtranslate.core.plugin.text.PluginTextResolver
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
@@ -19,9 +25,11 @@ import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
 import com.github.ahatem.qtranslate.core.shared.notification.AppNotification
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationCode
 import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.getError
 import com.github.michaelbull.result.Result
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,6 +37,7 @@ import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -54,18 +63,46 @@ class PluginManager(
     private val pluginFingerprintRepository: PluginFingerprintRepository,
     private val pluginKeyValueStore: PluginKeyValueStore,
     private val loggerFactory: LoggerFactory,
-    private val notificationBus: NotificationBus
+    private val notificationBus: NotificationBus,
+    /**
+     * Resolves the [com.github.ahatem.qtranslate.api.plugin.DisplayText] plugins hand back.
+     * Defaults to the fallback-only resolver so a host without localization still runs.
+     */
+    private val textResolver: PluginTextResolver = PluginTextResolver.Fallback
 ) {
+    private companion object {
+        /** A check is a network round trip; long enough to succeed, short enough to give up on. */
+        const val VALIDATE_TIMEOUT_MS = 15_000L
+    }
+
     private val logger = loggerFactory.getLogger("PluginManager")
     private val pluginsDir = File(appDataDirectory, AppConstants.PLUGIN_DIRECTORY).also { it.mkdirs() }
 
     private val registry = PluginRegistry()
 
+    private val appSecrets = AppSecretStore(pluginKeyValueStore)
+
+    /**
+     * The network settings every plugin's client is built from.
+     *
+     * Read fresh each time a context is made, so a plugin enabled after the user changes
+     * their proxy gets the new one. Blocking is safe here and nowhere near the event thread:
+     * contexts are created while loading or enabling a plugin, both already off it.
+     */
+    private fun currentHttpConfig(): HttpClientConfig = runBlocking {
+        val network = settingsRepository.loadInitialConfiguration().network
+        network.toHttpClientConfig(
+            proxyPassword = appSecrets.get(NetworkConfig.proxyPasswordKey)
+        )
+    }
+
     private val lifecycleHandler = PluginLifecycleHandler(
         appDataDirectory = appDataDirectory,
         pluginKeyValueStore = pluginKeyValueStore,
         notificationBus = notificationBus,
-        loggerFactory = loggerFactory
+        textResolver = textResolver,
+        loggerFactory = loggerFactory,
+        httpConfig = ::currentHttpConfig
     )
 
     private val installer = PluginInstaller(
@@ -233,6 +270,55 @@ class PluginManager(
     suspend fun resolveAsCleanInstall(pluginId: String) {
         installer.resolveAsCleanInstall(pluginId)
         updateFlows()
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------------
+
+    /**
+     * Asks each of a plugin's services whether it is correctly configured.
+     *
+     * Runs the services concurrently — a check is a network round trip, and a plugin exposing six
+     * of them should not take six times as long to answer. Each is given its own timeout so one
+     * unresponsive endpoint cannot hold up the rest.
+     *
+     * A service that does not implement a check answers successfully, which is honest: there is
+     * nothing about it that can be misconfigured.
+     */
+    suspend fun validateServices(pluginId: String): List<ServiceValidation> {
+        val container = registry.mutex.withLock { registry.get(pluginId) } ?: return emptyList()
+
+        return withContext(Dispatchers.IO) {
+            supervisorScope {
+                container.services.map { service ->
+                    async {
+                        val outcome = withTimeoutOrNull(VALIDATE_TIMEOUT_MS) {
+                            runCatching { service.validate() }
+                                .getOrElse { thrown ->
+                                    // A check that throws is a failed check, not a crashed app.
+                                    Err(
+                                        ServiceError.UnknownError(
+                                            "Validation threw ${thrown::class.java.simpleName}: ${thrown.message}",
+                                            thrown
+                                        )
+                                    )
+                                }
+                        } ?: Err(
+                            ServiceError.TimeoutError(
+                                "Validation did not answer within ${VALIDATE_TIMEOUT_MS / 1000}s"
+                            )
+                        )
+
+                        ServiceValidation(
+                            serviceId = container.serviceIdOf(service),
+                            serviceName = service.name,
+                            error = outcome.getError()
+                        )
+                    }
+                }.awaitAll()
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

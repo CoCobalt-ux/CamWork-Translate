@@ -1,6 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.google
 
+
 import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
@@ -8,8 +10,9 @@ import com.github.ahatem.qtranslate.api.translator.TranslationRequest
 import com.github.ahatem.qtranslate.api.translator.TranslationResponse
 import com.github.ahatem.qtranslate.api.translator.Translator
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
+import com.github.ahatem.qtranslate.plugins.common.fetchJson
+import com.github.ahatem.qtranslate.plugins.common.sendJson
 import com.github.ahatem.qtranslate.plugins.google.common.GoogleLanguageMapper
 import com.github.ahatem.qtranslate.plugins.google.common.OfficialTranslateResponse
 import com.github.ahatem.qtranslate.plugins.google.common.TranslateResponse
@@ -20,12 +23,13 @@ import com.github.michaelbull.result.toResultOr
 class GoogleTranslatorService(
     private val pluginContext: PluginContext,
     private val settings: GoogleSettings,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val languageMapper: GoogleLanguageMapper,
     private val apiConfig: ApiConfig
 ) : Translator {
 
-    override val id: String = "google-translator"
+
+    override val key: String = "google-translator"
     override val name: String = "Google Translate"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/google-translate-icon.svg"

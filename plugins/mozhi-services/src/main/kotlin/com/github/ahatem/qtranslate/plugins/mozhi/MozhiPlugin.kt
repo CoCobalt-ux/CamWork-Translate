@@ -2,6 +2,7 @@ package com.github.ahatem.qtranslate.plugins.mozhi
 
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.Plugin
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.PluginSettings
 import com.github.ahatem.qtranslate.api.plugin.Service
@@ -10,7 +11,6 @@ import com.github.ahatem.qtranslate.api.settings.PluginAction
 import com.github.ahatem.qtranslate.api.settings.Setting
 import com.github.ahatem.qtranslate.api.settings.SettingType
 import com.github.ahatem.qtranslate.api.translator.TranslationRequest
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
@@ -24,22 +24,21 @@ import kotlinx.coroutines.withTimeout
 
 class MozhiPlugin : Plugin<MozhiSettings> {
     private lateinit var context: PluginContext
-    private lateinit var httpClient: KtorHttpClient
+    private val httpClient: HttpClient get() = context.http
     private var settings = MozhiSettings()
     private var services: List<Service> = emptyList()
 
     override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
         this.context = context
-        val savedInstance = context.getValue(KEY_INSTANCE_URL) ?: DEFAULT_INSTANCE_URL
-        val savedCustomInstance = context.getValue(KEY_CUSTOM_INSTANCE_URL).orEmpty()
+        val savedInstance = context.settings.getString(KEY_INSTANCE_URL) ?: DEFAULT_INSTANCE_URL
+        val savedCustomInstance = context.settings.getString(KEY_CUSTOM_INSTANCE_URL).orEmpty()
         settings = MozhiSettings(
             instanceUrl = savedInstance.takeIf { it in PUBLIC_INSTANCES } ?: CUSTOM_INSTANCE,
             customInstanceUrl = savedCustomInstance.ifBlank {
                 savedInstance.takeUnless { it in PUBLIC_INSTANCES || it in LEGACY_CUSTOM_VALUES }.orEmpty()
             },
-            engine = context.getValue(KEY_ENGINE) ?: DEFAULT_ENGINE
-        ).attach(context) { httpClient }
-        httpClient = KtorHttpClient(context)
+            engine = context.settings.getString(KEY_ENGINE) ?: DEFAULT_ENGINE
+        ).attach(context) { httpClient }
         return Ok(Unit)
     }
 
@@ -58,9 +57,9 @@ class MozhiPlugin : Plugin<MozhiSettings> {
             return Err(ServiceError.ValidationError("Select a supported Mozhi engine."))
         }
 
-        context.storeValue(KEY_INSTANCE_URL, settings.instanceUrl)
-        context.storeValue(KEY_CUSTOM_INSTANCE_URL, settings.customInstanceUrl.trim())
-        context.storeValue(KEY_ENGINE, settings.engine)
+        context.settings.put(KEY_INSTANCE_URL, settings.instanceUrl)
+        context.settings.put(KEY_CUSTOM_INSTANCE_URL, settings.customInstanceUrl.trim())
+        context.settings.put(KEY_ENGINE, settings.engine)
         this.settings = settings.copy(
             instanceUrl = settings.instanceUrl,
             customInstanceUrl = settings.customInstanceUrl.trim()
@@ -72,8 +71,7 @@ class MozhiPlugin : Plugin<MozhiSettings> {
         services = emptyList()
     }
 
-    override suspend fun shutdown() {
-        httpClient.close()
+    override suspend fun shutdown() {
     }
 
     override fun getServices(): List<Service> = services
@@ -119,9 +117,9 @@ data class MozhiSettings(
     var engine: String = DEFAULT_ENGINE
 ) : PluginSettings.Configurable() {
     @Transient private var context: PluginContext? = null
-    @Transient private var clientProvider: (() -> KtorHttpClient)? = null
+    @Transient private var clientProvider: (() -> HttpClient)? = null
 
-    internal fun attach(context: PluginContext, clientProvider: () -> KtorHttpClient): MozhiSettings = apply {
+    internal fun attach(context: PluginContext, clientProvider: () -> HttpClient): MozhiSettings = apply {
         this.context = context
         this.clientProvider = clientProvider
     }
@@ -153,7 +151,7 @@ data class MozhiSettings(
         val fastest = working.firstOrNull()
             ?: return@runBlocking "No public Mozhi instance responded. Check your network and try again later."
         instanceUrl = fastest.first
-        context?.storeValue(MOZHI_INSTANCE_STORAGE_KEY, fastest.first)
+        context?.settings?.put(MOZHI_INSTANCE_STORAGE_KEY, fastest.first)
         buildString {
             append("Selected ${fastest.first} (${fastest.second} ms).")
             working.drop(1).forEach { (url, millis) -> append("\n$url: $millis ms") }

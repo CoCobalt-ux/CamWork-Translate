@@ -1,11 +1,12 @@
 package com.github.ahatem.qtranslate.plugins.bing
 
+
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
 import com.github.ahatem.qtranslate.api.plugin.PluginContext
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.api.spellchecker.*
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
-import com.github.ahatem.qtranslate.plugins.common.KtorHttpClient
 import com.github.ahatem.qtranslate.plugins.common.createJsonParser
 import com.github.difflib.DiffUtils
 import com.github.difflib.patch.DeltaType
@@ -17,13 +18,14 @@ import kotlinx.coroutines.coroutineScope
 
 class BingSpellCheckerService(
     private val pluginContext: PluginContext,
-    private val httpClient: KtorHttpClient,
+    private val httpClient: HttpClient,
     private val authManager: BingAuthManager,
     private val languageMapper: BingLanguageMapper,
     private val apiConfig: ApiConfig
 ) : SpellChecker {
 
-    override val id: String = "bing-spell-checker"
+
+    override val key: String = "bing-spell-checker"
     override val name: String = "Bing Spell Checker"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/bing-translate-icon.svg"

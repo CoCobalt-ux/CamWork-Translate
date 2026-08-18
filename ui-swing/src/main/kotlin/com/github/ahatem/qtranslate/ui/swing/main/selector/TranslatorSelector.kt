@@ -1,20 +1,22 @@
 package com.github.ahatem.qtranslate.ui.swing.main.selector
 
+import com.github.ahatem.qtranslate.ui.swing.shared.util.clearBorder
 import com.formdev.flatlaf.FlatClientProperties
 import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import com.github.ahatem.qtranslate.core.settings.data.ServiceSelectorAppearance
 import com.github.ahatem.qtranslate.core.settings.data.ServiceSelectorStyle
-import com.github.ahatem.qtranslate.core.shared.arch.ServiceType
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
 
 class TranslatorSelector(
     private val iconManager: IconManager,
-    private val onServiceSelected: (ServiceType, String) -> Unit,
+    private val onServiceSelected: (ServiceRole, String) -> Unit,
     private val onConfigureService: (String) -> Unit = {}
 ) : JPanel(CardLayout()), Renderable<TranslatorSelectorState> {
     private companion object { const val CLASSIC = "classic"; const val ENHANCED = "enhanced"; const val ICON_SIZE = 16 }
@@ -22,16 +24,16 @@ class TranslatorSelector(
     private var state = TranslatorSelectorState(emptyList(), null, false)
     private val classicButtons = JPanel(FlowLayout(FlowLayout.LEADING, 2, 0)).apply { isOpaque = false }
     private val classicScroll = JScrollPane(classicButtons).apply {
-        border = null; isOpaque = false; viewport.isOpaque = false
+        clearBorder(); isOpaque = false; viewport.isOpaque = false
         verticalScrollBarPolicy = JScrollPane.VERTICAL_SCROLLBAR_NEVER
         horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
         horizontalScrollBar.unitIncrement = 24
         mouseWheelListeners.forEach(::removeMouseWheelListener)
         addMouseWheelListener { e -> scrollClassic(e.wheelRotation * horizontalScrollBar.unitIncrement) }
     }
-    private val scrollBack = createScrollButton("icons/lucide/arrow-left.svg", -96, "Previous services")
-    private val scrollForward = createScrollButton("icons/lucide/arrow-right.svg", 96, "More services")
-    private val configureActive = JButton(iconManager.getIcon("icons/lucide/settings.svg", 16, 16)).apply {
+    private val scrollBack = createScrollButton(Icons.NAV_BACK, -96, "Previous services")
+    private val scrollForward = createScrollButton(Icons.NAV_FORWARD, 96, "More services")
+    private val configureActive = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
         putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
         toolTipText = "Configure active translation service"; isFocusable = false
         addActionListener { state.selectedTranslatorId?.let(onConfigureService) }
@@ -72,7 +74,7 @@ class TranslatorSelector(
                 isEnabled = !state.isLoading; isFocusable = false; isOpaque = false
                 putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
                 margin = Insets(4, 6, 4, 6)
-                addActionListener { onServiceSelected(ServiceType.TRANSLATOR, service.id) }
+                addActionListener { onServiceSelected(ServiceRole.TRANSLATOR, service.id) }
                 addMouseListener(object : MouseAdapter() {
                     override fun mousePressed(e: MouseEvent) { if (SwingUtilities.isRightMouseButton(e)) onConfigureService(service.id) }
                 })
@@ -90,21 +92,21 @@ class TranslatorSelector(
 
     private fun rebuildEnhanced() {
         enhanced.removeAll()
-        listOf(ServiceType.TRANSLATOR to "Translate", ServiceType.DICTIONARY to "Dictionary", ServiceType.TTS to "Voice")
+        listOf(ServiceRole.TRANSLATOR to "Translate", ServiceRole.DICTIONARY to "Dictionary", ServiceRole.TTS to "Voice")
             .forEach { (type, label) ->
                 val services = state.availableServices.filter { it.type == type }
                 if (services.isNotEmpty()) enhanced.add(createServicePicker(type, label, services))
             }
     }
 
-    private fun createServicePicker(type: ServiceType, label: String, services: List<ServiceInfo>): JComponent {
+    private fun createServicePicker(type: ServiceRole, label: String, services: List<ServiceInfo>): JComponent {
         val combo = JComboBox(services.toTypedArray()).apply {
             renderer = ServiceRenderer(); selectedItem = services.find { it.id == state.selectedServices[type] } ?: services.first()
             isEnabled = !state.isLoading; toolTipText = "Select $label service"
             minimumSize = Dimension(0, preferredSize.height)
             addActionListener { (selectedItem as? ServiceInfo)?.let { onServiceSelected(type, it.id) } }
         }
-        val gear = JButton(iconManager.getIcon("icons/lucide/settings.svg", 16, 16)).apply {
+        val gear = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
             putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton"); toolTipText = "Configure selected $label service"; isFocusable = false
             addActionListener { (combo.selectedItem as? ServiceInfo)?.let { onConfigureService(it.id) } }
         }

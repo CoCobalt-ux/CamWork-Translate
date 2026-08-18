@@ -18,7 +18,7 @@ import java.io.File
  *
  * @see Plugin
  */
-interface PluginContext {
+public interface PluginContext {
 
     // -------------------------------------------------------------------------
     // Core Resources
@@ -31,7 +31,7 @@ interface PluginContext {
      * plugin's ID, making them easy to filter in the application's log output.
      * Thread-safe; may be called from any thread or coroutine.
      */
-    val logger: Logger
+    public val logger: Logger
 
     /**
      * A [CoroutineScope] managed by the core application, tied to this plugin's lifecycle.
@@ -63,7 +63,7 @@ interface PluginContext {
      * }
      * ```
      */
-    val scope: CoroutineScope
+    public val scope: CoroutineScope
 
     // -------------------------------------------------------------------------
     // User Notifications
@@ -79,49 +79,56 @@ interface PluginContext {
      * **Rate limiting**: The core applies best-effort debouncing per plugin. Avoid
      * calling this in tight loops — repeated notifications will be coalesced or dropped.
      *
-     * @param title   Short title for the notification (aim for ≤ 5 words).
-     * @param body    The main message body, providing context or suggested action.
-     * @param type    Severity level, which affects the notification's appearance.
-     *                Defaults to [NotificationType.INFO].
+     * Both strings are [DisplayText], so a plugin shipping a `localization/` bundle has its
+     * notifications appear in the user's language. Passing raw strings would have made these
+     * the one piece of plugin text that could never be translated.
+     *
+     * @param title Short title for the notification (aim for ≤ 5 words).
+     * @param body  The main message, providing context or a suggested action.
+     * @param type  Severity, which affects appearance. Defaults to [NotificationType.INFO].
      */
-    suspend fun notify(title: String, body: String, type: NotificationType = NotificationType.INFO)
+    public suspend fun notify(title: DisplayText, body: DisplayText, type: NotificationType = NotificationType.INFO)
 
     // -------------------------------------------------------------------------
-    // Private Key-Value Storage
+    // Storage
     // -------------------------------------------------------------------------
 
     /**
-     * Stores a private key-value pair scoped exclusively to this plugin.
+     * Typed persistence, scoped to this plugin and to the instance the user created.
      *
-     * Ideal for **operational state** that is not part of user-facing settings:
-     * authentication tokens, refresh timestamps, API usage counters, cache metadata.
+     * Covers everything from user-facing settings to operational state such as cache
+     * timestamps and usage counters. An earlier untyped `storeValue`/`getValue` pair existed
+     * alongside this and has been removed: it was the same storage with the same scoping, only
+     * stringly-typed, which left two ways to do one thing and every plugin re-parsing values.
      *
-     * **Security note**: The core provides simple string persistence. If the value
-     * is sensitive (e.g. an OAuth refresh token), encrypt it before storing.
-     *
-     * @param key   A unique key for the entry. Use a prefix to avoid collisions
-     *              within your own plugin (e.g. `"auth_token"`, `"cache_ts_en"`).
-     *              Keys are scoped per plugin — there is no risk of collision with
-     *              other plugins' keys.
-     * @param value The string value to persist.
+     * For credentials use [secrets] instead.
      */
-    suspend fun storeValue(key: String, value: String)
+    public val settings: SettingsStore
 
     /**
-     * Retrieves a value previously stored by this plugin via [storeValue].
+     * Credentials — API keys, tokens, anything damaging to leak.
      *
-     * @param key The key used when the value was stored.
-     * @return The stored string, or `null` if no value exists for the given key.
+     * Separate from [settings] so the host can protect them using the platform keychain where
+     * one exists, and so sensitive values are visible as such in plugin code rather than
+     * blending into ordinary configuration.
      */
-    suspend fun getValue(key: String): String?
+    public val secrets: SecretStore
+
+    // -------------------------------------------------------------------------
+    // Network
+    // -------------------------------------------------------------------------
 
     /**
-     * Removes a value previously stored by this plugin.
-     * A no-op if the key does not exist.
+     * Makes HTTP requests, configured and owned by the application.
      *
-     * @param key The key to remove.
+     * Use this rather than building a client. Settings that have to hold everywhere, a proxy
+     * above all, are only dependable if every request goes through a client the application
+     * configured; a plugin that constructs its own opts out of them without meaning to, and the
+     * user has no way to tell which plugins honoured a setting and which ignored it.
+     *
+     * Its lifetime is the plugin's. There is no need to close it, and closing is not offered.
      */
-    suspend fun deleteValue(key: String)
+    public val http: HttpClient
 
     // -------------------------------------------------------------------------
     // File System
@@ -141,5 +148,5 @@ interface PluginContext {
      *
      * @return A [File] pointing to the root of this plugin's sandboxed data directory.
      */
-    fun getPluginDataDirectory(): File
+    public fun getPluginDataDirectory(): File
 }
