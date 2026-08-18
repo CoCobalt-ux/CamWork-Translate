@@ -164,9 +164,9 @@ class MainContentView(
     )
 
     // Resolved at render time; captured by lambdas so every lookup uses the current language.
-    private var currentLookupLanguage: LanguageCode = LanguageCode("en")
-    private var currentTargetLanguage: LanguageCode = LanguageCode("en")
-    private var currentExtraOutputLanguage: LanguageCode = LanguageCode("en")
+    private var currentLookupLanguage: LanguageCode = LanguageCode.ENGLISH
+    private var currentTargetLanguage: LanguageCode = LanguageCode.ENGLISH
+    private var currentExtraOutputLanguage: LanguageCode = LanguageCode.ENGLISH
 
     private val dictionaryPanel = DictionaryPanel(
         iconManager = iconManager,
@@ -337,12 +337,7 @@ class MainContentView(
     }
 
     private fun renderDictionaryPanel(mainState: MainState, config: Configuration) {
-        // Resolve source language — never pass AUTO to the dictionary API.
-        val resolvedLang = when {
-            mainState.sourceLanguage != LanguageCode.AUTO -> mainState.sourceLanguage
-            mainState.detectedSourceLanguage != null      -> mainState.detectedSourceLanguage!!
-            else                                          -> LanguageCode("en")
-        }
+        val resolvedLang = mainState.resolvedSourceLanguage
         currentLookupLanguage = resolvedLang
 
         val availableDicts = mainState.getAvailableServicesFor(
@@ -738,12 +733,6 @@ class MainContentView(
     }
 
     /**
-     * Opens the floating image popup for [word].
-     *
-     * A popup rather than an inline panel: the pictures are a glance on the way through a text,
-     * not something to keep half the window reserved for.
-     */
-    /**
      * Gives every text pane the same drop handling as the window around them.
      *
      * Needed because Swing consults only the deepest component under the pointer: a handler on the
@@ -762,6 +751,12 @@ class MainContentView(
         ).forEach { it.installContentDropHandler(onContent, onDragOver, onDropped) }
     }
 
+    /**
+     * Opens the floating image popup for [word].
+     *
+     * A popup rather than an inline panel: the pictures are a glance on the way through a text,
+     * not something to keep half the window reserved for.
+     */
     private fun showImagesForWord(word: String, language: LanguageCode = currentLookupLanguage) {
         dispatch(MainIntent.ShowImageSearch(word, language))
     }
