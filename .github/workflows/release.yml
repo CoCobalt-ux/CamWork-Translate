@@ -101,24 +101,26 @@ jobs:
           - arch: arm64
             runner: macos-15
             java_architecture: aarch64
-            java_home_suffix: ARM64
           - arch: x64
             runner: macos-15-intel
             java_architecture: x64
-            java_home_suffix: X64
 
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # jpackage must run under JDK 17, so 17 is installed last: setup-java points
+      # JAVA_HOME at whichever version it installed most recently. Kotlin compiles
+      # against a 21 toolchain, which the foojay resolver in settings.gradle.kts
+      # supplies on its own.
       - name: Set up Java toolchains
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           architecture: ${{ matrix.java_architecture }}
           java-version: |
-            17
             21
+            17
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
@@ -194,13 +196,11 @@ jobs:
       - name: Build native app and DMG
         shell: bash
         run: |
-          jdk17_variable="JAVA_HOME_17_${{ matrix.java_home_suffix }}"
-          jdk17_home="${!jdk17_variable}"
           BUILD_ARGUMENTS=(
             --version "${{ steps.version.outputs.version }}"
             --arch "${{ matrix.arch }}"
             --format dmg
-            --java-home "$jdk17_home"
+            --java-home "$JAVA_HOME"
           )
           SIGNING_IDENTITY="${{ steps.mac-signing.outputs.signing-identity }}"
           if [[ -n "$SIGNING_IDENTITY" ]]; then
