@@ -26,6 +26,15 @@ object AppConstants {
     const val CONTACT_URL = "mailto:support@camwork.club"
     const val UPSTREAM_SOURCE_URL = "https://github.com/ahatem/QTranslate"
 
+    /**
+     * Репозиторий, у которого встроенный обновлятор спрашивает последний релиз.
+     *
+     * Это релизы CamWork, а не апстрима: [UPSTREAM_SOURCE_URL] ведёт на исходный QTranslate
+     * и нужен только для указания происхождения кода.
+     */
+    const val GITHUB_OWNER = "CoCobalt-ux"
+    const val GITHUB_REPO = "CamWork-Translate"
+
     /** Собственный канал обновлений будет включён после публикации первого релиза CamWork. */
     const val APP_UPDATES_AVAILABLE = false
 

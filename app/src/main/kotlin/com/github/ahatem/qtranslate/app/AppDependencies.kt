@@ -180,8 +180,8 @@ suspend fun buildDependencies(
     )
 
     val updater = Updater(
-        repoOwner  = "ahatem",
-        repoName   = "qtranslate",
+        repoOwner  = AppConstants.GITHUB_OWNER,
+        repoName   = AppConstants.GITHUB_REPO,
         httpClient = httpClient,
         logger     = loggerFactory.getLogger("Updater")
     )
