@@ -128,9 +128,21 @@ jobs:
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Check for macOS signing secret
+        id: has-signing
+        shell: bash
+        env:
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          if [[ -n "$SIGNING_IDENTITY" ]]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import Developer ID and notarization credentials
         id: mac-signing
-        if: ${{ secrets.MACOS_SIGNING_IDENTITY != '' }}
+        if: steps.has-signing.outputs.present == 'true'
         shell: bash
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
