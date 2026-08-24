@@ -264,11 +264,20 @@ PORTABLE_ROOT="$PORTABLE_DIRECTORY/CamWork Translate"
 PORTABLE_JAR="$PORTABLE_ROOT/CamWork-Translate.jar"
 [[ -f "$PORTABLE_JAR" ]] || fail "в переносимом архиве отсутствует CamWork-Translate.jar"
 ditto "$PORTABLE_JAR" "$INPUT_DIRECTORY/CamWork-Translate.jar"
-mkdir -p "$INPUT_DIRECTORY/default-data"
+
+# Штатные ресурсы намеренно собираются отдельно от --input и попадают в бандл уже после jpackage.
+# jpackage добавляет в app.classpath каждый JAR, найденный в каталоге --input, включая вложенные.
+# Плагины оказывались на classpath самого приложения, и тогда plugin.json первого из них отвечал
+# на запрос манифеста для всех остальных: каждый плагин получал чужой идентификатор, после чего
+# реестр отклонял их все как дубликаты.
+DEFAULTS_STAGE_DIRECTORY="$WORK_ROOT/default-data"
+safe_clean_directory "$DEFAULTS_STAGE_DIRECTORY"
+mkdir -p "$DEFAULTS_STAGE_DIRECTORY"
 for item in "$PORTABLE_ROOT"/*; do
     [[ "$(basename "$item")" == "CamWork-Translate.jar" ]] && continue
-    ditto "$item" "$INPUT_DIRECTORY/default-data/$(basename "$item")"
+    ditto "$item" "$DEFAULTS_STAGE_DIRECTORY/$(basename "$item")"
 done
+[[ -d "$DEFAULTS_STAGE_DIRECTORY/plugins" ]] || fail "штатные плагины не попали в комплект"
 
 MODULES="java.base,java.desktop,java.instrument,java.logging,java.management,java.naming,java.net.http,java.prefs,java.security.jgss,java.xml.crypto,jdk.charsets,jdk.crypto.ec,jdk.localedata,jdk.unsupported,jdk.zipfs"
 "$JLINK" \
@@ -335,6 +344,18 @@ clang \
     "$BOOTSTRAP_SOURCE" \
     -o "$JPACKAGE_LAUNCHER"
 chmod 0755 "$JPACKAGE_LAUNCHER" "$ORIGINAL_LAUNCHER"
+
+# Уже после того, как jpackage составил app.classpath, — поэтому плагины в него не попадают.
+BUNDLED_DEFAULTS="$APP_IMAGE/Contents/Resources/default-data"
+mkdir -p "$BUNDLED_DEFAULTS"
+ditto "$DEFAULTS_STAGE_DIRECTORY" "$BUNDLED_DEFAULTS"
+[[ -d "$BUNDLED_DEFAULTS/plugins" ]] || fail "штатные плагины не попали в бандл"
+
+# Тот самый отказ, ради предотвращения которого ресурсы и вынесены из --input: JAR плагина на
+# classpath приложения ломает определение идентификатора у всех плагинов сразу.
+if grep -q "app.classpath.*plugins/" "$ORIGINAL_CONFIGURATION"; then
+    fail "jpackage поместил плагины в app.classpath — они снова окажутся видимы загрузчику приложения"
+fi
 
 LEGAL_DIRECTORY="$APP_IMAGE/Contents/Resources/legal"
 mkdir -p "$LEGAL_DIRECTORY"

@@ -173,8 +173,11 @@ int main(int argc, char **argv) {
 
     char original_launcher[PATH_MAX];
     char bundled_defaults[PATH_MAX];
+    // Ресурсы лежат в Contents/Resources, а не в Contents/app: всё, что jpackage кладёт рядом с
+    // основным JAR, попадает в app.classpath, и тогда plugin.json первого плагина начинает
+    // отвечать за все остальные.
     if (!join_path(original_launcher, sizeof(original_launcher), macos_directory, ORIGINAL_LAUNCHER) ||
-        !join_path(bundled_defaults, sizeof(bundled_defaults), macos_directory, "../app/default-data")) {
+        !join_path(bundled_defaults, sizeof(bundled_defaults), macos_directory, "../Resources/default-data")) {
         report_error("путь приложения слишком длинный");
         return 70;
     }

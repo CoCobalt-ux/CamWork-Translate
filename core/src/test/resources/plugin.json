@@ -1,0 +1,8 @@
+{
+  "id": "classpath-intruder",
+  "name": "Classpath Intruder",
+  "version": "1.0.0",
+  "author": "CamWork tests",
+  "description": "Существует только ради регрессии в PluginLoaderTest: манифест на classpath, которым загрузчик не должен подменять манифест плагина.",
+  "minApiVersion": "1.0.0"
+}

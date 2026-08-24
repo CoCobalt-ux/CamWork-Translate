@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.net.URLClassLoader
 import java.util.*
+import java.util.jar.JarFile
 
 /**
  * Handles scanning, loading, and inspecting plugin JAR files from the filesystem.
@@ -76,7 +77,7 @@ class PluginLoader(
                 ?: throw IllegalStateException("No Plugin implementation found via ServiceLoader in ${jarFile.name}. " +
                         "Ensure META-INF/services/com.github.ahatem.qtranslate.api.plugin.Plugin is present.")
 
-            val manifest = getManifestFromJar(jarFile, classLoader)
+            val manifest = getManifestFromJar(jarFile)
                 ?: throw IllegalStateException("plugin.json is missing or could not be parsed in ${jarFile.name}")
 
         // Delegate to ApiVersion — this checks both MAJOR and MINOR, not just MAJOR.
@@ -118,13 +119,29 @@ class PluginLoader(
     /**
      * Reads and parses `plugin.json` from a JAR without fully loading the plugin.
      * Useful for manifest-only inspection (e.g. during install validation).
+     *
+     * The entry is read straight out of the archive rather than through a class loader. Class
+     * loaders ask their parent first, so a `plugin.json` anywhere on the application's own class
+     * path answered for every plugin: all of them took on the same identity, and the registry then
+     * rejected each as a duplicate of the first. The macOS bundle ran into exactly that, because
+     * jpackage puts every JAR found under its input directory on the class path.
+     *
+     * A plugin's identity has to come from the plugin's own archive.
      */
-    fun getManifestFromJar(jarFile: File, classLoader: ClassLoader? = null): PluginManifest? =
+    fun getManifestFromJar(jarFile: File): PluginManifest? =
         runCatching {
-            val loader = classLoader
-                ?: URLClassLoader(arrayOf(jarFile.toURI().toURL()), javaClass.classLoader)
-            loader.getResourceAsStream("plugin.json")?.use { stream ->
-                stream.reader(Charsets.UTF_8).use { json.decodeFromString<PluginManifest>(it.readText()) }
+            JarFile(jarFile).use { archive ->
+                archive.getJarEntry(MANIFEST_ENTRY)?.let { entry ->
+                    archive.getInputStream(entry).use { stream ->
+                        stream.reader(Charsets.UTF_8).use {
+                            json.decodeFromString<PluginManifest>(it.readText())
+                        }
+                    }
+                }
             }
         }.getOrNull()
+
+    private companion object {
+        const val MANIFEST_ENTRY = "plugin.json"
+    }
 }
