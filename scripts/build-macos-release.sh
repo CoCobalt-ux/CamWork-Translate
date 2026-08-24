@@ -183,6 +183,16 @@ if [[ "$REQUESTED_ARCH" != "auto" && "$REQUESTED_ARCH" != "$DETECTED_ARCH" ]]; t
 fi
 ARCHITECTURE="$DETECTED_ARCH"
 
+# Без явного deployment target clang берёт версию системы, на которой идёт сборка. На раннере
+# GitHub это macOS 15, поэтому launcher отказывался стартовать на любом Mac постарше, а Finder
+# сообщал, что нужна более новая ОС. Планка выбрана по минимуму, который поддерживает JDK 17:
+# для Apple Silicon это Big Sur (первая ОС для этих машин), для Intel — High Sierra.
+if [[ "$ARCHITECTURE" == "arm64" ]]; then
+    MACOS_MINIMUM_VERSION="11.0"
+else
+    MACOS_MINIMUM_VERSION="10.13"
+fi
+
 require_command awk
 require_command clang
 require_command codesign
@@ -190,6 +200,7 @@ require_command ditto
 require_command file
 require_command hdiutil
 require_command iconutil
+require_command otool
 require_command plutil
 require_command shasum
 require_command sips
@@ -319,6 +330,7 @@ clang \
     -Wextra \
     -Werror \
     -O2 \
+    "-mmacosx-version-min=$MACOS_MINIMUM_VERSION" \
     "-DCAMWORK_VERSION=\"$VERSION\"" \
     "$BOOTSTRAP_SOURCE" \
     -o "$JPACKAGE_LAUNCHER"
@@ -337,6 +349,23 @@ INFO_PLIST="$APP_IMAGE/Contents/Info.plist"
 plutil -lint "$INFO_PLIST" >/dev/null
 [[ "$(plutil -extract CFBundleIdentifier raw "$INFO_PLIST")" == "club.camwork.translate" ]] || fail \
     "jpackage создал неверный CFBundleIdentifier"
+
+# LaunchServices решает по этому ключу, показать ли «требуется более новая версия macOS»,
+# независимо от того, что записано в самом бинарнике. Заполняется до подписи: правка plist
+# после codesign сломала бы её.
+plutil -replace LSMinimumSystemVersion -string "$MACOS_MINIMUM_VERSION" "$INFO_PLIST" 2>/dev/null ||
+    plutil -insert LSMinimumSystemVersion -string "$MACOS_MINIMUM_VERSION" "$INFO_PLIST"
+
+# Проверка того, что действительно попало в launcher: если планка снова уедет к версии раннера,
+# сборка должна падать здесь, а не у пользователя со старым Mac.
+# Планка записывается как minos в LC_BUILD_VERSION либо как version в LC_VERSION_MIN_MACOSX —
+# какой из них выберет линковщик, зависит от самой версии, поэтому читаются оба.
+LAUNCHER_MINIMUM_VERSION="$(otool -l "$JPACKAGE_LAUNCHER" | awk '
+    /LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX/ { found = 1; next }
+    found && ($1 == "minos" || $1 == "version") { print $2; exit }
+')"
+[[ "$LAUNCHER_MINIMUM_VERSION" == "$MACOS_MINIMUM_VERSION" ]] || fail \
+    "launcher требует macOS $LAUNCHER_MINIMUM_VERSION вместо $MACOS_MINIMUM_VERSION"
 
 if [[ -n "$SIGNING_IDENTITY" ]]; then
     printf 'Подпись .app сертификатом Developer ID...\n'
