@@ -342,6 +342,7 @@ clang \
     "-mmacosx-version-min=$MACOS_MINIMUM_VERSION" \
     "-DCAMWORK_VERSION=\"$VERSION\"" \
     "$BOOTSTRAP_SOURCE" \
+    -framework ApplicationServices \
     -o "$JPACKAGE_LAUNCHER"
 chmod 0755 "$JPACKAGE_LAUNCHER" "$ORIGINAL_LAUNCHER"
 

@@ -1,5 +1,6 @@
 #define _DARWIN_C_SOURCE
 
+#include <ApplicationServices/ApplicationServices.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -147,8 +148,37 @@ static bool append_java_tool_option(const char *option) {
     return success;
 }
 
+/*
+ * Показывает штатное окно macOS с кнопкой «Открыть настройки», если «Универсальный доступ» ещё
+ * не выдан. Без этого разрешения не работает ни перехват Shift, ни чтение выделенного текста, а
+ * найти нужный переключатель самостоятельно — задача не для всякого пользователя.
+ *
+ * Выдать разрешение из программы нельзя; система показывает окно сама и только когда разрешения
+ * действительно нет, поэтому вызов безвреден при каждом запуске.
+ */
+static void request_accessibility_permission(void) {
+    const void *keys[] = { kAXTrustedCheckOptionPrompt };
+    const void *values[] = { kCFBooleanTrue };
+    CFDictionaryRef options = CFDictionaryCreate(
+        kCFAllocatorDefault,
+        keys,
+        values,
+        1,
+        &kCFTypeDictionaryKeyCallBacks,
+        &kCFTypeDictionaryValueCallBacks
+    );
+    if (options == NULL) {
+        return;
+    }
+
+    AXIsProcessTrustedWithOptions(options);
+    CFRelease(options);
+}
+
 int main(int argc, char **argv) {
     (void)argc;
+
+    request_accessibility_permission();
 
     char raw_executable[PATH_MAX];
     uint32_t raw_size = (uint32_t)sizeof(raw_executable);

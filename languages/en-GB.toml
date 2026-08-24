@@ -34,6 +34,7 @@ auto_detect = "Auto-Detect"
 translating = "Translating…"
 replaced = "Translation inserted"
 capture_failed = "No selected text found"
+permission_required = "macOS is blocking the selection — allow Accessibility access"
 disabled = "Shift translation is disabled"
 unsupported_direction = "The selected text is not in the model language"
 no_target_language = "Choose a target translation language"
@@ -744,3 +745,19 @@ total_connections = "In total:"
 connections_hint = "Opening many connections to one service does not make it faster and can get you rate limited. The limit is approximate."
 applies_group = "Applying changes"
 applies_hint = "Network settings apply to requests made after they are saved. Restart CamWork Translate if a service seems to be using the old settings."
+
+# ===================================================================
+# MACOS ACCESSIBILITY PERMISSION
+# ===================================================================
+
+[macos_permission]
+title = "Let CamWork Translate read your selection"
+body = """
+macOS keeps other apps from reading selected text until you allow it. Until then the Shift gesture does nothing and translating a selection fails.
+
+Open Settings, find CamWork Translate in the list and turn its switch on. This window notices on its own once you have.
+"""
+open_settings = "Open Settings"
+later = "Later"
+granted = "Permission granted — selection translation is ready"
+waiting = "Waiting for the switch to be turned on…"

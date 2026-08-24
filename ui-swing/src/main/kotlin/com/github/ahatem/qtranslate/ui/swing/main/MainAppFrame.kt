@@ -337,8 +337,24 @@ class MainAppFrame(
         },
         onShiftTapTranslate = { text ->
             if (text.isBlank()) {
+                // На macOS пустое выделение почти всегда означает не отсутствие текста, а
+                // отсутствие разрешения: синтетический Cmd+C до чужого окна не доходит, и буфер
+                // остаётся прежним. Сообщение про «нет выделенного текста» отправляло искать
+                // несуществующую ошибку.
+                val missingPermission = !MacAccessibilityPermission.isGranted()
                 runOnUi {
-                    loadingIndicator.showError(localizer.getString("shift_overlay.capture_failed"))
+                    loadingIndicator.showError(
+                        localizer.getString(
+                            if (missingPermission) {
+                                "shift_overlay.permission_required"
+                            } else {
+                                "shift_overlay.capture_failed"
+                            }
+                        )
+                    )
+                    if (missingPermission) {
+                        MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
+                    }
                 }
             } else {
                 // Только MVI-intent: окно приложения не показывается и фокус остаётся в источнике.
@@ -529,6 +545,13 @@ class MainAppFrame(
             // Queuing a second invokeLater guarantees it executes after the first.
             SwingUtilities.invokeLater {
                 applyOrientation(localizer.isRtl)
+            }
+
+            // После того как окно показано: иначе просьба о разрешении всплывает раньше самого
+            // приложения и выглядит как окно неизвестно чего. Ничего не делает вне macOS и когда
+            // разрешение уже выдано.
+            SwingUtilities.invokeLater {
+                MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
             }
         }
     }
