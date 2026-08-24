@@ -21,6 +21,8 @@ fun main() = runBlocking {
 
     var frame: MainAppFrame? = null
 
+    // Журнал здесь ещё не настроен — он требует каталога данных, — поэтому причина ухода пишется
+    // напрямую. Без неё запуск второй копии выглядел как приложение, которое молча не открывается.
     if (!SingleInstanceGuard.tryLock(onFocusRequested = {
             SwingUtilities.invokeLater {
                 frame?.apply {
@@ -30,6 +32,9 @@ fun main() = runBlocking {
                 }
             }
         })) {
+        System.err.println(
+            "${AppConstants.APP_NAME}: приложение уже запущено; окно существующей копии выведено вперёд."
+        )
         return@runBlocking
     }
 
