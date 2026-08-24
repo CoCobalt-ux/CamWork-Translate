@@ -146,6 +146,30 @@ sealed interface MainIntent : UiIntent {
      */
     data class ShowQuickTranslate(val selectedText: String) : MainIntent
 
+    /**
+     * Короткий Shift после выделения: направление определяется локально, без второго
+     * сетевого запроса. Время захвата ограничивает риск вставки в уже изменившееся поле.
+     */
+    data class TranslateShiftSelection(
+        val selectedText: String,
+        val capturedAtMillis: Long = System.currentTimeMillis()
+    ) : MainIntent
+
+    /** Автоматический пассивный перевод подтверждённого выделения мышью, без Shift. */
+    data class AutoTranslateSelection(
+        val selectedText: String,
+        val capturedAtMillis: Long = System.currentTimeMillis()
+    ) : MainIntent
+
+    /** Явный неразрушительный перевод по мини-кнопке возле выделения. */
+    data class TranslateSelectionFromButton(
+        val selectedText: String,
+        val capturedAtMillis: Long = System.currentTimeMillis()
+    ) : MainIntent
+
+    /** Инвалидирует фоновый результат выделения, например при открытии системного скриншота. */
+    data object CancelSelectionTranslations : MainIntent
+
     /** User dismissed the quick translate popup. */
     data object HideQuickTranslate : MainIntent
 

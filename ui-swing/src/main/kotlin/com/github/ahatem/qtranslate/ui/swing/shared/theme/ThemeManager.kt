@@ -17,8 +17,8 @@ class ThemeManager(
     // @formatter:off
     private val builtInThemes: List<Theme> = listOf(
         // ── Custom bundled themes ─────────────────────────────────────────────
-        createCustomTheme("qtranslate_light",    "QTranslate Light",     false, "themes/qtranslate-light.theme.json"),
-        createCustomTheme("qtranslate_dark",     "QTranslate Dark",      true,  "themes/qtranslate-dark.theme.json"),
+        createCustomTheme("camwork_light",       "CamWork Light",        false, "themes/qtranslate-light.theme.json"),
+        createCustomTheme("camwork_dark",        "CamWork Dark",         true,  "themes/qtranslate-dark.theme.json"),
         createCustomTheme("resharper_dark",      "ReSharper Dark",       true,  "themes/ReSharperDark.theme.json"),
         createCustomTheme("resharper_light",     "ReSharper Light",      false, "themes/ReSharperLight.theme.json"),
         createCustomTheme("xcode_dark",          "Xcode Dark",           true,  "themes/XcodeDark.theme.json"),
@@ -63,8 +63,8 @@ class ThemeManager(
 
     private var currentTheme: Theme? = null
 
-    val defaultDarkThemeId  = "custom:qtranslate_dark"
-    val defaultLightThemeId = "custom:qtranslate_light"
+    val defaultDarkThemeId  = "custom:camwork_dark"
+    val defaultLightThemeId = "custom:camwork_light"
 
     private val emergencyDarkThemeId  = "builtin:darcula"
     private val emergencyLightThemeId = "builtin:intellij"
@@ -254,15 +254,15 @@ class ThemeManager(
 
         /**
          * Platform-aware dark theme default:
-         * All platforms use the branded QTranslate dark theme by default.
+         * All platforms use the branded CamWork dark theme by default.
          */
-        fun platformDefaultDarkThemeId(): String = "custom:qtranslate_dark"
+    fun platformDefaultDarkThemeId(): String = "custom:camwork_dark"
 
         /**
          * Platform-aware light theme default:
-         * All platforms use the branded QTranslate light theme by default.
+         * All platforms use the branded CamWork light theme by default.
          */
-        fun platformDefaultLightThemeId(): String = "custom:qtranslate_light"
+    fun platformDefaultLightThemeId(): String = "custom:camwork_light"
 
         fun isSystemInDarkMode(): Boolean = try {
             when {

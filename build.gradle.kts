@@ -27,7 +27,7 @@ val releaseOutputDirectory = layout.buildDirectory.dir("release")
 evaluationDependsOn(":app")
 val appProject = project(":app")
 val appArchive = appProject.tasks.named<AbstractArchiveTask>("shadowJar")
-val appArchiveFile = appProject.layout.buildDirectory.file("libs/QTranslate.jar")
+val appArchiveFile = appProject.layout.buildDirectory.file("libs/CamWork-Translate.jar")
 
 val bundledPlugins = subprojects
     .filter { it.path.startsWith(":plugins:") && it.name != "common" }
@@ -83,15 +83,15 @@ tasks.register<JavaExec>("smokeTestAllPlugins") {
 
 fun Zip.configurePortableBundle(plugins: List<BundledPlugin>) {
     group = "distribution"
-    description = "Builds the portable QTranslate distribution."
+    description = "Builds the portable CamWork Translate distribution."
     dependsOn(appArchive)
     dependsOn(plugins.map { "${it.projectPath}:jar" })
     destinationDirectory.set(releaseOutputDirectory)
-    archiveFileName.set("QTranslate-${releaseVersion.get()}.zip")
+    archiveFileName.set("CamWork-Translate-${releaseVersion.get()}.zip")
 
-    into("QTranslate") {
+    into("CamWork Translate") {
         from(appArchiveFile) {
-            rename { "QTranslate.jar" }
+            rename { "CamWork-Translate.jar" }
         }
         from(rootProject.file("languages")) {
             into("languages")
@@ -104,6 +104,15 @@ fun Zip.configurePortableBundle(plugins: List<BundledPlugin>) {
         }
         from(rootProject.file("THIRD_PARTY_LICENSES")) {
             into("THIRD_PARTY_LICENSES")
+        }
+        from(rootProject.file("LICENSE"))
+        from(rootProject.file("NOTICE"))
+        from(rootProject.file("CHANGELOG_CAMWORK.md")) {
+            rename { "CHANGELOG.md" }
+        }
+        from(rootProject.file("BRAND_ASSETS.md"))
+        from(rootProject.file("README_CAMWORK.md")) {
+            rename { "README.md" }
         }
         plugins.forEach { plugin ->
             from(plugin.thinArchiveFile) {
@@ -125,7 +134,7 @@ val assembleAppOnly by tasks.registering(Copy::class) {
     dependsOn(cleanRelease, appArchive)
     into(releaseOutputDirectory)
     from(appArchiveFile)
-    rename("QTranslate.jar", "QTranslate-App-${releaseVersion.get()}.jar")
+    rename("CamWork-Translate.jar", "CamWork-Translate-App-${releaseVersion.get()}.jar")
 }
 
 val assemblePortable by tasks.registering(Zip::class) {
@@ -151,8 +160,8 @@ val releaseMetadata = linkedMapOf(
     "schemaVersion" to 1,
     "appVersion" to releaseVersion.get(),
     "variants" to listOf(
-        mapOf("id" to "app-only", "file" to "QTranslate-App-${releaseVersion.get()}.jar", "plugins" to emptyList<String>()),
-        mapOf("id" to "portable", "file" to "QTranslate-${releaseVersion.get()}.zip", "plugins" to bundledPlugins.map { it.id }),
+        mapOf("id" to "app-only", "file" to "CamWork-Translate-App-${releaseVersion.get()}.jar", "plugins" to emptyList<String>()),
+        mapOf("id" to "portable", "file" to "CamWork-Translate-${releaseVersion.get()}.zip", "plugins" to bundledPlugins.map { it.id }),
     ),
     "plugins" to bundledPlugins.map { plugin ->
         linkedMapOf(
@@ -175,8 +184,8 @@ val generateReleaseMetadata by tasks.registering(GenerateReleaseMetadataTask::cl
     artifactFiles.from(
         releaseOutputDirectory.map { directory ->
             buildList {
-                add(directory.file("QTranslate-App-${releaseVersion.get()}.jar"))
-                add(directory.file("QTranslate-${releaseVersion.get()}.zip"))
+                add(directory.file("CamWork-Translate-App-${releaseVersion.get()}.jar"))
+                add(directory.file("CamWork-Translate-${releaseVersion.get()}.zip"))
                 bundledPlugins.forEach { add(directory.file("plugins/${it.releaseFileName}")) }
             }
         },
@@ -188,8 +197,8 @@ val validateReleaseSizes by tasks.registering(ValidateReleaseSizesTask::class) {
     group = "verification"
     description = "Reports release sizes and fails when portable artifacts exceed their budgets."
     dependsOn(assembleAppOnly, assemblePortable)
-    appArtifact.set(releaseOutputDirectory.map { it.file("QTranslate-App-${releaseVersion.get()}.jar") })
-    portableArtifact.set(releaseOutputDirectory.map { it.file("QTranslate-${releaseVersion.get()}.zip") })
+    appArtifact.set(releaseOutputDirectory.map { it.file("CamWork-Translate-App-${releaseVersion.get()}.jar") })
+    portableArtifact.set(releaseOutputDirectory.map { it.file("CamWork-Translate-${releaseVersion.get()}.zip") })
     maxAppBytes.set(55L * 1024 * 1024)
     maxPortableBytes.set(52L * 1024 * 1024)
     maxBundledPluginsBytes.set(3L * 1024 * 1024)

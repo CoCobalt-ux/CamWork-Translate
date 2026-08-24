@@ -9,6 +9,7 @@ import com.github.ahatem.qtranslate.core.history.HistoryRepository
 import com.github.ahatem.qtranslate.core.localization.getDisplayName
 import com.github.ahatem.qtranslate.core.main.domain.usecase.*
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
+import com.github.ahatem.qtranslate.core.settings.data.ShiftTapTranslationMode
 import com.github.ahatem.qtranslate.core.settings.data.TextSource
 import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.StatusCode
@@ -20,6 +21,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * MVI store for the main translation screen.
@@ -62,6 +64,9 @@ class MainStore(
 
     private var documentTranslationJob: Job? = null
     private var documentTranslationGeneration = 0L
+    /** Только последний Shift-запрос имеет право вставить результат или открыть overlay. */
+    private val shiftTranslationGeneration = AtomicLong(0)
+    private val shiftTranslationMemory = ShiftTranslationMemory()
 
     private val _state = MutableStateFlow(
         MainState(
@@ -160,7 +165,10 @@ class MainStore(
                     if (settingsState.value.isInstantTranslationEnabled
                         && text.length >= AppConstants.INSTANT_TRANSLATE_MIN_CHARS
                     ) {
-                        translateText()
+                        val modelLanguage = runCatching {
+                            LanguageCode(settingsState.value.modelLanguage)
+                        }.getOrDefault(LanguageCode.RUSSIAN)
+                        translateText(sameLanguageFallbackTarget = modelLanguage)
                     }
                 }
         }
@@ -236,7 +244,14 @@ class MainStore(
             // and then auto-hid anyway, which is the worst of both.
             MainIntent.HideQuickTranslate ->
                 _state.update {
-                    it.copy(isQuickTranslateDialogVisible = false, isQuickTranslateDialogPinned = false)
+                    it.copy(
+                        isQuickTranslateDialogVisible = false,
+                        isQuickTranslateDialogPinned = false,
+                        isQuickTranslateDialogPassive = false,
+                        quickTranslateSourceLanguageOverride = null,
+                        quickTranslateTargetLanguageOverride = null,
+                        quickTranslateDetectedLanguageOverride = null
+                    )
                 }
 
             MainIntent.ToggleQuickTranslateDialogPin ->
@@ -282,6 +297,57 @@ class MainStore(
 
             is MainIntent.ReplaceWithTranslation -> scope.launch {
                 handleReplaceWithTranslation(intent.selectedText)
+            }
+
+            is MainIntent.TranslateShiftSelection -> {
+                val generation = shiftTranslationGeneration.incrementAndGet()
+                scope.launch {
+                    handleSelectionTranslation(
+                        selectedTextRaw = intent.selectedText,
+                        capturedAtMillis = intent.capturedAtMillis,
+                        generation = generation,
+                        trigger = SelectionTranslationTrigger.SHIFT
+                    )
+                }
+            }
+
+            is MainIntent.AutoTranslateSelection -> {
+                val generation = shiftTranslationGeneration.incrementAndGet()
+                scope.launch {
+                    try {
+                        handleSelectionTranslation(
+                            selectedTextRaw = intent.selectedText,
+                            capturedAtMillis = intent.capturedAtMillis,
+                            generation = generation,
+                            trigger = SelectionTranslationTrigger.AUTO_SELECTION
+                        )
+                    } finally {
+                        // Старый запрос не должен скрыть анимацию более нового выделения.
+                        if (shouldDismissAutomaticSelectionProgress(
+                                requestGeneration = generation,
+                                currentGeneration = shiftTranslationGeneration.get()
+                            )
+                        ) {
+                            _eventChannel.send(MainEvent.AutoSelectionTranslationFinished)
+                        }
+                    }
+                }
+            }
+
+            is MainIntent.TranslateSelectionFromButton -> {
+                val generation = shiftTranslationGeneration.incrementAndGet()
+                scope.launch {
+                    handleSelectionTranslation(
+                        selectedTextRaw = intent.selectedText,
+                        capturedAtMillis = intent.capturedAtMillis,
+                        generation = generation,
+                        trigger = SelectionTranslationTrigger.MANUAL_BUTTON
+                    )
+                }
+            }
+
+            MainIntent.CancelSelectionTranslations -> {
+                shiftTranslationGeneration.incrementAndGet()
             }
 
             is MainIntent.ListenToText -> scope.launch {
@@ -472,6 +538,10 @@ class MainStore(
             _state.update {
                 it.copy(
                     inputText = intent.selectedText,
+                    isQuickTranslateDialogPassive = false,
+                    quickTranslateSourceLanguageOverride = null,
+                    quickTranslateTargetLanguageOverride = null,
+                    quickTranslateDetectedLanguageOverride = null,
                     quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1
                 )
             }
@@ -490,6 +560,10 @@ class MainStore(
                     translatedText = "",
                     isLoading = true,
                     isQuickTranslateDialogPinned = false,
+                    isQuickTranslateDialogPassive = false,
+                    quickTranslateSourceLanguageOverride = null,
+                    quickTranslateTargetLanguageOverride = null,
+                    quickTranslateDetectedLanguageOverride = null,
                     isQuickTranslateDialogVisible = true,
                     quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1
                 )
@@ -500,12 +574,16 @@ class MainStore(
         translateText()
     }
 
-    private suspend fun translateText(textOverride: String? = null) {
+    private suspend fun translateText(
+        textOverride: String? = null,
+        sameLanguageFallbackTarget: LanguageCode? = null
+    ) {
         translateTextUseCase(
             getState    = { _state.value },
             updateState = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar,
-            textOverride = textOverride
+            textOverride = textOverride,
+            sameLanguageFallbackTarget = sameLanguageFallbackTarget
         )
     }
 
@@ -685,6 +763,234 @@ class MainStore(
         }
     }
 
+    /**
+     * Выполняет двунаправленный Shift-сценарий без показа главного окна.
+     *
+     * Перевод идёт на отдельном снимке состояния. Поэтому промежуточные isLoading/inputText
+     * не попадают в главный экран, а результат публикуется только после успешного ответа.
+     */
+    private suspend fun handleSelectionTranslation(
+        selectedTextRaw: String,
+        capturedAtMillis: Long,
+        generation: Long,
+        trigger: SelectionTranslationTrigger
+    ) {
+        val selectedText = selectedTextRaw.trim()
+        if (selectedText.isBlank()) {
+            reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED)
+            return
+        }
+
+        val config = settingsState.value
+        val mode = config.shiftTapTranslationMode
+        val triggerEnabled = when (trigger) {
+            SelectionTranslationTrigger.SHIFT ->
+                config.isShiftTapTranslateEnabled && mode != ShiftTapTranslationMode.DISABLED
+            SelectionTranslationTrigger.AUTO_SELECTION -> config.isAutoSelectionTranslateEnabled
+            SelectionTranslationTrigger.MANUAL_BUTTON -> true
+        }
+        if (!triggerEnabled) {
+            reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.DISABLED)
+            return
+        }
+
+        val modelLanguage = runCatching { LanguageCode(config.modelLanguage) }
+            .getOrDefault(LanguageCode.RUSSIAN)
+        val direction = ShiftSelectionDirectionDetector.detect(selectedText, modelLanguage)
+        val action = resolveSelectionTranslationAction(trigger, mode, direction)
+        if (action == SelectionTranslationAction.IGNORE) {
+            if (trigger == SelectionTranslationTrigger.SHIFT) {
+                reportSelectionTranslationFailure(
+                    trigger,
+                    MainEvent.ShiftTranslationFailure.UNSUPPORTED_DIRECTION
+                )
+            }
+            return
+        }
+        val shouldReplace = action == SelectionTranslationAction.REPLACE
+        // Только явный исходящий Shift получает локальную best-effort коррекцию. Auto-selection,
+        // mini-button, иностранный текст, имена и неизвестные слова остаются без изменений.
+        val translationInput = if (trigger == SelectionTranslationTrigger.SHIFT) {
+            prepareShiftTranslationInput(selectedText, modelLanguage, direction)
+        } else {
+            selectedText
+        }
+
+        val baseState = _state.value
+        // AUTO нужен и для исходящего текста: ответ провайдера сообщает точный ru/uk, который
+        // запоминается для обратного перевода именно этого результата.
+        val sourceLanguage = LanguageCode.AUTO
+        val targetLanguage = if (direction == ShiftSelectionDirection.MODEL_LANGUAGE) {
+            resolveShiftOutboundTarget(baseState, config, modelLanguage) ?: run {
+                reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.NO_TARGET_LANGUAGE)
+                return
+            }
+        } else {
+            shiftTranslationMemory.reverseTargetFor(selectedText, modelLanguage)
+        }
+
+        val wasRecentlyShown = !shouldReplace && shiftTranslationMemory.wasRecentlyShown(
+            sourceText = selectedText,
+            targetLanguage = targetLanguage,
+            nowMillis = System.currentTimeMillis(),
+            windowMillis = PASSIVE_OVERLAY_DEDUPLICATION_MS
+        )
+        // Дедупликация нужна только двум автоматическим mouse-selection событиям. Явный Shift
+        // всегда является новой командой пользователя и не должен молча поглощаться результатом,
+        // который auto-selection успел показать непосредственно перед нажатием.
+        if (shouldSuppressRecentPassiveOverlay(trigger, wasRecentlyShown)) return
+
+        var backgroundState = baseState.copy(
+            inputText = translationInput,
+            translatedText = "",
+            extraOutputText = "",
+            sourceLanguage = sourceLanguage,
+            detectedSourceLanguage = null,
+            targetLanguage = targetLanguage,
+            isLoading = false,
+            isExtraOutputLoading = false,
+            isQuickTranslateDialogVisible = false,
+            isQuickTranslateDialogPassive = false
+        )
+
+        val expiresAt = capturedAtMillis + SHIFT_REPLACE_VALIDITY_MS
+        var rejectionReason: MainEvent.ShiftTranslationFailure? = null
+        val execution = executeSelectionTranslation(
+            translationInput = translationInput,
+            action = action,
+            translate = { input ->
+                translateTextUseCase(
+                    getState = { backgroundState },
+                    updateState = { transform -> backgroundState = backgroundState.transform() },
+                    // Фоновый Shift не должен менять статус скрытого главного окна.
+                    onStatusUpdate = { _, _, _ -> },
+                    textOverride = input,
+                    // Summary/rewrite относятся к главному окну и не должны задерживать замену.
+                    includeExtraOutput = false,
+                    // Входящий Shift обязан переводить в язык модели независимо от правил окна.
+                    applyTranslationRules = false
+                )
+                backgroundState.translatedText
+            },
+            canDeliver = {
+                if (generation != shiftTranslationGeneration.get()) return@executeSelectionTranslation false
+                val currentConfig = settingsState.value
+                val stillEnabled = when (trigger) {
+                    SelectionTranslationTrigger.SHIFT ->
+                        currentConfig.isShiftTapTranslateEnabled &&
+                            resolveSelectionTranslationAction(
+                                trigger,
+                                currentConfig.shiftTapTranslationMode,
+                                direction
+                            ) == action
+                    SelectionTranslationTrigger.AUTO_SELECTION ->
+                        currentConfig.isAutoSelectionTranslateEnabled
+                    SelectionTranslationTrigger.MANUAL_BUTTON -> true
+                }
+                if (!stillEnabled) {
+                    rejectionReason = MainEvent.ShiftTranslationFailure.DISABLED
+                    return@executeSelectionTranslation false
+                }
+                if (shouldReplace && System.currentTimeMillis() > expiresAt) {
+                    rejectionReason = MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED
+                    return@executeSelectionTranslation false
+                }
+                true
+            },
+            onReplace = { translatedText ->
+                publishShiftHistory(backgroundState)
+                // Память исходного RU/UK нужна только после исходящего перевода. Обратный
+                // EN→RU не должен перезаписать её определённым английским языком.
+                if (direction == ShiftSelectionDirection.MODEL_LANGUAGE) {
+                    shiftTranslationMemory.rememberReplacement(
+                        translatedText = translatedText,
+                        detectedSourceLanguage = backgroundState.detectedSourceLanguage ?: modelLanguage,
+                        configuredModelLanguage = modelLanguage
+                    )
+                }
+                _eventChannel.send(
+                    MainEvent.PasteTranslation(
+                        translatedText = restoreSelectionBoundaryWhitespace(
+                            originalText = selectedTextRaw,
+                            translatedText = translatedText
+                        ),
+                        expiresAtMillis = expiresAt,
+                        showShiftFeedback = true
+                    )
+                )
+            },
+            onPassiveOverlay = { translatedText ->
+                publishShiftHistory(backgroundState)
+                _state.update {
+                    it.copy(
+                        inputText = selectedText,
+                        translatedText = translatedText,
+                        extraOutputText = "",
+                        isLoading = false,
+                        isExtraOutputLoading = false,
+                        isQuickTranslateDialogPinned = false,
+                        isQuickTranslateDialogPassive = true,
+                        quickTranslateSourceLanguageOverride = sourceLanguage,
+                        quickTranslateTargetLanguageOverride = targetLanguage,
+                        quickTranslateDetectedLanguageOverride = backgroundState.detectedSourceLanguage,
+                        isQuickTranslateDialogVisible = true,
+                        quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1
+                    )
+                }
+                shiftTranslationMemory.rememberPassiveOverlay(
+                    sourceText = selectedText,
+                    targetLanguage = targetLanguage,
+                    nowMillis = System.currentTimeMillis()
+                )
+            }
+        )
+
+        when (execution) {
+            SelectionTranslationExecution.DELIVERED,
+            SelectionTranslationExecution.IGNORED -> Unit
+            SelectionTranslationExecution.INVALID_TRANSLATION ->
+                reportSelectionTranslationFailure(
+                    trigger,
+                    MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED
+                )
+            SelectionTranslationExecution.REJECTED -> rejectionReason?.let { reason ->
+                reportSelectionTranslationFailure(trigger, reason)
+            }
+        }
+    }
+
+    /** История фонового use case публикуется только вместе с реально доставленным результатом. */
+    private fun publishShiftHistory(backgroundState: MainState) {
+        _state.update {
+            it.copy(
+                history = backgroundState.history,
+                historyIndex = backgroundState.historyIndex
+            )
+        }
+    }
+
+    private suspend fun reportSelectionTranslationFailure(
+        trigger: SelectionTranslationTrigger,
+        reason: MainEvent.ShiftTranslationFailure
+    ) {
+        if (trigger != SelectionTranslationTrigger.AUTO_SELECTION) {
+            _eventChannel.send(MainEvent.ShiftTranslationFailed(reason))
+        }
+    }
+
+    /** Выбранный иностранный target имеет приоритет; русский не переводится сам в себя. */
+    private fun resolveShiftOutboundTarget(
+        state: MainState,
+        config: Configuration,
+        modelLanguage: LanguageCode
+    ): LanguageCode? {
+        val preferred = runCatching { LanguageCode(config.preferredTargetLanguage) }.getOrNull()
+        return sequenceOf(state.targetLanguage, preferred, LanguageCode.ENGLISH)
+            .filterNotNull()
+            .plus(state.availableLanguages.asSequence())
+            .firstOrNull { it != LanguageCode.AUTO && it != modelLanguage }
+    }
+
     private fun handleCycleTargetLanguage() {
         val languages = _state.value.availableLanguages.filter { it != LanguageCode.AUTO }
         if (languages.isEmpty()) return
@@ -692,6 +998,13 @@ class MainStore(
         val currentIdx = languages.indexOf(current)
         val nextIdx = (currentIdx + 1) % languages.size
         _state.update { it.copy(targetLanguage = languages[nextIdx]) }
+    }
+
+    private companion object {
+        /** После этого срока нельзя гарантировать, что исходное выделение всё ещё активно. */
+        /** Покрывает общий 30-секундный network budget и небольшой запас на безопасную вставку. */
+        const val SHIFT_REPLACE_VALIDITY_MS = 35_000L
+        const val PASSIVE_OVERLAY_DEDUPLICATION_MS = 1_500L
     }
 
     suspend fun onShutdown() {
@@ -710,3 +1023,21 @@ class MainStore(
         _eventChannel.send(MainEvent.UpdateStatusBar(code, type, isTemporary))
     }
 }
+
+internal enum class SelectionTranslationTrigger {
+    SHIFT,
+    AUTO_SELECTION,
+    MANUAL_BUTTON
+}
+
+/** Явная команда Shift никогда не подавляется автоматическим результатом того же выделения. */
+internal fun shouldSuppressRecentPassiveOverlay(
+    trigger: SelectionTranslationTrigger,
+    wasRecentlyShown: Boolean
+): Boolean = trigger == SelectionTranslationTrigger.AUTO_SELECTION && wasRecentlyShown
+
+/** Только последний автоматический запрос имеет право убрать общий индикатор возле курсора. */
+internal fun shouldDismissAutomaticSelectionProgress(
+    requestGeneration: Long,
+    currentGeneration: Long
+): Boolean = requestGeneration == currentGeneration

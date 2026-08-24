@@ -94,7 +94,7 @@ how_to_use = "Como usar"
 contact_us = "Contate-nos"
 auto_check_for_updates = "Verificar atualizações automaticamente"
 check_for_updates = "Verificar atualizações"
-about_qtranslate = "Sobre o QTranslate"
+about_qtranslate = "Sobre o CamWork Translate"
 exit = "Sair"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "Copiado!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "Mostrar QTranslate"
+show_application = "Mostrar CamWork Translate"
 recognize_text = "Reconhecimento de Texto (OCR)"
 dictionary = "Dicionário"
 image_search = "Busca de imagens"
@@ -176,9 +176,6 @@ popups = "Janelas pop-up"
 startup_updates_group = "Inicialização e Atualizações"
 launch_on_startup = "Iniciar com o sistema"
 auto_check_updates = "Verificar atualizações automaticamente"
-selection_group = "Seleção de texto"
-selection_icon = "Mostrar um botão de tradução após selecionar texto"
-selection_icon_hint = "Mostra um pequeno botão perto do texto que você seleciona arrastando em outros aplicativos. Clique nele para traduzir a seleção."
 history_group = "Histórico"
 enable_history = "Ativar histórico de tradução"
 clear_history_on_exit = "Limpar histórico ao fechar o app"
@@ -273,7 +270,7 @@ tip_accept_update = "Manter dados existentes e reativar o plugin"
 tip_clean_install = "Apagar todos os dados do plugin antes de reativar"
 # Dialogs
 install_dialog_title = "Selecionar JAR do Plugin"
-install_dialog_filter = "Plugin QTranslate (*.jar)"
+install_dialog_filter = "Plugin CamWork Translate (*.jar)"
 install_success_title = "Plugin Instalado"
 install_success_msg = "Plugin instalado com sucesso."
 install_fail_title = "Falha na Instalação"
@@ -447,10 +444,7 @@ test_nothing_to_check = "Nada a verificar"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "Sobre o QTranslate"
-description = "O QTranslate original foi abandonado. Esta é uma reescrita completa — mesma ideia, movido a plugins para que o app nunca fique obsoleto."
-support_button = "Apoie este projeto ♥"
-donation_nudge = "Você já traduziu muito com o QTranslate! Se você o acha útil, considere apoiar o projeto (Sobre → Apoie ♥)"
+title = "Sobre o CamWork Translate"
 
 [history_dialog]
 title = "Histórico de Tradução"
@@ -493,7 +487,7 @@ manage_presets  = "Gerenciar Presets..."
 
 [update_dialog]
 title = "Atualização Disponível"
-header = "Uma nova versão do QTranslate está disponível!"
+header = "Uma nova versão do CamWork Translate está disponível!"
 # %1$s = new version number, %2$s = current version number
 details_format = "A versão %s está disponível (você tem a %s). Deseja atualizar?"
 skip_button = "Pular esta Versão"
@@ -505,7 +499,7 @@ view_on_github_button = "Ver no GitHub"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "Fechar QTranslate"
+title           = "Fechar CamWork Translate"
 message         = "O que você gostaria de fazer?"
 minimize_to_tray = "Minimizar para a Bandeja"
 exit            = "Sair"

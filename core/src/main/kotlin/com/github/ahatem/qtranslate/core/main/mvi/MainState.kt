@@ -47,7 +47,7 @@ data class MainState(
     val isExtraOutputLoading: Boolean = false,
     val sourceLanguage: LanguageCode = LanguageCode.AUTO,
     val detectedSourceLanguage: LanguageCode? = null,
-    val targetLanguage: LanguageCode = LanguageCode.ARABIC,
+    val targetLanguage: LanguageCode = LanguageCode.ENGLISH,
     val availableServices: List<ServiceInfo> = emptyList(),
     val availableLanguages: List<LanguageCode> = emptyList(),
     /**
@@ -74,6 +74,12 @@ data class MainState(
     val spellCheckCorrections: List<Correction> = emptyList(),
     val isQuickTranslateDialogVisible: Boolean = false,
     val isQuickTranslateDialogPinned: Boolean = false,
+    /** Пассивный Shift-overlay показывается без активации окна и не забирает фокус. */
+    val isQuickTranslateDialogPassive: Boolean = false,
+    /** Языки только для пассивного overlay, чтобы не менять выбранную в основном окне пару. */
+    val quickTranslateSourceLanguageOverride: LanguageCode? = null,
+    val quickTranslateTargetLanguageOverride: LanguageCode? = null,
+    val quickTranslateDetectedLanguageOverride: LanguageCode? = null,
     val isQuickDictionaryVisible: Boolean = false,
     val isQuickDictionaryPinned: Boolean = false,
     /**
@@ -118,6 +124,15 @@ data class MainState(
         get() = sourceLanguage.takeIf { it != LanguageCode.AUTO }
             ?: detectedSourceLanguage
             ?: LanguageCode.ENGLISH
+
+    /**
+     * Язык результата, который сейчас показан в окне быстрого перевода.
+     *
+     * Автоматический перевод выделения не меняет основную языковую пару, поэтому для его
+     * озвучивания приоритет имеет временный язык оверлея.
+     */
+    val resolvedQuickTranslateTargetLanguage: LanguageCode
+        get() = quickTranslateTargetLanguageOverride ?: targetLanguage
 
     /** `true` when there is a previous history entry to restore. */
     val canUndo: Boolean

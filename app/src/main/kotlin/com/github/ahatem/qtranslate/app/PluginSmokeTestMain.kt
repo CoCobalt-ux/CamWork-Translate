@@ -130,7 +130,7 @@ fun main(args: Array<String>) = runBlocking {
     }
 
     val report = buildString {
-        appendLine("QTranslate all-plugin smoke report")
+        appendLine("CamWork Translate all-plugin smoke report")
         appendLine("==================================")
         results.forEach { result ->
             appendLine("${if (result.passed) "PASS" else "FAIL"}  ${result.pluginId}  ${result.check}  ${result.detail}")

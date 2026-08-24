@@ -53,4 +53,22 @@ class ActiveServiceManager(
 
     /** As [getActive], for the callers that only need the service itself. */
     fun <T : Service> getActiveService(type: ServiceRole): T? = getActive<T>(type)?.service
+
+    /**
+     * Все доступные сервисы роли с учётом глобального выключателя и пользовательских отключений.
+     *
+     * Основной выбор по-прежнему делает [getActive]. Этот список нужен только для контролируемого
+     * аварийного переключения, когда выбранный провайдер уже вернул окончательную ошибку.
+     */
+    @Suppress("UNCHECKED_CAST")
+    fun <T : Service> getAvailable(type: ServiceRole): List<ActiveService<T>> {
+        val config = configuration.value
+        if (!config.isServiceRoleEnabled(type)) return emptyList()
+
+        return activeServices.value.entries.mapNotNull { (id, service) ->
+            service
+                .takeIf { it.hasRole(type) && !config.isServiceDisabled(id, type) }
+                ?.let { ActiveService(id, it) as? ActiveService<T> }
+        }
+    }
 }

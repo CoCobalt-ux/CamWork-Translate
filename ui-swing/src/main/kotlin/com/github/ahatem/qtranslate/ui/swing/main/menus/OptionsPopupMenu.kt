@@ -12,7 +12,7 @@ data class LayoutPresetInfo(
 
 data class MenuStrings(
     val spellCheck: String,
-    val instantTranslation: String,
+    val selectionTranslation: String,
     val extraOutput: String,
     val viewOptions: String,
     val dictionary: String,
@@ -37,7 +37,7 @@ data class MenuStrings(
 
 data class MenuActions(
     val onToggleSpellCheck: (Boolean) -> Unit,
-    val onToggleInstantTranslation: (Boolean) -> Unit,
+    val onToggleSelectionTranslation: (Boolean) -> Unit,
     val onToggleExtraOutput: (Boolean) -> Unit,
     val onShowDictionary: () -> Unit,
     val onShowImageSearch: () -> Unit,
@@ -121,9 +121,9 @@ class MainMenuPopup(
             isSelected = config.isSpellCheckingEnabled
             addActionListener { actions.onToggleSpellCheck(isSelected) }
         })
-        add(JCheckBoxMenuItem(strings.instantTranslation).apply {
-            isSelected = config.isInstantTranslationEnabled
-            addActionListener { actions.onToggleInstantTranslation(isSelected) }
+        add(JCheckBoxMenuItem(strings.selectionTranslation).apply {
+            isSelected = config.isAutoSelectionTranslateEnabled
+            addActionListener { actions.onToggleSelectionTranslation(isSelected) }
         })
         add(JCheckBoxMenuItem(strings.extraOutput).apply {
             isSelected = config.extraOutputType != ExtraOutputType.None
@@ -162,16 +162,7 @@ class MainMenuPopup(
                 addActionListener { actions.onContactUs() }
             })
 
-            add(JSeparator())
-
-            add(JCheckBoxMenuItem(strings.autoCheckForUpdates).apply {
-                isSelected = config.autoCheckForUpdates
-                addActionListener { actions.onToggleAutoCheckForUpdates(isSelected) }
-            })
-
-            add(JMenuItem(strings.checkForUpdates).apply {
-                addActionListener { actions.onCheckForUpdates() }
-            })
+            // Канал обновлений CamWork будет возвращён в меню после публикации репозитория релизов.
         })
         add(JSeparator())
         add(JMenuItem(strings.exit).apply {

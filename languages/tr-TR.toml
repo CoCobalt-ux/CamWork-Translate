@@ -94,7 +94,7 @@ how_to_use = "Nasıl Kullanılır"
 contact_us = "Bize Ulaşın"
 auto_check_for_updates = "Güncellemeleri Otomatik Denetle"
 check_for_updates = "Güncellemeleri Denetle"
-about_qtranslate = "QTranslate Hakkında"
+about_qtranslate = "CamWork Translate Hakkında"
 exit = "Çıkış"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "Kopyalandı!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "QTranslate'i Göster"
+show_application = "CamWork Translate'i Göster"
 recognize_text = "Metin Tanıma (OCR)"
 dictionary = "Sözlük"
 image_search = "Resim Arama"
@@ -176,9 +176,6 @@ popups = "Açılır Pencereler"
 startup_updates_group = "Başlangıç ve Güncellemeler"
 launch_on_startup = "Sistem başlangıcında çalıştır"
 auto_check_updates = "Güncellemeleri otomatik olarak denetle"
-selection_group = "Metin Seçimi"
-selection_icon = "Metin seçtikten sonra çeviri düğmesi göster"
-selection_icon_hint = "Diğer uygulamalarda sürükleyerek seçtiğiniz metnin yanında küçük bir düğme gösterir. Seçimi çevirmek için tıklayın."
 history_group = "Geçmiş"
 enable_history = "Çeviri geçmişini etkinleştir"
 clear_history_on_exit = "Uygulama kapandığında geçmişi temizle"
@@ -273,7 +270,7 @@ tip_accept_update = "Varolan verileri koru ve eklentiyi yeniden etkinleştir"
 tip_clean_install = "Yeniden etkinleştirmeden önce tüm eklenti verilerini sil"
 # Dialogs
 install_dialog_title = "Eklenti JAR Dosyasını Seçin"
-install_dialog_filter = "QTranslate Eklentisi (*.jar)"
+install_dialog_filter = "CamWork Translate Eklentisi (*.jar)"
 install_success_title = "Eklenti Kuruldu"
 install_success_msg = "Eklenti başarılı olarak kuruldu."
 install_fail_title = "Kurulum Başarısız Oldu"
@@ -447,10 +444,7 @@ test_nothing_to_check = "Denetlenecek bir şey yok"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "QTranslate Hakkında"
-description = "Orijinal QTranslate projesi terk edildi. Bu tam bir yeniden yazımdır — aynı fikirdir, eklenti odaklı olduğundan uygulama asla eskimez."
-support_button = "Bu projeyi destekleyin ♥"
-donation_nudge = "QTranslate ile çok fazla çeviri yaptınız! Eğer yararlı buluyorsanız, projeyi desteklemeyi düşünün (Hakkında → Destekle ♥)"
+title = "CamWork Translate Hakkında"
 
 [history_dialog]
 title = "Çeviri Geçmişi"
@@ -493,7 +487,7 @@ manage_presets = "Ön Ayarları Yönet..."
 
 [update_dialog]
 title = "Güncelleme Mevcut"
-header = "QTranslate'in yeni bir sürümü mevcut!"
+header = "CamWork Translate'in yeni bir sürümü mevcut!"
 # %1$s = new version number, %2$s = current version number
 details_format = "%s sürümü şu an mevcut (sizde %s var). Güncellemek ister misiniz?"
 skip_button = "Bu Sürümü Atla"
@@ -505,7 +499,7 @@ view_on_github_button = "GitHub'da Görüntüle"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "QTranslate'i Kapat"
+title           = "CamWork Translate'i Kapat"
 message         = "Ne yapmak istersiniz?"
 minimize_to_tray = "Sistem Tepsisine Küçült"
 exit            = "Çıkış"

@@ -14,6 +14,7 @@ import java.awt.Graphics2D
 import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.Toolkit
 import java.awt.Window
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -45,14 +46,27 @@ import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
  * translucency the window is transparent and the button paints its own rounded body
  * and soft shadow; otherwise it falls back to a plain opaque square.
  */
-internal class SelectionTranslateButton(
+internal class SelectionTranslateButton internal constructor(
     owner: Window,
-    iconManager: IconManager,
+    private val icon: FlatSVGIcon,
     tooltip: String,
     private val onTranslate: (String) -> Unit
 ) : JWindow(owner) {
 
-    private var selectedText = ""
+    constructor(
+        owner: Window,
+        iconManager: IconManager,
+        tooltip: String,
+        onTranslate: (String) -> Unit
+    ) : this(
+        owner = owner,
+        icon = (iconManager.getIcon(ICON_PATH, ICON_SIZE, ICON_SIZE) as FlatSVGIcon)
+            .applyForegroundColorFilter(),
+        tooltip = tooltip,
+        onTranslate = onTranslate
+    )
+
+    private val payload = SelectionButtonPayload()
     private val hideTimer = Timer(VISIBLE_MS) { fadeOutAndHide() }.apply { isRepeats = false }
     private var fadeTimer: Timer? = null
 
@@ -60,9 +74,6 @@ internal class SelectionTranslateButton(
         GraphicsEnvironment.getLocalGraphicsEnvironment().defaultScreenDevice
             .isWindowTranslucencySupported(GraphicsDevice.WindowTranslucency.PERPIXEL_TRANSLUCENT)
     }.getOrDefault(false)
-
-    private val icon: FlatSVGIcon =
-        (iconManager.getIcon(ICON_PATH, ICON_SIZE, ICON_SIZE) as FlatSVGIcon).applyForegroundColorFilter()
 
     private val face = ButtonFace()
 
@@ -83,7 +94,7 @@ internal class SelectionTranslateButton(
     /** Shows the button near [pointer] for [text], choosing a corner that stays on screen. */
     fun showAt(pointer: Point, text: String) {
         if (text.isBlank()) return
-        selectedText = text
+        payload.remember(text)
         face.hovered = false
         location = placeNear(pointer)
 
@@ -106,7 +117,7 @@ internal class SelectionTranslateButton(
         fadeTimer?.stop()
         fadeTimer = null
         isVisible = false
-        selectedText = ""
+        payload.clear()
     }
 
     override fun dispose() {
@@ -124,26 +135,33 @@ internal class SelectionTranslateButton(
      * of the selection.
      */
     private fun placeNear(pointer: Point): Point {
-        val screen = screenBoundsFor(pointer)
-        val w = width
-        val h = height
-
-        var x = pointer.x + GAP - PADDING
-        var y = pointer.y + GAP - PADDING
-
-        if (x + w > screen.x + screen.width) x = pointer.x - GAP - FACE_SIZE - PADDING
-        if (y + h > screen.y + screen.height) y = pointer.y - GAP - FACE_SIZE - PADDING
-
-        x = x.coerceIn(screen.x, max(screen.x, screen.x + screen.width - w))
-        y = y.coerceIn(screen.y, max(screen.y, screen.y + screen.height - h))
-        return Point(x, y)
+        return calculateSelectionButtonLocation(
+            pointer = pointer,
+            windowSize = size,
+            screenWorkArea = screenWorkAreaFor(pointer),
+            faceSize = FACE_SIZE,
+            padding = PADDING,
+            gap = GAP
+        )
     }
 
-    private fun screenBoundsFor(pointer: Point): Rectangle =
-        GraphicsEnvironment.getLocalGraphicsEnvironment().screenDevices
-            .map { it.defaultConfiguration.bounds }
-            .firstOrNull { it.contains(pointer) }
-            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+    private fun screenWorkAreaFor(pointer: Point): Rectangle {
+        val environment = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        val configuration = environment.screenDevices
+            .map { it.defaultConfiguration }
+            .firstOrNull { it.bounds.contains(pointer) }
+            ?: return environment.maximumWindowBounds
+        val bounds = configuration.bounds
+        val insets = runCatching {
+            Toolkit.getDefaultToolkit().getScreenInsets(configuration)
+        }.getOrNull() ?: return bounds
+        return Rectangle(
+            bounds.x + insets.left,
+            bounds.y + insets.top,
+            max(1, bounds.width - insets.left - insets.right),
+            max(1, bounds.height - insets.top - insets.bottom)
+        )
+    }
 
     // ── Fading ───────────────────────────────────────────────────────────────
 
@@ -209,7 +227,7 @@ internal class SelectionTranslateButton(
 
                 override fun mouseClicked(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e)) return
-                    val text = selectedText
+                    val text = payload.consume()
                     dismiss()
                     if (text.isNotBlank()) onTranslate(text)
                 }
@@ -310,7 +328,7 @@ internal class SelectionTranslateButton(
         const val ARC = 10
 
         /** Distance from the cursor to the nearest edge of the button body. */
-        const val GAP = 14
+        const val GAP = 8
 
         const val VISIBLE_MS = 4_000
         const val FADE_MS = 140
@@ -321,4 +339,51 @@ internal class SelectionTranslateButton(
 
         val TRANSPARENT = Color(0, 0, 0, 0)
     }
+}
+
+/** Одноразовое состояние кнопки: старое выделение нельзя повторно отправить после dismiss. */
+internal class SelectionButtonPayload {
+    private var text: String = ""
+
+    fun remember(value: String) {
+        text = value
+    }
+
+    fun consume(): String = text.also { text = "" }
+
+    fun clear() {
+        text = ""
+    }
+}
+
+/**
+ * Геометрия в AWT user space. Кнопка предпочитает правый нижний угол, переворачивается
+ * у края и целиком остаётся в рабочей области, включая мониторы с отрицательным origin.
+ */
+internal fun calculateSelectionButtonLocation(
+    pointer: Point,
+    windowSize: Dimension,
+    screenWorkArea: Rectangle,
+    faceSize: Int,
+    padding: Int,
+    gap: Int
+): Point {
+    val width = max(1, windowSize.width)
+    val height = max(1, windowSize.height)
+    val maxX = max(screenWorkArea.x, screenWorkArea.x + screenWorkArea.width - width)
+    val maxY = max(screenWorkArea.y, screenWorkArea.y + screenWorkArea.height - height)
+
+    var x = pointer.x + gap - padding
+    var y = pointer.y + gap - padding
+    if (x + width > screenWorkArea.x + screenWorkArea.width) {
+        x = pointer.x - gap - faceSize - padding
+    }
+    if (y + height > screenWorkArea.y + screenWorkArea.height) {
+        y = pointer.y - gap - faceSize - padding
+    }
+
+    return Point(
+        x.coerceIn(screenWorkArea.x, maxX),
+        y.coerceIn(screenWorkArea.y, maxY)
+    )
 }

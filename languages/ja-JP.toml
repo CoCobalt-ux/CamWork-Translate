@@ -94,7 +94,7 @@ how_to_use = "使い方"
 contact_us = "お問い合わせ"
 auto_check_for_updates = "更新を自動確認"
 check_for_updates = "更新を確認"
-about_qtranslate = "QTranslate について"
+about_qtranslate = "CamWork Translate について"
 exit = "終了"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "コピーしました！"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "QTranslate を表示"
+show_application = "CamWork Translate を表示"
 recognize_text = "テキスト認識 (OCR)"
 dictionary = "辞書"
 image_search = "画像検索"
@@ -176,9 +176,6 @@ popups = "ポップアップ"
 startup_updates_group = "起動と更新"
 launch_on_startup = "システム起動時に実行"
 auto_check_updates = "更新を自動的に確認する"
-selection_group = "テキスト選択"
-selection_icon = "テキスト選択後に翻訳ボタンを表示する"
-selection_icon_hint = "他のアプリケーションでドラッグして選択したテキストの近くに小さなボタンを表示します。クリックすると選択範囲を翻訳します。"
 history_group = "履歴"
 enable_history = "翻訳履歴を有効にする"
 clear_history_on_exit = "終了時に履歴を消去する"
@@ -273,7 +270,7 @@ tip_accept_update = "既存のデータを保持してプラグインを再有�
 tip_clean_install = "再有効化する前にすべてのプラグインデータを消去"
 # Dialogs
 install_dialog_title = "プラグイン JAR を選択"
-install_dialog_filter = "QTranslate プラグイン (*.jar)"
+install_dialog_filter = "CamWork Translate プラグイン (*.jar)"
 install_success_title = "インストール完了"
 install_success_msg = "プラグインが正常にインストールされました。"
 install_fail_title = "インストール失敗"
@@ -447,10 +444,7 @@ test_nothing_to_check = "確認する項目がありません"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "QTranslate について"
-description = "オリジナルの QTranslate は開発が終了しました。これはフルスクラッチによる再開発版です。プラグイン駆動により、アプリが古くなることはありません。"
-support_button = "このプロジェクトを支援 ♥"
-donation_nudge = "QTranslate でたくさん翻訳しましたね！役に立ったなら、プロジェクトの支援をご検討ください (About → 支援 ♥)"
+title = "CamWork Translate について"
 
 [history_dialog]
 title = "翻訳履歴"
@@ -493,7 +487,7 @@ manage_presets  = "プリセットを管理..."
 
 [update_dialog]
 title = "アップデートが利用可能"
-header = "QTranslate の新しいバージョンが利用可能です！"
+header = "CamWork Translate の新しいバージョンが利用可能です！"
 # %1$s = new version number, %2$s = current version number
 details_format = "バージョン %s が利用可能です (現在 %s)。更新しますか？"
 skip_button = "このバージョンをスキップ"
@@ -505,7 +499,7 @@ view_on_github_button = "GitHubで表示"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "QTranslate を閉じる"
+title           = "CamWork Translate を閉じる"
 message         = "実行するアクションを選択してください:"
 minimize_to_tray = "トレイに最小化"
 exit            = "終了"

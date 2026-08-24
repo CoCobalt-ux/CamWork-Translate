@@ -8,18 +8,29 @@ import com.github.ahatem.qtranslate.core.settings.data.ServiceSelectorStyle
 import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
+import com.github.ahatem.qtranslate.ui.swing.main.layout.ResponsiveUi
+import com.formdev.flatlaf.util.UIScale
+import net.miginfocom.swing.MigLayout
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.*
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
 
+/** Роли, которые имеют постоянное место в основном окне. */
+internal val MAIN_SELECTOR_ROLES: Set<ServiceRole> = setOf(ServiceRole.TRANSLATOR)
+
 class TranslatorSelector(
     private val iconManager: IconManager,
     private val onServiceSelected: (ServiceRole, String) -> Unit,
     private val onConfigureService: (String) -> Unit = {}
 ) : JPanel(CardLayout()), Renderable<TranslatorSelectorState> {
-    private companion object { const val CLASSIC = "classic"; const val ENHANCED = "enhanced"; const val ICON_SIZE = 16 }
+    private companion object {
+        const val CLASSIC = "classic"
+        const val ENHANCED = "enhanced"
+        const val ICON_SIZE = 16
+        const val MAX_CLASSIC_TEXT_WIDTH = 160
+    }
 
     private var state = TranslatorSelectorState(emptyList(), null, false)
     private val classicButtons = JPanel(FlowLayout(FlowLayout.LEADING, 2, 0)).apply { isOpaque = false }
@@ -44,7 +55,33 @@ class TranslatorSelector(
     private val classic = JPanel(BorderLayout(2, 0)).apply {
         isOpaque = false; add(scrollBack, BorderLayout.LINE_START); add(classicScroll); add(classicControls, BorderLayout.LINE_END)
     }
-    private val enhanced = JPanel(GridLayout(1, 0, 8, 0)).apply { isOpaque = false }
+    private var isRenderingEnhanced = false
+    private var enhancedServices: List<ServiceInfo> = emptyList()
+    private val enhancedCombo = JComboBox<ServiceInfo>().apply {
+        renderer = ServiceRenderer()
+        minimumSize = Dimension(0, preferredSize.height)
+        addActionListener {
+            if (!isRenderingEnhanced) {
+                (selectedItem as? ServiceInfo)?.let { service ->
+                    toolTipText = service.name
+                    onServiceSelected(MAIN_SELECTOR_ROLES.single(), service.id)
+                }
+            }
+        }
+    }
+    private val configureEnhanced = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
+        putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
+        toolTipText = "Configure active translation service"
+        isFocusable = false
+        addActionListener { (enhancedCombo.selectedItem as? ServiceInfo)?.id?.let(onConfigureService) }
+    }
+    private val enhanced = JPanel(
+        MigLayout("insets 0, fillx, hidemode 3", "[grow,fill][]", "[]")
+    ).apply {
+        isOpaque = false
+        add(enhancedCombo, "growx, pushx, wmin 0")
+        add(configureEnhanced)
+    }
 
     init {
         isOpaque = false; add(classic, CLASSIC); add(enhanced, ENHANCED)
@@ -53,7 +90,7 @@ class TranslatorSelector(
 
     override fun render(state: TranslatorSelectorState) {
         this.state = state
-        if (state.style == ServiceSelectorStyle.CLASSIC) rebuildClassic() else rebuildEnhanced()
+        if (state.style == ServiceSelectorStyle.CLASSIC) rebuildClassic() else renderEnhanced()
         (layout as CardLayout).show(this, if (state.style == ServiceSelectorStyle.CLASSIC) CLASSIC else ENHANCED)
         revalidate(); repaint()
     }
@@ -66,15 +103,21 @@ class TranslatorSelector(
             val serviceIcon = loadIcon(service)
             val button = JToggleButton().apply {
                 icon = if (state.appearance == ServiceSelectorAppearance.TEXT_ONLY) null else serviceIcon
+                val fullName = service.name
+                val shortName = ResponsiveUi.elideText(
+                    fullName,
+                    UIScale.scale(MAX_CLASSIC_TEXT_WIDTH),
+                    getFontMetrics(font)::stringWidth
+                )
                 text = when (state.appearance) {
-                    ServiceSelectorAppearance.ICONS_ONLY -> if (serviceIcon == null) service.name else null
-                    else -> service.name
+                    ServiceSelectorAppearance.ICONS_ONLY -> shortName.takeIf { serviceIcon == null }
+                    else -> shortName
                 }
-                toolTipText = service.name; isSelected = service.id == state.selectedTranslatorId
+                toolTipText = fullName; isSelected = service.id == state.selectedTranslatorId
                 isEnabled = !state.isLoading; isFocusable = false; isOpaque = false
                 putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
                 margin = Insets(4, 6, 4, 6)
-                addActionListener { onServiceSelected(ServiceRole.TRANSLATOR, service.id) }
+                addActionListener { onServiceSelected(MAIN_SELECTOR_ROLES.single(), service.id) }
                 addMouseListener(object : MouseAdapter() {
                     override fun mousePressed(e: MouseEvent) { if (SwingUtilities.isRightMouseButton(e)) onConfigureService(service.id) }
                 })
@@ -90,33 +133,18 @@ class TranslatorSelector(
         }
     }
 
-    private fun rebuildEnhanced() {
-        enhanced.removeAll()
-        listOf(ServiceRole.TRANSLATOR to "Translate", ServiceRole.DICTIONARY to "Dictionary", ServiceRole.TTS to "Voice")
-            .forEach { (type, label) ->
-                val services = state.availableServices.filter { it.type == type }
-                if (services.isNotEmpty()) enhanced.add(createServicePicker(type, label, services))
-            }
-    }
-
-    private fun createServicePicker(type: ServiceRole, label: String, services: List<ServiceInfo>): JComponent {
-        val combo = JComboBox(services.toTypedArray()).apply {
-            renderer = ServiceRenderer(); selectedItem = services.find { it.id == state.selectedServices[type] } ?: services.first()
-            isEnabled = !state.isLoading; toolTipText = "Select $label service"
-            minimumSize = Dimension(0, preferredSize.height)
-            addActionListener { (selectedItem as? ServiceInfo)?.let { onServiceSelected(type, it.id) } }
+    private fun renderEnhanced() {
+        isRenderingEnhanced = true
+        if (enhancedServices != state.availableTranslators) {
+            enhancedCombo.model = DefaultComboBoxModel(state.availableTranslators.toTypedArray())
+            enhancedServices = state.availableTranslators
         }
-        val gear = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
-            putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton"); toolTipText = "Configure selected $label service"; isFocusable = false
-            addActionListener { (combo.selectedItem as? ServiceInfo)?.let { onConfigureService(it.id) } }
-        }
-        return JPanel(BorderLayout(4, 2)).apply {
-            isOpaque = false
-            minimumSize = Dimension(0, preferredSize.height)
-            add(JLabel(label), BorderLayout.PAGE_START)
-            add(combo)
-            add(gear, BorderLayout.LINE_END)
-        }
+        val selected = state.availableTranslators.find { it.id == state.selectedTranslatorId }
+        if (selected != null && enhancedCombo.selectedItem != selected) enhancedCombo.selectedItem = selected
+        enhancedCombo.isEnabled = !state.isLoading && state.availableTranslators.isNotEmpty()
+        enhancedCombo.toolTipText = (enhancedCombo.selectedItem as? ServiceInfo)?.name
+        configureEnhanced.isEnabled = !state.isLoading && enhancedCombo.selectedItem != null
+        isRenderingEnhanced = false
     }
 
     private fun createScrollButton(iconPath: String, amount: Int, tooltip: String) =
@@ -148,7 +176,16 @@ class TranslatorSelector(
     private inner class ServiceRenderer : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean): Component =
             super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus).apply {
-                val service = value as? ServiceInfo; text = service?.name.orEmpty(); icon = service?.let(::loadIcon)
+                val service = value as? ServiceInfo
+                val fullName = service?.name.orEmpty()
+                text = if (index == -1 && enhancedCombo.width > 0) {
+                    val availableWidth = (enhancedCombo.width - 52).coerceAtLeast(0)
+                    ResponsiveUi.elideText(fullName, availableWidth, getFontMetrics(font)::stringWidth)
+                } else {
+                    fullName
+                }
+                icon = service?.let(::loadIcon)
+                toolTipText = fullName.takeIf { it.isNotBlank() }
             }
     }
 }

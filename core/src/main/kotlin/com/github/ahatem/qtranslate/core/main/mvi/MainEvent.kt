@@ -14,7 +14,27 @@ sealed interface MainEvent : UiEvent {
      * Instructs the UI to paste [translatedText] back, replacing the previously
      * selected text. Emitted after [MainIntent.ReplaceWithTranslation] completes.
      */
-    data class PasteTranslation(val translatedText: String) : MainEvent
+    data class PasteTranslation(
+        val translatedText: String,
+        /** После этого момента вставка небезопасна: пользователь мог сменить поле или выделение. */
+        val expiresAtMillis: Long = Long.MAX_VALUE,
+        /** Только Shift-сценарий показывает подтверждение после фактической вставки. */
+        val showShiftFeedback: Boolean = false
+    ) : MainEvent
+
+    /** Причина, по которой фоновый Shift-перевод не смог завершиться. */
+    enum class ShiftTranslationFailure {
+        DISABLED,
+        UNSUPPORTED_DIRECTION,
+        NO_TARGET_LANGUAGE,
+        TRANSLATION_FAILED
+    }
+
+    /** Просит пассивный UI заменить индикатор загрузки понятным сообщением об ошибке. */
+    data class ShiftTranslationFailed(val reason: ShiftTranslationFailure) : MainEvent
+
+    /** Последний автоматический перевод завершён: индикатор возле курсора можно скрыть. */
+    data object AutoSelectionTranslationFinished : MainEvent
 
     data class ShowUpdateDialog(
         val newVersion: String,

@@ -104,6 +104,6 @@ class ThumbnailLoader(private val maxEntries: Int = 120) {
     private companion object {
         const val THREADS = 4
         const val TIMEOUT_MS = 10_000
-        const val USER_AGENT = "QTranslate/1.0 (https://github.com/ahatem/QTranslate)"
+        const val USER_AGENT = "CamWork-Translate/1.0 (https://camwork.club)"
     }
 }

@@ -1,49 +1,78 @@
 package com.github.ahatem.qtranslate.core.updater
 
 /**
- * Which file the update dialog's Download button should fetch.
+ * Выбирает файл, который должен загрузить диалог обновления.
  *
- * A release carries the application in three shapes alongside a plugin JAR for every bundled
- * plugin, and the updater used to take whichever asset GitHub listed first. GitHub lists them
- * alphabetically, so first has always meant `ai-plugin-<version>.jar`: pressing Download in a
- * release-shipping application handed the user a single plugin and called it an update. Nothing
- * failed, and nothing said anything was wrong, which is why it survived several releases.
- *
- * Matching is therefore by name and deliberately narrow. There is no "first asset" fallback and
- * there must never be one: an asset this cannot identify is far more likely to be a plugin than
- * the application, so the caller falls back to the release page, where a person can choose.
+ * В релизе лежат три варианта приложения и отдельные JAR плагинов. Поэтому брать первый файл
+ * GitHub нельзя: по алфавиту им обычно оказывается один плагин. Сопоставление намеренно строгое;
+ * неизвестный файл приводит пользователя на страницу релиза, где он сможет выбрать вручную.
  */
 internal object ReleaseAssets {
 
+    internal enum class Platform { WINDOWS, MACOS, OTHER }
+
     /**
-     * The asset name a user on this platform should be given, or `null` if none is recognisable.
-     *
-     * Windows is offered the packaged build first because it carries its own Java runtime and is
-     * the answer for most people there. Everywhere else the portable archive is the equivalent,
-     * and the bare application JAR is the last resort on either.
+     * Возвращает подходящий файл или `null`, если ни один вариант не распознан.
+     * В Windows приоритет имеет пакет со встроенной Java, на остальных системах — переносимый ZIP.
      */
     fun selectDownload(assetNames: List<String>, onWindows: Boolean): String? {
-        val preference = if (onWindows) {
-            listOf(WINDOWS_PACKAGE, PORTABLE, APP_ONLY)
-        } else {
-            listOf(PORTABLE, APP_ONLY)
+        val platform = if (onWindows) Platform.WINDOWS else Platform.OTHER
+        return selectDownload(assetNames, platform)
+    }
+
+    /**
+     * Выбирает нативный пакет текущей ОС. На macOS архитектура обязательна: приложение с
+     * несовместимым runtime хуже безопасного перехода на переносимый архив.
+     */
+    fun selectDownload(
+        assetNames: List<String>,
+        platform: Platform,
+        architecture: String = ""
+    ): String? {
+        val preference = when (platform) {
+            Platform.WINDOWS -> listOf(WINDOWS_PACKAGE, PORTABLE, APP_ONLY)
+            Platform.MACOS -> when (architecture.lowercase()) {
+                "aarch64", "arm64" -> listOf(MACOS_ARM64_DMG, MACOS_ARM64_APP, PORTABLE, APP_ONLY)
+                "amd64", "x86_64", "x64" -> listOf(MACOS_X64_DMG, MACOS_X64_APP, PORTABLE, APP_ONLY)
+                else -> listOf(PORTABLE, APP_ONLY)
+            }
+            Platform.OTHER -> listOf(PORTABLE, APP_ONLY)
         }
         return preference.firstNotNullOfOrNull { shape ->
             assetNames.firstOrNull { shape.matches(it) }
         }
     }
 
-    /** `QTranslate-1.4.0-windows-x64.zip`, the build with a bundled runtime. */
-    private val WINDOWS_PACKAGE = Regex("""QTranslate-\d[^-]*-windows.*\.zip""", RegexOption.IGNORE_CASE)
+    private const val VERSION = "\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?"
+
+    /** `CamWork-Translate-1.2.0-windows-x64.zip` — Windows-пакет со встроенной Java. */
+    private val WINDOWS_PACKAGE = Regex(
+        "CamWork-Translate-$VERSION-windows-x64\\.zip",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val MACOS_ARM64_DMG = macShape("arm64", "dmg")
+    private val MACOS_ARM64_APP = macShape("arm64", "app\\.zip")
+    private val MACOS_X64_DMG = macShape("x64", "dmg")
+    private val MACOS_X64_APP = macShape("x64", "app\\.zip")
+
+    private fun macShape(architecture: String, extension: String) = Regex(
+        "CamWork-Translate-$VERSION-macos-$architecture\\.$extension",
+        RegexOption.IGNORE_CASE
+    )
 
     /**
-     * `QTranslate-1.4.0.zip`, the portable archive.
+     * `CamWork-Translate-1.0.0.zip` — переносимый архив.
      *
-     * The `[^-]*` is what separates this from the Windows package: both begin `QTranslate-` and
-     * end `.zip`, and only the absence of a further hyphenated part tells them apart.
+     * Отрицательная проверка ставится сразу после трёх чисел версии. Иначе разрешённый SemVer
+     * prerelease жадно принимает `-windows-x64` за часть версии и отдаёт чужой runtime.
      */
-    private val PORTABLE = Regex("""QTranslate-\d[^-]*\.zip""", RegexOption.IGNORE_CASE)
+    private val PORTABLE = Regex(
+        "CamWork-Translate-\\d+\\.\\d+\\.\\d+(?!-(?:windows|macos)-)" +
+            "(?:[-+][0-9A-Za-z.-]+)?\\.zip",
+        RegexOption.IGNORE_CASE
+    )
 
-    /** `QTranslate-App-1.4.0.jar`, the application with no plugins. */
-    private val APP_ONLY = Regex("""QTranslate-App-\d[^-]*\.jar""", RegexOption.IGNORE_CASE)
+    /** `CamWork-Translate-App-1.0.0.jar` — приложение без плагинов. */
+    private val APP_ONLY = Regex("CamWork-Translate-App-$VERSION\\.jar", RegexOption.IGNORE_CASE)
 }

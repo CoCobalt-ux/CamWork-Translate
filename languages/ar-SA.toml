@@ -94,7 +94,7 @@ how_to_use = "كيفية الاستخدام"
 contact_us = "اتصل بنا"
 auto_check_for_updates = "تحقق تلقائي من التحديثات"
 check_for_updates = "تحقق من وجود تحديثات"
-about_qtranslate = "حول QTranslate"
+about_qtranslate = "حول CamWork Translate"
 exit = "خروج"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "تم النسخ!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "إظهار QTranslate"
+show_application = "إظهار CamWork Translate"
 recognize_text = "التعرف على النص (OCR)"
 dictionary = "القاموس"
 image_search = "البحث عن الصور"
@@ -176,9 +176,6 @@ popups = "النوافذ المنبثقة"
 startup_updates_group = "بدء التشغيل والتحديثات"
 launch_on_startup = "التشغيل عند بدء تشغيل النظام"
 auto_check_updates = "التحقق من التحديثات تلقائيًا"
-selection_group = "تحديد النص"
-selection_icon = "إظهار زر ترجمة بعد تحديد النص"
-selection_icon_hint = "يعرض زرًا صغيرًا بجوار النص الذي تحدده بالسحب في التطبيقات الأخرى. انقر عليه لترجمة التحديد."
 history_group = "السجل"
 enable_history = "تفعيل سجل الترجمة"
 clear_history_on_exit = "مسح السجل عند إغلاق التطبيق"
@@ -273,7 +270,7 @@ tip_accept_update = "الاحتفاظ بالبيانات الموجودة وإع
 tip_clean_install = "مسح كافة بيانات الإضافة قبل إعادة التفعيل"
 # Dialogs
 install_dialog_title = "اختر ملف JAR الخاص بالإضافة"
-install_dialog_filter = "إضافة QTranslate (*.jar)"
+install_dialog_filter = "إضافة CamWork Translate (*.jar)"
 install_success_title = "تم تثبيت الإضافة"
 install_success_msg = "تم تثبيت الإضافة بنجاح."
 install_fail_title = "فشل التثبيت"
@@ -447,10 +444,7 @@ test_nothing_to_check = "لا شيء للفحص"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "حول QTranslate"
-description = "تم التخلي عن QTranslate الأصلي. هذه إعادة كتابة كاملة — نفس الفكرة، تعتمد على الإضافات لكي لا يتوقف التطبيق عن العمل أبدًا."
-support_button = "ادعم هذا المشروع ♥"
-donation_nudge = "لقد ترجمت الكثير باستخدام QTranslate! إذا وجدته مفيدًا، فكر في دعم المشروع (حول ← دعم ♥)"
+title = "حول CamWork Translate"
 
 [history_dialog]
 title = "سجل الترجمة"
@@ -493,7 +487,7 @@ manage_presets  = "إدارة القوالب..."
 
 [update_dialog]
 title = "تحديث متاح"
-header = "إصدار جديد من QTranslate متاح الآن!"
+header = "إصدار جديد من CamWork Translate متاح الآن!"
 # %1$s = new version number, %2$s = current version number
 details_format = "الإصدار %s متاح الآن (لديك %s). هل ترغب في التحديث؟"
 skip_button = "تخطي هذا الإصدار"
@@ -505,7 +499,7 @@ view_on_github_button = "عرض على GitHub"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "إغلاق QTranslate"
+title           = "إغلاق CamWork Translate"
 message         = "ماذا تريد أن تفعل؟"
 minimize_to_tray = "تصغير إلى صينية النظام"
 exit            = "خروج"

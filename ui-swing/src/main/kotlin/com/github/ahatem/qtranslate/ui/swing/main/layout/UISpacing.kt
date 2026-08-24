@@ -24,7 +24,9 @@ object UISpacing {
     val V_GAP get() = UIScale.scale(8)
 
     val DIVIDER_SIZE get() = UIScale.scale(8)
-    val MIN_PANEL_HEIGHT get() = UIScale.scale(150)
-    val MIN_PANEL_WIDTH get() = UIScale.scale(200)
-    val MIN_EXTRA_HEIGHT get() = UIScale.scale(100)
+    // Минимумы разрешают рабочее окно 480×360; предпочтительные размеры и resizeWeight
+    // сохраняют просторную компоновку на обычных 640–900 px.
+    val MIN_PANEL_HEIGHT get() = UIScale.scale(72)
+    val MIN_PANEL_WIDTH get() = UIScale.scale(120)
+    val MIN_EXTRA_HEIGHT get() = UIScale.scale(64)
 }

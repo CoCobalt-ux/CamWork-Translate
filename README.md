@@ -1,3 +1,20 @@
+# CamWork Translate
+
+Это репозиторий брендированной редакции для моделей CamWork: исправленный Google Translate,
+быстрый перевод выделения коротким нажатием `Shift`, защита от конфликта с `Win+Shift+S`,
+фирменные темы и переносимая Windows-сборка со встроенной Java.
+
+- [Краткое руководство CamWork](README_CAMWORK.md)
+- [Сайт CamWork](https://camwork.club)
+- [Происхождение кода и лицензии](NOTICE)
+- [Права CamWork на доработки и полная атрибуция](docs/LEGAL_ATTRIBUTION.md)
+- [Нативная сборка macOS x64/arm64](docs/MACOS_BUILD.md)
+
+Ниже сохранена документация исходной MIT-основы QTranslate для разработчиков плагинов и
+сопровождения форка.
+
+---
+
 <div align="center">
 
 <img src="docs/images/app-icon.png" alt="QTranslate" width="128" height="128">
@@ -88,7 +105,7 @@ For longer work: open the main window, type or paste, translate. Switch engines 
 | **Quick Translate popup** | `Ctrl+Q` on any selected text — popup with result, no main window needed |
 | **Image search** | `Ctrl+Shift+Q` on any selected word — a grid of reference pictures from Wikimedia Commons, enlarged in place, licence shown and source page a click away. For the words a definition alone does not settle |
 | **Instant translation** | Translates as you type with configurable debounce |
-| **Inline replace** | `Ctrl+Shift+T` — translates selected text and pastes the result back in place |
+| **Inline replace** | Short `Shift` by default — translates selected text and pastes the result back in place; the key is configurable in Settings → Keyboard |
 | **Backward translation** | See the round-trip result alongside the main output — spots awkward phrasing instantly |
 | **Summarize** | Get a condensed version of long text, configurable length |
 | **Rewrite** | Rewrite in a different style: Formal, Casual, Concise, Detailed, or Simplified |

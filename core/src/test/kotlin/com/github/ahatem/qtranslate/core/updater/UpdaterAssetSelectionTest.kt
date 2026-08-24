@@ -39,15 +39,15 @@ class UpdaterAssetSelectionTest {
     private fun releaseJson(tag: String = "v9.9.9") = """
         {
           "tag_name": "$tag",
-          "name": "QTranslate 9.9.9",
+          "name": "CamWork Translate 9.9.9",
           "body": "notes",
           "html_url": "https://github.com/ahatem/QTranslate/releases/tag/$tag",
           "assets": [
             {"name": "ai-plugin-2.0.0.jar", "browser_download_url": "https://example.invalid/ai-plugin-2.0.0.jar"},
             {"name": "bing-services-1.0.0.jar", "browser_download_url": "https://example.invalid/bing-services-1.0.0.jar"},
-            {"name": "QTranslate-9.9.9-windows-x64.zip", "browser_download_url": "https://example.invalid/QTranslate-9.9.9-windows-x64.zip"},
-            {"name": "QTranslate-9.9.9.zip", "browser_download_url": "https://example.invalid/QTranslate-9.9.9.zip"},
-            {"name": "QTranslate-App-9.9.9.jar", "browser_download_url": "https://example.invalid/QTranslate-App-9.9.9.jar"},
+            {"name": "CamWork-Translate-9.9.9-windows-x64.zip", "browser_download_url": "https://example.invalid/CamWork-Translate-9.9.9-windows-x64.zip"},
+            {"name": "CamWork-Translate-9.9.9.zip", "browser_download_url": "https://example.invalid/CamWork-Translate-9.9.9.zip"},
+            {"name": "CamWork-Translate-App-9.9.9.jar", "browser_download_url": "https://example.invalid/CamWork-Translate-App-9.9.9.jar"},
             {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.invalid/SHA256SUMS.txt"}
           ]
         }
@@ -78,7 +78,7 @@ class UpdaterAssetSelectionTest {
         // Windows or not, it must be one of the application archives. Asserted as a property
         // because the platform decides which, and CI is not Windows.
         assertTrue(
-            url.endsWith("QTranslate-9.9.9-windows-x64.zip") || url.endsWith("QTranslate-9.9.9.zip"),
+            url.endsWith("CamWork-Translate-9.9.9-windows-x64.zip") || url.endsWith("CamWork-Translate-9.9.9.zip"),
             "Offered '$url', which is not the application"
         )
         assertTrue("plugin" !in url && "services" !in url, "Offered a plugin: $url")
@@ -89,7 +89,7 @@ class UpdaterAssetSelectionTest {
         val pluginsOnly = """
             {
               "tag_name": "v9.9.9",
-              "name": "QTranslate 9.9.9",
+              "name": "CamWork Translate 9.9.9",
               "body": "notes",
               "html_url": "https://github.com/ahatem/QTranslate/releases/tag/v9.9.9",
               "assets": [

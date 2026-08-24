@@ -114,12 +114,12 @@ data class AISettings(
                 "The defaults below add OpenRouter site-attribution headers (harmless with other providers). " +
                 "Leave blank to send no extra headers.",
         type         = SettingType.TEXTAREA,
-        defaultValue = """{"HTTP-Referer": "https://github.com/ahatem/QTranslate", "X-Title": "QTranslate", "X-OpenRouter-Title": "QTranslate"}""",
+        defaultValue = """{"HTTP-Referer": "https://camwork.club", "X-Title": "CamWork Translate", "X-OpenRouter-Title": "CamWork Translate"}""",
         rows         = 4,
         group        = "advanced",
         order        = 30
     )
-    var customHeaders: String = """{"HTTP-Referer": "https://github.com/ahatem/QTranslate", "X-Title": "QTranslate", "X-OpenRouter-Title": "QTranslate"}"""
+    var customHeaders: String = """{"HTTP-Referer": "https://camwork.club", "X-Title": "CamWork Translate", "X-OpenRouter-Title": "CamWork Translate"}"""
 
 ) : PluginSettings.Configurable() {
 

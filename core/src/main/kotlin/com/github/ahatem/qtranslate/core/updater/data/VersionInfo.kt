@@ -9,7 +9,7 @@ package com.github.ahatem.qtranslate.core.updater.data
  * this model unchanged.
  *
  * @property versionTag  The raw version tag from the release (e.g. `"v1.2.0"` or `"1.2.0"`).
- * @property releaseName The human-readable release title (e.g. `"QTranslate 1.2.0"`).
+ * @property releaseName Читаемое название релиза, например `"CamWork Translate 1.0.0"`.
  * @property releaseNotes The release description in Markdown format, suitable for rendering
  *   in a changelog dialog.
  * @property downloadUrl Direct download URL for the release asset (e.g. the installer JAR),

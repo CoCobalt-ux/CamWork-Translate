@@ -27,9 +27,9 @@ class ReleaseAssetsTest {
         "libretranslate-services-1.0.0.jar",
         "mozhi-services-1.0.0.jar",
         "mymemory-services-1.0.0.jar",
-        "QTranslate-1.4.0-windows-x64.zip",
-        "QTranslate-1.4.0.zip",
-        "QTranslate-App-1.4.0.jar",
+        "CamWork-Translate-1.4.0-windows-x64.zip",
+        "CamWork-Translate-1.4.0.zip",
+        "CamWork-Translate-App-1.4.0.jar",
         "release-metadata.json",
         "reverso-services-1.0.0.jar",
         "SHA256SUMS.txt",
@@ -46,9 +46,9 @@ class ReleaseAssetsTest {
         "libretranslate-services-1.0.0.jar",
         "mozhi-services-1.0.0.jar",
         "mymemory-services-1.0.0.jar",
-        "QTranslate-1.3.0-windows-x64.zip",
-        "QTranslate-1.3.0.zip",
-        "QTranslate-App-1.3.0.jar",
+        "CamWork-Translate-1.3.0-windows-x64.zip",
+        "CamWork-Translate-1.3.0.zip",
+        "CamWork-Translate-App-1.3.0.jar",
         "release-metadata.json",
         "reverso-services-1.0.0.jar",
         "SHA256SUMS.txt",
@@ -59,18 +59,49 @@ class ReleaseAssetsTest {
 
     @Test
     fun `Windows is offered the packaged build`() {
-        assertEquals("QTranslate-1.4.0-windows-x64.zip", ReleaseAssets.selectDownload(v140, onWindows = true))
+        assertEquals("CamWork-Translate-1.4.0-windows-x64.zip", ReleaseAssets.selectDownload(v140, onWindows = true))
     }
 
     @Test
     fun `everywhere else is offered the portable archive`() {
-        assertEquals("QTranslate-1.4.0.zip", ReleaseAssets.selectDownload(v140, onWindows = false))
+        assertEquals("CamWork-Translate-1.4.0.zip", ReleaseAssets.selectDownload(v140, onWindows = false))
+    }
+
+    @Test
+    fun `macOS receives a native package for its own architecture`() {
+        val assets = v140 + listOf(
+            "CamWork-Translate-1.4.0-macos-x64.app.zip",
+            "CamWork-Translate-1.4.0-macos-x64.dmg",
+            "CamWork-Translate-1.4.0-macos-arm64.app.zip",
+            "CamWork-Translate-1.4.0-macos-arm64.dmg"
+        )
+
+        assertEquals(
+            "CamWork-Translate-1.4.0-macos-arm64.dmg",
+            ReleaseAssets.selectDownload(assets, ReleaseAssets.Platform.MACOS, "aarch64")
+        )
+        assertEquals(
+            "CamWork-Translate-1.4.0-macos-x64.dmg",
+            ReleaseAssets.selectDownload(assets, ReleaseAssets.Platform.MACOS, "x86_64")
+        )
+    }
+
+    @Test
+    fun `macOS never receives a package for the wrong architecture`() {
+        val x64Only = listOf(
+            "CamWork-Translate-1.4.0-macos-x64.dmg",
+            "CamWork-Translate-1.4.0.zip"
+        )
+        assertEquals(
+            "CamWork-Translate-1.4.0.zip",
+            ReleaseAssets.selectDownload(x64Only, ReleaseAssets.Platform.MACOS, "arm64")
+        )
     }
 
     @Test
     fun `the release that shipped the bug selects correctly too`() {
-        assertEquals("QTranslate-1.3.0-windows-x64.zip", ReleaseAssets.selectDownload(v130, onWindows = true))
-        assertEquals("QTranslate-1.3.0.zip", ReleaseAssets.selectDownload(v130, onWindows = false))
+        assertEquals("CamWork-Translate-1.3.0-windows-x64.zip", ReleaseAssets.selectDownload(v130, onWindows = true))
+        assertEquals("CamWork-Translate-1.3.0.zip", ReleaseAssets.selectDownload(v130, onWindows = false))
     }
 
     @Test
@@ -82,7 +113,7 @@ class ReleaseAssetsTest {
             listOf(true, false).forEach { onWindows ->
                 val chosen = ReleaseAssets.selectDownload(assets, onWindows)
                 assertTrue(
-                    chosen != null && chosen.startsWith("QTranslate", ignoreCase = true),
+                    chosen != null && chosen.startsWith("CamWork-Translate", ignoreCase = true),
                     "Chose '$chosen', which is not the application"
                 )
             }
@@ -91,12 +122,12 @@ class ReleaseAssetsTest {
 
     @Test
     fun `the portable archive is not mistaken for the Windows package`() {
-        // Both begin QTranslate- and end .zip. Only the absence of a further hyphenated part
+        // Both begin CamWork-Translate- and end .zip. Only the absence of a further hyphenated part
         // separates them, which is the fiddliest part of the matching.
-        val portableOnly = listOf("ai-plugin-2.0.0.jar", "QTranslate-1.4.0.zip")
-        assertEquals("QTranslate-1.4.0.zip", ReleaseAssets.selectDownload(portableOnly, onWindows = true))
+        val portableOnly = listOf("ai-plugin-2.0.0.jar", "CamWork-Translate-1.4.0.zip")
+        assertEquals("CamWork-Translate-1.4.0.zip", ReleaseAssets.selectDownload(portableOnly, onWindows = true))
 
-        val windowsOnly = listOf("ai-plugin-2.0.0.jar", "QTranslate-1.4.0-windows-x64.zip")
+        val windowsOnly = listOf("ai-plugin-2.0.0.jar", "CamWork-Translate-1.4.0-windows-x64.zip")
         assertNull(
             ReleaseAssets.selectDownload(windowsOnly, onWindows = false),
             "A non-Windows user must not be handed the Windows package with its bundled runtime"
@@ -105,11 +136,11 @@ class ReleaseAssetsTest {
 
     @Test
     fun `the app-only jar is the last resort, not the first choice`() {
-        val everything = listOf("QTranslate-App-1.4.0.jar", "QTranslate-1.4.0.zip")
-        assertEquals("QTranslate-1.4.0.zip", ReleaseAssets.selectDownload(everything, onWindows = false))
+        val everything = listOf("CamWork-Translate-App-1.4.0.jar", "CamWork-Translate-1.4.0.zip")
+        assertEquals("CamWork-Translate-1.4.0.zip", ReleaseAssets.selectDownload(everything, onWindows = false))
 
-        val jarOnly = listOf("ai-plugin-2.0.0.jar", "QTranslate-App-1.4.0.jar")
-        assertEquals("QTranslate-App-1.4.0.jar", ReleaseAssets.selectDownload(jarOnly, onWindows = false))
+        val jarOnly = listOf("ai-plugin-2.0.0.jar", "CamWork-Translate-App-1.4.0.jar")
+        assertEquals("CamWork-Translate-App-1.4.0.jar", ReleaseAssets.selectDownload(jarOnly, onWindows = false))
     }
 
     @Test

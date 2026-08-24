@@ -2,6 +2,8 @@ package com.github.ahatem.qtranslate.core.settings.data
 
 import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.plugin.ServiceRole
+import java.awt.event.InputEvent
+import java.awt.event.KeyEvent
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -130,5 +132,56 @@ class ConfigMigratorTest {
             .forEach { id ->
                 assertEquals(3, id.split(':').size, "default selection '$id' is not a composed service id")
             }
+    }
+
+    @Test
+    fun `v6 stock Ctrl Shift T becomes the real Shift binding`() {
+        val legacy = HotkeyBinding(
+            action = HotkeyAction.REPLACE_WITH_TRANSLATION,
+            keyCode = KeyEvent.VK_T,
+            modifiers = InputEvent.CTRL_DOWN_MASK or InputEvent.SHIFT_DOWN_MASK,
+            scope = HotkeyScope.GLOBAL,
+            isEnabled = false
+        )
+        val config = Configuration.DEFAULT.copy(
+            configVersion = 6,
+            hotkeys = Configuration.DEFAULT.hotkeys.map {
+                if (it.action == HotkeyAction.REPLACE_WITH_TRANSLATION) legacy else it
+            }
+        )
+
+        val migrated = ConfigMigrator.migrate(config, logger)
+        val binding = migrated.hotkeys.single {
+            it.action == HotkeyAction.REPLACE_WITH_TRANSLATION
+        }
+
+        assertEquals(ConfigMigrator.CURRENT_VERSION, migrated.configVersion)
+        assertEquals(KeyEvent.VK_SHIFT, binding.keyCode)
+        assertEquals(0, binding.modifiers)
+        assertEquals(HotkeyScope.GLOBAL, binding.scope)
+        assertEquals(false, binding.isEnabled)
+    }
+
+    @Test
+    fun `v6 custom selection hotkey survives migration`() {
+        val custom = HotkeyBinding(
+            action = HotkeyAction.REPLACE_WITH_TRANSLATION,
+            keyCode = KeyEvent.VK_F8,
+            modifiers = 0,
+            scope = HotkeyScope.GLOBAL
+        )
+        val config = Configuration.DEFAULT.copy(
+            configVersion = 6,
+            hotkeys = Configuration.DEFAULT.hotkeys.map {
+                if (it.action == HotkeyAction.REPLACE_WITH_TRANSLATION) custom else it
+            }
+        )
+
+        val migrated = ConfigMigrator.migrate(config, logger)
+
+        assertEquals(
+            custom,
+            migrated.hotkeys.single { it.action == HotkeyAction.REPLACE_WITH_TRANSLATION }
+        )
     }
 }

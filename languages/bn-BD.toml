@@ -94,7 +94,7 @@ how_to_use = "কিভাবে ব্যবহার করবেন"
 contact_us = "আমাদের সাথে যোগাযোগ করুন"
 auto_check_for_updates = "স্বয়ংক্রিয়ভাবে আপডেট চেক করুন"
 check_for_updates = "আপডেট চেক করুন"
-about_qtranslate = "QTranslate সম্পর্কে"
+about_qtranslate = "CamWork Translate সম্পর্কে"
 exit = "প্রস্থান"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "কপি হয়েছে!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "QTranslate দেখান"
+show_application = "CamWork Translate দেখান"
 recognize_text = "লেখা শনাক্তকরণ (OCR)"
 dictionary = "অভিধান"
 image_search = "ছবি খোঁজা"
@@ -176,9 +176,6 @@ popups = "পপআপ"
 startup_updates_group = "স্টার্টআপ ও আপডেট"
 launch_on_startup = "সিস্টেম স্টার্টআপে চালু করুন"
 auto_check_updates = "স্বয়ংক্রিয়ভাবে আপডেটের জন্য চেক করুন"
-selection_group = "টেক্সট নির্বাচন"
-selection_icon = "টেক্সট নির্বাচনের পর একটি অনুবাদ বোতাম দেখান"
-selection_icon_hint = "অন্য অ্যাপ্লিকেশনে টেনে নির্বাচন করা টেক্সটের পাশে একটি ছোট বোতাম দেখায়। নির্বাচনটি অনুবাদ করতে এটিতে ক্লিক করুন।"
 history_group = "ইতিহাস"
 enable_history = "অনুবাদ ইতিহাস সক্রিয় করুন"
 clear_history_on_exit = "অ্যাপ বন্ধ করার সময় ইতিহাস মুছে ফেলুন"
@@ -273,7 +270,7 @@ tip_accept_update = "বিদ্যমান ডাটা রাখুন এ�
 tip_clean_install = "পুনরায় সক্রিয় করার আগে সমস্ত প্লাগইন ডাটা মুছে ফেলুন"
 # Dialogs
 install_dialog_title = "প্লাগইন JAR নির্বাচন করুন"
-install_dialog_filter = "QTranslate প্লাগইন (*.jar)"
+install_dialog_filter = "CamWork Translate প্লাগইন (*.jar)"
 install_success_title = "প্লাগইন ইনস্টল করা হয়েছে"
 install_success_msg = "প্লাগইন সফলভাবে ইনস্টল করা হয়েছে।"
 install_fail_title = "ইনস্টলেশন ব্যর্থ হয়েছে"
@@ -447,10 +444,7 @@ test_nothing_to_check = "পরীক্ষা করার কিছু নে�
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "QTranslate সম্পর্কে"
-description = "মূল QTranslate প্রকল্পটি পরিত্যক্ত হয়েছিল। এটি একটি সম্পূর্ণ নতুন সংস্করণ — একই ধারণা, তবে প্লাগইন-ভিত্তিক যাতে অ্যাপটি সর্বদা সচল থাকে।"
-support_button = "এই প্রকল্পটি সমর্থন করুন ♥"
-donation_nudge = "আপনি QTranslate দিয়ে অনেক অনুবাদ করেছেন! যদি এটি উপকারী মনে করেন, তাহলে প্রকল্পটি সমর্থন করার কথা বিবেচনা করুন (About → Support ♥)"
+title = "CamWork Translate সম্পর্কে"
 
 [history_dialog]
 title = "অনুবাদ ইতিহাস"
@@ -493,7 +487,7 @@ manage_presets  = "প্রিসেট পরিচালনা করুন..
 
 [update_dialog]
 title = "আপডেট উপলব্ধ"
-header = "QTranslate-এর একটি নতুন ভার্সন উপলব্ধ!"
+header = "CamWork Translate-এর একটি নতুন ভার্সন উপলব্ধ!"
 # %1$s = new version number, %2$s = current version number
 details_format = "ভার্সন %s এখন উপলব্ধ (আপনার কাছে %s আছে)। আপনি কি আপডেট করতে চান?"
 skip_button = "এই ভার্সনটি এড়িয়ে যান"
@@ -505,7 +499,7 @@ view_on_github_button = "GitHub-এ দেখুন"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "QTranslate বন্ধ করুন"
+title           = "CamWork Translate বন্ধ করুন"
 message         = "আপনি কি করতে চান?"
 minimize_to_tray = "ট্রে-তে মিনিমাইজ করুন"
 exit            = "প্রস্থান করুন"

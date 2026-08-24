@@ -3,12 +3,14 @@ package com.github.ahatem.qtranslate.ui.swing.main.languagebar
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
-import com.github.ahatem.qtranslate.ui.swing.shared.util.GridBag
 import com.github.ahatem.qtranslate.ui.swing.shared.util.createButtonWithIcon
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.LanguageComboBox
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
-import java.awt.GridBagConstraints
-import java.awt.GridBagLayout
+import com.github.ahatem.qtranslate.ui.swing.main.layout.ResponsiveUi
+import net.miginfocom.swing.MigLayout
+import java.awt.Dimension
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import javax.swing.JButton
 import javax.swing.JPanel
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
@@ -22,7 +24,8 @@ class LanguageSelectionBar(
     private val onTargetLanguageSelected: (LanguageCode) -> Unit,
     private val onTranslate: () -> Unit,
     private val onCancel: () -> Unit = {}
-) : JPanel(GridBagLayout()), Renderable<LanguageSelectionBarState> {
+) : JPanel(MigLayout("insets 0, fillx, hidemode 3, gap 4", "[][grow,fill][][grow,fill][]", "[]")),
+    Renderable<LanguageSelectionBarState> {
 
     private val clearButton = createButtonWithIcon(iconManager, Icons.DELETE, 16)
     private val sourceLanguageComboBox = LanguageComboBox(
@@ -34,27 +37,30 @@ class LanguageSelectionBar(
         onLanguageSelected = { lang -> onTargetLanguageSelected(lang) },
         localizer = localizer
     )
-    private val translateButton = JButton()
+    private val translateButton = JButton(iconManager.getIcon(Icons.TRANSLATE, 16, 16))
 
     // Single listener that delegates to the correct callback depending on mode.
     private var isInCancelMode = false
+    private var actionText = ""
+    private var isCompact = false
 
     init {
         clearButton.addActionListener { onClear() }
         swapButton.addActionListener { onSwap() }
         translateButton.addActionListener { if (isInCancelMode) onCancel() else onTranslate() }
 
-        val grid = GridBag(this, horizontalGap = 4)
-        grid.defaultFill(GridBagConstraints.BOTH)
+        sourceLanguageComboBox.minimumSize = Dimension(0, sourceLanguageComboBox.preferredSize.height)
+        targetLanguageComboBox.minimumSize = Dimension(0, targetLanguageComboBox.preferredSize.height)
 
-        grid.weightX(0.0).add(clearButton)
-        grid.weightX(0.5).add(sourceLanguageComboBox)
-        grid.weightX(0.0).add(swapButton)
-        grid.weightX(0.5).add(targetLanguageComboBox)
-        grid.weightX(0.0)
-            .fill(GridBagConstraints.NONE)
-            .anchor(GridBagConstraints.EAST)
-            .add(translateButton)
+        add(clearButton)
+        add(sourceLanguageComboBox, "growx, pushx, wmin 0")
+        add(swapButton)
+        add(targetLanguageComboBox, "growx, pushx, wmin 0")
+        add(translateButton)
+
+        addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) = updateCompactMode()
+        })
     }
 
     override fun render(state: LanguageSelectionBarState) {
@@ -69,12 +75,12 @@ class LanguageSelectionBar(
         isInCancelMode = state.isLoading
         translateButton.isEnabled = true
         if (state.isLoading) {
-            translateButton.text = state.strings.cancelButtonText
-            translateButton.toolTipText = state.strings.cancelButtonText
+            actionText = state.strings.cancelButtonText
         } else {
-            translateButton.text = state.strings.translateButtonText
-            translateButton.toolTipText = state.strings.translateButtonText
+            actionText = state.strings.translateButtonText
         }
+        translateButton.toolTipText = actionText
+        updateCompactMode(force = true)
 
         sourceLanguageComboBox.render(
             availableLanguages = state.allSourceLanguages,
@@ -89,5 +95,16 @@ class LanguageSelectionBar(
             autoDetectedLanguage = null,
             isEnabled = !state.isLoading
         )
+    }
+
+    private fun updateCompactMode(force: Boolean = false) {
+        val compact = ResponsiveUi.shouldUseCompactToolbar(width)
+        if (!force && compact == isCompact) return
+        isCompact = compact
+        sourceLanguageComboBox.setCompactMode(compact)
+        targetLanguageComboBox.setCompactMode(compact)
+        translateButton.text = actionText.takeUnless { compact }
+        revalidate()
+        repaint()
     }
 }

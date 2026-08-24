@@ -24,7 +24,7 @@ object ConfigMigrator {
      * would skip every migration it needs. A configuration this build creates from scratch is
      * stamped with this value instead.
      */
-    internal const val CURRENT_VERSION = 6
+    internal const val CURRENT_VERSION = 7
 
     /** The old defaults, frozen: this is what "the user never changed it" looked like. */
     private const val LEGACY_POPUP_IDLE_SECONDS = 3
@@ -153,6 +153,32 @@ object ConfigMigrator {
                             config.quickDictionaryIdleTimeoutSeconds
                         }
                 )
+            }
+            6 -> {
+                // v6 → v7: CamWork quick selection translation used to have two unrelated
+                // triggers: a hidden Shift tap and a visible Ctrl+Shift+T binding. Replace only
+                // that untouched historical default with the real Shift binding. Any custom
+                // key, cleared binding, enabled flag and unrelated settings remain intact.
+                logger.info("ConfigMigrator: migrating v6 → v7 — unifying selection translation hotkey")
+                val legacyModifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK or
+                    java.awt.event.InputEvent.SHIFT_DOWN_MASK
+                val upgradedHotkeys = config.hotkeys.map { binding ->
+                    val isLegacyStockBinding =
+                        binding.action == HotkeyAction.REPLACE_WITH_TRANSLATION &&
+                            binding.keyCode == java.awt.event.KeyEvent.VK_T &&
+                            binding.modifiers == legacyModifiers &&
+                            binding.scope == HotkeyScope.GLOBAL
+
+                    if (isLegacyStockBinding) {
+                        HotkeyBinding.DEFAULT_SELECTION_TRANSLATION.copy(
+                            isEnabled = binding.isEnabled,
+                            isDoubleCtrlEnabled = binding.isDoubleCtrlEnabled
+                        )
+                    } else {
+                        binding
+                    }
+                }
+                config.copy(configVersion = 7, hotkeys = upgradedHotkeys)
             }
             else -> {
                 logger.warn("ConfigMigrator: unknown configVersion ${config.configVersion} — returning unchanged")

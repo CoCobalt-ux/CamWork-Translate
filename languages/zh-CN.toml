@@ -94,7 +94,7 @@ how_to_use = "使用指南"
 contact_us = "联系我们"
 auto_check_for_updates = "自动检查更新"
 check_for_updates = "检查更新"
-about_qtranslate = "关于 QTranslate"
+about_qtranslate = "关于 CamWork Translate"
 exit = "退出"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "已复制！"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "显示 QTranslate"
+show_application = "显示 CamWork Translate"
 recognize_text = "文本识别 (OCR)"
 dictionary = "词典"
 image_search = "图片搜索"
@@ -176,9 +176,6 @@ popups = "弹出窗口"
 startup_updates_group = "启动与更新"
 launch_on_startup = "开机自启动"
 auto_check_updates = "自动检查更新"
-selection_group = "文本选择"
-selection_icon = "选择文本后显示翻译按钮"
-selection_icon_hint = "在其他应用程序中拖动选择文本时，会在附近显示一个小按钮。点击即可翻译所选内容。"
 history_group = "历史记录"
 enable_history = "启用翻译历史"
 clear_history_on_exit = "关闭程序时清除历史"
@@ -273,7 +270,7 @@ tip_accept_update = "保留现有数据并重新启用插件"
 tip_clean_install = "在重新启用前擦除所有插件数据"
 # Dialogs
 install_dialog_title = "选择插件 JAR 文件"
-install_dialog_filter = "QTranslate 插件 (*.jar)"
+install_dialog_filter = "CamWork Translate 插件 (*.jar)"
 install_success_title = "插件已安装"
 install_success_msg = "插件安装成功。"
 install_fail_title = "安装失败"
@@ -447,10 +444,7 @@ test_nothing_to_check = "无需检查"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "关于 QTranslate"
-description = "原版 QTranslate 已停止维护。这是一个完全重写的版本 —— 理念相同，且由插件驱动，确保应用永不过时。"
-support_button = "支持此项目 ♥"
-donation_nudge = "您已经使用 QTranslate 翻译了很多内容！如果您觉得它有用，请考虑支持该项目 (关于 → 支持 ♥)"
+title = "关于 CamWork Translate"
 
 [history_dialog]
 title = "翻译历史"
@@ -493,7 +487,7 @@ manage_presets  = "管理预设..."
 
 [update_dialog]
 title = "有可用更新"
-header = "QTranslate 的新版本已发布！"
+header = "CamWork Translate 的新版本已发布！"
 # %1$s = new version number, %2$s = current version number
 details_format = "版本 %s 现已发布 (当前版本为 %s)。是否要更新？"
 skip_button = "跳过此版本"
@@ -505,7 +499,7 @@ view_on_github_button = "在 GitHub 上查看"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "关闭 QTranslate"
+title           = "关闭 CamWork Translate"
 message         = "您想执行什么操作？"
 minimize_to_tray = "最小化到系统托盘"
 exit            = "退出"

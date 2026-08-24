@@ -25,6 +25,7 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.util.reflect.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.Closeable
@@ -162,6 +163,10 @@ internal class KtorHttpClient(
                 }
             }
             handleResponse(response, url)
+        } catch (e: CancellationException) {
+            // Отмена предыдущего перевода — штатное управление потоком, а не сетевая ошибка.
+            // Преобразование её в Err продолжало устаревший запрос и показывало ложный failure.
+            throw e
         } catch (e: HttpRequestTimeoutException) {
             logger.error("POST request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
@@ -189,6 +194,8 @@ internal class KtorHttpClient(
                 }
             }
             handleResponse(response, url)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpRequestTimeoutException) {
             logger.error("GET request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
@@ -229,6 +236,8 @@ internal class KtorHttpClient(
             }
 
             handleResponse(response, url)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpRequestTimeoutException) {
             logger.error("POST form request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
@@ -271,6 +280,8 @@ internal class KtorHttpClient(
             }
 
             handleResponseBytes(response, url)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpRequestTimeoutException) {
             logger.error("POST form bytes request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))
@@ -297,6 +308,8 @@ internal class KtorHttpClient(
                 }
             }
             handleResponseBytes(response, url)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: HttpRequestTimeoutException) {
             logger.error("GET bytes request timeout for $url", e)
             Err(ServiceError.TimeoutError("Request timed out: $url", e))

@@ -478,8 +478,10 @@ class MainContentView(
                 availableTranslators = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
                 selectedTranslatorId = selectedTranslatorId,
                 isLoading = mainState.isLoading,
-                availableServices = mainState.availableServices,
-                selectedServices = activePreset?.selectedServices.orEmpty(),
+                // Главное окно показывает только переводчики. Словари и озвучивание остаются
+                // доступны через свои диалоги, меню и настройки, но больше не занимают нижнюю панель.
+                availableServices = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
+                selectedServices = mapOf(ServiceRole.TRANSLATOR to selectedTranslatorId),
                 style = config.serviceSelectorStyle,
                 appearance = config.serviceSelectorAppearance
             )

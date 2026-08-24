@@ -1,0 +1,26 @@
+CamWork Translate — уведомление об авторских правах и происхождении
+
+Модифицированная редакция CamWork
+Copyright (c) 2026 ITWORKSYSTEMS LTD / CamWork
+
+Разработка, сопровождение и выпуск модифицированной редакции CamWork Translate:
+ITWORKSYSTEMS LTD / CamWork, https://camwork.club.
+
+ITWORKSYSTEMS LTD / CamWork является правообладателем собственных изменений,
+нового оформления, упаковки и документации CamWork Translate. Это уведомление
+не приписывает CamWork авторство исходного кода QTranslate.
+
+Исходная MIT-основа
+CamWork Translate является производной редакцией свободного проекта QTranslate:
+https://github.com/ahatem/QTranslate
+Copyright (c) 2023 Ahmed Hatem
+
+Исходное уведомление Ahmed Hatem и полный текст лицензии MIT сохранены в файле
+LICENSE и должны поставляться с каждой копией приложения. Если в конкретном файле
+явно не указано иное, изменения CamWork в этом репозитории также предоставляются
+на условиях MIT из файла LICENSE.
+
+Товарные знаки и сторонние компоненты
+CamWork, CamWork.club и фирменный логотип являются обозначениями CamWork.
+Остальные товарные знаки принадлежат их владельцам. Сторонние компоненты и их
+лицензии перечислены в каталоге THIRD_PARTY_LICENSES.

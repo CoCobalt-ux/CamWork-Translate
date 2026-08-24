@@ -8,7 +8,7 @@ import java.net.Socket
 
 object SingleInstanceGuard {
 
-    private const val PORT = 49185
+    private const val PORT = 49231
     private const val FOCUS_SIGNAL = "FOCUS"
     private var serverSocket: ServerSocket? = null
 

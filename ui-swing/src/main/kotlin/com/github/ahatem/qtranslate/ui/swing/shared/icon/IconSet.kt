@@ -33,6 +33,10 @@ object IconSet {
 
     const val DEFAULT_ID = "lucide"
 
+    /** Брендовые ресурсы не заменяются выбранным пользователем набором служебных иконок. */
+    const val CAMWORK_HORIZONTAL = "icons/app/camwork-translate-lockup-v2.png"
+    const val CAMWORK_MARK = "icons/app/camwork-mark.svg"
+
     /**
      * The sets the application knows about. A folder that is absent or empty is simply not offered,
      * so an unpopulated set never appears as a choice that does nothing.

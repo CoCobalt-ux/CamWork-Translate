@@ -3,9 +3,12 @@ package com.github.ahatem.qtranslate.ui.swing.settings.panels
 import com.formdev.flatlaf.util.UIScale
 import com.formdev.flatlaf.FlatClientProperties
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
+import com.github.ahatem.qtranslate.core.localization.getDisplayName
+import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyBinding
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyScope
+import com.github.ahatem.qtranslate.core.settings.data.ShiftTapTranslationMode
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
@@ -26,6 +29,10 @@ class KeyboardPanel(
 ) : SettingsPanel() {
 
     private lateinit var enableCheck: JCheckBox
+    private lateinit var shiftTapCheck: JCheckBox
+    private lateinit var autoSelectionTranslateCheck: JCheckBox
+    private lateinit var shiftModeCombo: JComboBox<ShiftTapTranslationMode>
+    private lateinit var modelLanguageCombo: JComboBox<String>
     private lateinit var table:       JTable
     private lateinit var editButton:  JButton
     private lateinit var clearButton: JButton
@@ -48,7 +55,12 @@ class KeyboardPanel(
 
     // SHOW_MAIN_WINDOW can now have a custom keystroke — only its scope is locked to GLOBAL.
     private val nonEditableActions    = emptySet<HotkeyAction>()
-    private val nonScopeToggleActions = setOf(HotkeyAction.SHOW_MAIN_WINDOW)
+    private val nonScopeToggleActions = setOf(
+        HotkeyAction.SHOW_MAIN_WINDOW,
+        // Quick selection replacement is inherently system-wide. A LOCAL modifier-only binding
+        // cannot be represented reliably by Swing InputMap and would appear enabled but do nothing.
+        HotkeyAction.REPLACE_WITH_TRANSLATION
+    )
 
     private val COL_ACTION = 0
     private val COL_HOTKEY = 1
@@ -66,6 +78,61 @@ class KeyboardPanel(
                 applyDraft(store) { it.copy(isGlobalHotkeysEnabled = enabled) }
             }
         )
+
+        shiftTapCheck = addCheckbox(
+            text = localizationManager.getString("settings_hotkeys.shift_tap_translate"),
+            selected = true,
+            onChange = { enabled ->
+                applyDraft(store) { it.copy(isShiftTapTranslateEnabled = enabled) }
+            }
+        )
+        addHint(localizationManager.getString("settings_hotkeys.shift_tap_translate_hint"))
+
+        autoSelectionTranslateCheck = addCheckbox(
+            text = localizationManager.getString("settings_hotkeys.auto_selection_translate"),
+            selected = true,
+            onChange = { enabled ->
+                applyDraft(store) { it.copy(isAutoSelectionTranslateEnabled = enabled) }
+            }
+        )
+        addHint(localizationManager.getString("settings_hotkeys.auto_selection_translate_hint"))
+
+        shiftModeCombo = JComboBox(ShiftTapTranslationMode.entries.toTypedArray()).apply {
+            renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?, value: Any?, index: Int, selected: Boolean, focused: Boolean
+                ): Component = super.getListCellRendererComponent(list, value, index, selected, focused).apply {
+                    if (this is JLabel) text = shiftModeLabel(value as ShiftTapTranslationMode)
+                }
+            }
+            addActionListener {
+                if (!isUpdatingFromState) {
+                    val mode = selectedItem as? ShiftTapTranslationMode ?: return@addActionListener
+                    applyDraft(store) { it.copy(shiftTapTranslationMode = mode) }
+                }
+            }
+        }
+        addRow(localizationManager.getString("settings_hotkeys.shift_mode"), shiftModeCombo)
+
+        modelLanguageCombo = JComboBox(MODEL_LANGUAGE_TAGS).apply {
+            renderer = object : DefaultListCellRenderer() {
+                override fun getListCellRendererComponent(
+                    list: JList<*>?, value: Any?, index: Int, selected: Boolean, focused: Boolean
+                ): Component = super.getListCellRendererComponent(list, value, index, selected, focused).apply {
+                    if (this is JLabel && value is String) {
+                        text = "${LanguageCode(value).getDisplayName()} ($value)"
+                    }
+                }
+            }
+            addActionListener {
+                if (!isUpdatingFromState) {
+                    val tag = selectedItem as? String ?: return@addActionListener
+                    applyDraft(store) { it.copy(modelLanguage = tag) }
+                }
+            }
+        }
+        addRow(localizationManager.getString("settings_hotkeys.model_language"), modelLanguageCombo)
+        addHint(localizationManager.getString("settings_hotkeys.model_language_hint"))
 
         addSeparator(localizationManager.getString("settings_hotkeys.assignments_group"))
         addHint(localizationManager.getString("settings_hotkeys.edit_hint"))
@@ -185,7 +252,12 @@ class KeyboardPanel(
         if (action in nonEditableActions) return
         // Keep existing scope when clearing
         val existing = store.state.value.workingConfiguration.hotkeys.find { it.action == action }
-        saveBinding(HotkeyBinding(action = action, keyCode = 0, modifiers = 0, scope = existing?.scope ?: HotkeyScope.GLOBAL))
+        val scope = if (action == HotkeyAction.REPLACE_WITH_TRANSLATION) {
+            HotkeyScope.GLOBAL
+        } else {
+            existing?.scope ?: HotkeyScope.GLOBAL
+        }
+        saveBinding(HotkeyBinding(action = action, keyCode = 0, modifiers = 0, scope = scope))
     }
 
     private fun onToggleScope(row: Int) {
@@ -218,12 +290,17 @@ class KeyboardPanel(
     }
 
     private fun saveBinding(binding: HotkeyBinding) {
+        val normalized = if (binding.action == HotkeyAction.REPLACE_WITH_TRANSLATION) {
+            binding.copy(scope = HotkeyScope.GLOBAL)
+        } else {
+            binding
+        }
         store.dispatch(SettingsIntent.ToggleSetting { config ->
             val updated = config.hotkeys.map { b ->
-                if (b.action == binding.action) binding else b
+                if (b.action == normalized.action) normalized else b
             }
-            val final = if (updated.any { it.action == binding.action }) updated
-            else updated + binding
+            val final = if (updated.any { it.action == normalized.action }) updated
+            else updated + normalized
             config.copy(hotkeys = final)
         })
     }
@@ -241,6 +318,14 @@ class KeyboardPanel(
         val c = state.workingConfiguration
         withoutTrigger {
             enableCheck.isSelected = c.isGlobalHotkeysEnabled
+            shiftTapCheck.isSelected = c.isShiftTapTranslateEnabled
+            shiftTapCheck.isEnabled = c.isGlobalHotkeysEnabled
+            autoSelectionTranslateCheck.isSelected = c.isAutoSelectionTranslateEnabled
+            autoSelectionTranslateCheck.isEnabled = c.isGlobalHotkeysEnabled
+            shiftModeCombo.selectedItem = c.shiftTapTranslationMode
+            shiftModeCombo.isEnabled = c.isGlobalHotkeysEnabled && c.isShiftTapTranslateEnabled
+            modelLanguageCombo.selectedItem = c.modelLanguage
+            modelLanguageCombo.isEnabled = c.isGlobalHotkeysEnabled && c.isShiftTapTranslateEnabled
 
             val model = table.model as DefaultTableModel
             actionOrder.forEachIndexed { row, action ->
@@ -279,6 +364,17 @@ class KeyboardPanel(
     private fun scopeLabel(scope: HotkeyScope): String = when (scope) {
         HotkeyScope.GLOBAL -> localizationManager.getString("settings_hotkeys.scope_global")
         HotkeyScope.LOCAL  -> localizationManager.getString("settings_hotkeys.scope_local")
+    }
+
+    private fun shiftModeLabel(mode: ShiftTapTranslationMode): String = when (mode) {
+        ShiftTapTranslationMode.BIDIRECTIONAL ->
+            localizationManager.getString("settings_hotkeys.shift_mode_bidirectional")
+        ShiftTapTranslationMode.REPLACE_ONLY ->
+            localizationManager.getString("settings_hotkeys.shift_mode_replace")
+        ShiftTapTranslationMode.OVERLAY_ONLY ->
+            localizationManager.getString("settings_hotkeys.shift_mode_overlay")
+        ShiftTapTranslationMode.DISABLED ->
+            localizationManager.getString("settings_hotkeys.shift_mode_disabled")
     }
 
     /**
@@ -482,6 +578,14 @@ class KeyboardPanel(
         }
     }
 
+    private companion object {
+        /** Основные языки команд; русский остаётся значением по умолчанию CamWork. */
+        val MODEL_LANGUAGE_TAGS = arrayOf(
+            "ru", "uk", "en", "de", "es", "fr", "it", "pt", "ar", "tr",
+            "pl", "nl", "ro", "bg", "sr", "zh-Hans", "ja", "ko"
+        )
+    }
+
 }
 
 object HotkeyRecorderDialog {
@@ -504,6 +608,13 @@ object HotkeyRecorderDialog {
         KeyEvent.VK_ALT, KeyEvent.VK_ALT_GRAPH, KeyEvent.VK_META
     )
 
+    /**
+     * Only Shift is safe as a modifier-only global tap. Ctrl conflicts with double-Ctrl and
+     * common shortcuts, Alt activates application menus, and Meta opens the system menu.
+     * Any ordinary key or full combination remains assignable through the normal recorder path.
+     */
+    private val SELECTION_TAP_KEYS = setOf(KeyEvent.VK_SHIFT)
+
     fun show(
         owner: Window?,
         action: HotkeyAction,
@@ -520,6 +631,8 @@ object HotkeyRecorderDialog {
         var isCaptureDone     = current?.hasBinding == true
         /** Modifier mask from live key events before the main key is pressed. */
         var liveModifiers     = 0
+        /** Candidate for a lone modifier tap, valid only for quick selection translation. */
+        var modifierOnlyCandidate: Int? = null
         var isErrorState      = false
         var errorKeyCode      = 0
 
@@ -654,6 +767,14 @@ object HotkeyRecorderDialog {
             add(if (keyCode < 0) "?" else KeyEvent.getKeyText(keyCode))
         }.joinToString(" + ")
 
+        fun modifierMask(keyCode: Int): Int = when (keyCode) {
+            KeyEvent.VK_CONTROL -> InputEvent.CTRL_DOWN_MASK
+            KeyEvent.VK_SHIFT   -> InputEvent.SHIFT_DOWN_MASK
+            KeyEvent.VK_ALT     -> InputEvent.ALT_DOWN_MASK
+            KeyEvent.VK_META    -> InputEvent.META_DOWN_MASK
+            else                -> 0
+        }
+
         // ── updateUI ─────────────────────────────────────────────────────────
         // The input field always shows plain normal text — only hintLabel changes colour.
         fun updateUI() {
@@ -750,8 +871,19 @@ object HotkeyRecorderDialog {
                     }
 
                     e.keyCode in MODIFIER_KEYS -> {
-                        // Only modifier held — update live preview, don't capture yet
+                        // Modifier-only tap is a valid quick-selection binding (Shift by default).
+                        // For every other action modifiers remain only the prefix of a combo.
+                        if (isCaptureDone) {
+                            isCaptureDone = false
+                            capturedKeyCode = 0
+                            capturedModifiers = 0
+                        }
                         liveModifiers = e.modifiersEx
+                        modifierOnlyCandidate = e.keyCode.takeIf {
+                            action == HotkeyAction.REPLACE_WITH_TRANSLATION &&
+                                it in SELECTION_TAP_KEYS &&
+                                liveModifiers == modifierMask(it)
+                        }
                         updateUI()
                         return
                     }
@@ -767,6 +899,7 @@ object HotkeyRecorderDialog {
 
                     else -> {
                         // Valid main key — capture the full combination
+                        modifierOnlyCandidate = null
                         capturedKeyCode   = resolvedKeyCode
                         capturedModifiers = e.modifiersEx
                         liveModifiers     = 0
@@ -778,8 +911,19 @@ object HotkeyRecorderDialog {
 
             override fun keyReleased(e: KeyEvent) {
                 e.consume()
+                if (!isCaptureDone && e.keyCode == modifierOnlyCandidate) {
+                    capturedKeyCode = e.keyCode
+                    capturedModifiers = 0
+                    liveModifiers = 0
+                    modifierOnlyCandidate = null
+                    isCaptureDone = true
+                    isErrorState = false
+                    updateUI()
+                    return
+                }
                 // Update live modifier display only while no main key is captured
                 if (!isCaptureDone && e.keyCode in MODIFIER_KEYS) {
+                    modifierOnlyCandidate = null
                     liveModifiers = e.modifiersEx
                     if (!isErrorState) updateUI()
                 }
@@ -832,7 +976,11 @@ object HotkeyRecorderDialog {
             keyCode   = capturedKeyCode,
             modifiers = capturedModifiers,
             isEnabled = current?.isEnabled ?: true,
-            scope     = current?.scope ?: HotkeyScope.GLOBAL
+            scope     = if (action == HotkeyAction.REPLACE_WITH_TRANSLATION) {
+                HotkeyScope.GLOBAL
+            } else {
+                current?.scope ?: HotkeyScope.GLOBAL
+            }
         )
     }
 }

@@ -94,7 +94,7 @@ how_to_use = "Hogyan kell használni"
 contact_us = "Lépjen kapcsolatba velünk"
 auto_check_for_updates = "Frissítések automatikus ellenőrzése"
 check_for_updates = "Frissítések keresése"
-about_qtranslate = "QTranslate névjegye"
+about_qtranslate = "CamWork Translate névjegye"
 exit = "Kilépés"
 
 [document_translation]
@@ -130,7 +130,7 @@ error_detail_copied = "Másolva!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "Mutassa a QTranslate-et"
+show_application = "Mutassa a CamWork Translate-et"
 recognize_text = "Szöveg felismerése (OCR)"
 dictionary = "Szótár"
 image_search = "Képkeresés"
@@ -176,9 +176,6 @@ popups = "Felugró ablakok"
 startup_updates_group = "Indítás és frissítések"
 launch_on_startup = "Indítás a rendszer indulásakor"
 auto_check_updates = "Automatikusan ellenőrizze a frissítéseket"
-selection_group = "Szövegkijelölés"
-selection_icon = "Fordítás gomb megjelenítése szöveg kijelölése után"
-selection_icon_hint = "Kis gombot jelenít meg a más alkalmazásokban húzással kijelölt szöveg mellett. Kattintson rá a kijelölés lefordításához."
 history_group = "Előzmények"
 enable_history = "Fordítási előzmények engedélyezése"
 clear_history_on_exit = "Előzmények törlése az alkalmazás bezárásakor"
@@ -273,7 +270,7 @@ tip_accept_update = "Tartsa meg a meglévő adatokat, és engedélyezze újra a 
 tip_clean_install = "Az újbóli engedélyezés előtt törölje az összes bővítmény modul adatát"
 # Dialogs
 install_dialog_title = "Válassza ki a bővítmény JAR-fájlját"
-install_dialog_filter = "QTranslate bővítmény (*.jar)"
+install_dialog_filter = "CamWork Translate bővítmény (*.jar)"
 install_success_title = "Bővítmény telepítve"
 install_success_msg = "A bővítmény sikeresen telepítve."
 install_fail_title = "Telepítés sikertelen"
@@ -447,10 +444,7 @@ test_nothing_to_check = "Nincs mit ellenőrizni"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "QTranslate névjegye"
-description = "Az eredeti QTranslate-et már nem fejlesztik tovább. Ez egy teljesen újratervezett változat — ugyanaz az alapelv, de bővítményalapú, így az alkalmazás mindig naprakész marad."
-support_button = "Támogassa ezt a projektet ♥"
-donation_nudge = "Sokat fordítottál már a QTranslate segítségével! Ha hasznosnak találod, fontold meg a projekt támogatását (Névjegy → Támogatás ♥)"
+title = "CamWork Translate névjegye"
 
 [history_dialog]
 title = "Fordítási előzmények"
@@ -493,7 +487,7 @@ manage_presets  = "Előbeállítások kezelése..."
 
 [update_dialog]
 title = "Frissítés elérhető"
-header = "Elérhető a QTranslate új verziója!"
+header = "Elérhető a CamWork Translate új verziója!"
 # %1$s = new version number, %2$s = current version number
 details_format = "A(z) %s verzió most elérhető (jelenleg %s van). Szeretné frissíteni?"
 skip_button = "Kihagyom ezt a verziót"
@@ -505,7 +499,7 @@ view_on_github_button = "Megtekintés GitHub-on"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "QTranslate bezárása"
+title           = "CamWork Translate bezárása"
 message         = "Mit szeretne tenni?"
 minimize_to_tray = "Minimalizálás a tálcára"
 exit            = "Kilépés"

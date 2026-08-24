@@ -1,0 +1,322 @@
+package com.github.ahatem.qtranslate.plugins.google
+
+import com.github.ahatem.qtranslate.api.language.LanguageCode
+import com.github.ahatem.qtranslate.api.plugin.HttpClient
+import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.api.translator.TranslationResponse
+import com.github.ahatem.qtranslate.plugins.common.ApiConfig
+import com.github.ahatem.qtranslate.plugins.google.common.GoogleLanguageMapper
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.fold
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.min
+
+/** Быстрая последовательность бесплатных web-endpoint Google с изоляцией отказавших маршрутов. */
+internal class GoogleEndpointRouter(
+    private val httpClient: HttpClient,
+    private val languageMapper: GoogleLanguageMapper,
+    private val apiConfig: ApiConfig,
+    private val clockMillis: () -> Long = System::currentTimeMillis,
+    private val circuitOpenMillis: Long = DEFAULT_CIRCUIT_OPEN_MILLIS,
+    private val transientCircuitOpenMillis: Long = DEFAULT_TRANSIENT_CIRCUIT_OPEN_MILLIS,
+    private val shortRequestBudgetMillis: Long = DEFAULT_SHORT_BUDGET_MILLIS,
+    private val mediumRequestBudgetMillis: Long = DEFAULT_MEDIUM_BUDGET_MILLIS,
+    private val longRequestBudgetMillis: Long = DEFAULT_LONG_BUDGET_MILLIS,
+    private val shortRouteTimeoutMillis: Long = DEFAULT_SHORT_ROUTE_TIMEOUT_MILLIS,
+    private val mediumRouteTimeoutMillis: Long = DEFAULT_MEDIUM_ROUTE_TIMEOUT_MILLIS,
+    private val longRouteTimeoutMillis: Long = DEFAULT_LONG_ROUTE_TIMEOUT_MILLIS,
+    private val onRouteEvent: (String) -> Unit = {}
+) {
+    private val blockedUntilMillis = ConcurrentHashMap<Route, Long>()
+
+    suspend fun translate(
+        text: String,
+        sourceTag: String,
+        targetTag: String
+    ): Result<TranslationResponse, ServiceError> {
+        if (text.length > MAX_BATCH_CHUNK_CHARACTERS) {
+            return translateBatchChunks(text, sourceTag, targetTag)
+        }
+
+        val isFastRequest = text.length <= MAX_FAST_TEXT_CHARACTERS
+        val totalBudget = if (isFastRequest) shortRequestBudgetMillis else mediumRequestBudgetMillis
+        val routeTimeout = if (isFastRequest) shortRouteTimeoutMillis else mediumRouteTimeoutMillis
+        val startedAt = clockMillis()
+        var lastError: ServiceError = ServiceError.ServiceUnavailableError(
+            "No Google web endpoint is currently available."
+        )
+
+        // Chrome single сильнее ограничен длиной URL. `/t` уверенно принимает до 5000 символов,
+        // поэтому средний текст не должен преждевременно уходить в более тяжёлый RPC.
+        val routes = if (text.length <= MAX_CHROME_SINGLE_CHARACTERS && isFastRequest) {
+            Route.entries
+        } else {
+            listOf(Route.TRANSLATE_T, Route.BATCH_EXECUTE)
+        }
+        for (route in routes) {
+            val now = clockMillis()
+            val blockedUntil = blockedUntilMillis[route] ?: 0L
+            if (blockedUntil > now) {
+                onRouteEvent("Google route ${route.label} is circuit-open")
+                continue
+            }
+
+            val remainingBudget = totalBudget - (now - startedAt)
+            if (remainingBudget <= 0L) {
+                lastError = ServiceError.TimeoutError("Google fast translation budget expired.")
+                break
+            }
+
+            val result = withTimeoutOrNull(min(routeTimeout, remainingBudget).coerceAtLeast(1L)) {
+                request(route, text, sourceTag, targetTag)
+            } ?: Err(ServiceError.TimeoutError("Google route ${route.label} timed out."))
+
+            result.fold(
+                success = { parsed ->
+                    blockedUntilMillis.remove(route)
+                    onRouteEvent("Google route ${route.label} succeeded")
+                    return Ok(parsed.toResponse())
+                },
+                failure = { error ->
+                    lastError = error
+                    blockedUntilMillis[route] = clockMillis() + circuitDuration(error)
+                    onRouteEvent("Google route ${route.label} failed: ${error.message}")
+                }
+            )
+        }
+
+        return Err(lastError)
+    }
+
+    private suspend fun translateBatchChunks(
+        text: String,
+        sourceTag: String,
+        targetTag: String
+    ): Result<TranslationResponse, ServiceError> {
+        val route = Route.BATCH_EXECUTE
+        val now = clockMillis()
+        if ((blockedUntilMillis[route] ?: 0L) > now) {
+            onRouteEvent("Google route ${route.label} is circuit-open")
+            return Err(ServiceError.ServiceUnavailableError("Google batch route is temporarily unavailable."))
+        }
+
+        val chunks = splitForBatch(text)
+        val chunkResults = withTimeoutOrNull(longRequestBudgetMillis) {
+            coroutineScope {
+                val permits = Semaphore(MAX_PARALLEL_BATCH_REQUESTS)
+                chunks.map { chunk ->
+                    async {
+                        permits.withPermit {
+                            withTimeoutOrNull(longRouteTimeoutMillis) {
+                                request(route, chunk, sourceTag, targetTag)
+                            } ?: Err(ServiceError.TimeoutError("Google batch chunk timed out."))
+                        }
+                    }
+                }.awaitAll()
+            }
+        } ?: return failBatchRoute(ServiceError.TimeoutError("Google long translation budget expired."))
+
+        val translations = ArrayList<GoogleFallbackTranslation>(chunkResults.size)
+        chunkResults.forEach { result ->
+            result.fold(
+                success = translations::add,
+                failure = { return failBatchRoute(it) }
+            )
+        }
+
+        blockedUntilMillis.remove(route)
+        onRouteEvent("Google route ${route.label} succeeded for ${chunks.size} chunks")
+        return Ok(
+            TranslationResponse(
+                translatedText = joinBatchTranslations(chunks, translations),
+                detectedLanguage = translations.firstNotNullOfOrNull { it.detectedLanguage }
+                    ?.let(languageMapper::fromProviderCode)
+            )
+        )
+    }
+
+    private fun failBatchRoute(error: ServiceError): Result<TranslationResponse, ServiceError> {
+        blockedUntilMillis[Route.BATCH_EXECUTE] = clockMillis() + circuitDuration(error)
+        onRouteEvent("Google route ${Route.BATCH_EXECUTE.label} failed: ${error.message}")
+        return Err(error)
+    }
+
+    private fun circuitDuration(error: ServiceError): Long = when (error) {
+        is ServiceError.TimeoutError, is ServiceError.NetworkError -> transientCircuitOpenMillis
+        else -> circuitOpenMillis
+    }
+
+    /** Делит без потери символов, предпочитая абзац, конец предложения и затем пробел. */
+    internal fun splitForBatch(text: String): List<String> {
+        if (text.length <= MAX_BATCH_CHUNK_CHARACTERS) return listOf(text)
+
+        val result = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            var end = min(start + MAX_BATCH_CHUNK_CHARACTERS, text.length)
+            if (end < text.length) {
+                if (Character.isHighSurrogate(text[end - 1])) end--
+                val minimumBoundary = start + MAX_BATCH_CHUNK_CHARACTERS / 2
+                end = findPreferredBoundary(text, minimumBoundary, end) ?: end
+            }
+            result += text.substring(start, end)
+            start = end
+        }
+        return result
+    }
+
+    private fun findPreferredBoundary(text: String, minimum: Int, maximum: Int): Int? {
+        for (index in maximum downTo minimum + 1) {
+            if (text[index - 1] == '\n') return index
+        }
+        for (index in maximum downTo minimum + 1) {
+            val previous = text[index - 1]
+            if (previous in SENTENCE_ENDINGS && (index == text.length || text[index].isWhitespace())) {
+                return index
+            }
+        }
+        for (index in maximum downTo minimum + 1) {
+            if (text[index - 1].isWhitespace()) return index
+        }
+        return null
+    }
+
+    private fun joinBatchTranslations(
+        sourceChunks: List<String>,
+        translations: List<GoogleFallbackTranslation>
+    ): String = buildString {
+        translations.forEachIndexed { index, translation ->
+            append(translation.translatedText)
+            if (index < sourceChunks.lastIndex) {
+                append(sourceChunks[index].takeLastWhile(Char::isWhitespace))
+                append(sourceChunks[index + 1].takeWhile(Char::isWhitespace))
+            }
+        }
+    }
+
+    private suspend fun request(
+        route: Route,
+        text: String,
+        sourceTag: String,
+        targetTag: String
+    ): Result<GoogleFallbackTranslation, ServiceError> = when (route) {
+        Route.TRANSLATE_T -> httpClient.get(
+            url = TRANSLATE_T_ENDPOINT,
+            headers = apiConfig.createHeaders(),
+            queryParams = mapOf(
+                "client" to "dict-chrome-ex",
+                "sl" to sourceTag,
+                "tl" to targetTag,
+                "q" to text
+            )
+        ).parseWith("translate_a/t", ::parseFallbackTranslationResponse)
+
+        Route.CHROME_SINGLE -> httpClient.get(
+            url = CHROME_SINGLE_ENDPOINT,
+            headers = apiConfig.createHeaders(),
+            queryParams = mapOf(
+                "client" to "chrome",
+                "sl" to sourceTag,
+                "tl" to targetTag,
+                "dt" to "t",
+                "q" to text
+            )
+        ).parseWith("translate_a/single", ::parseChromeTranslationResponse)
+
+        Route.BATCH_EXECUTE -> httpClient.postForm(
+            url = BATCH_EXECUTE_ENDPOINT,
+            formData = mapOf("f.req" to buildBatchRequest(text, sourceTag, targetTag)),
+            headers = apiConfig.createHeaders(
+                mapOf(
+                    "Accept" to "*/*",
+                    "Origin" to "https://translate.google.com",
+                    "Referer" to "https://translate.google.com/"
+                )
+            ),
+            queryParams = mapOf(
+                "rpcids" to "MkEWBc",
+                "source-path" to "/",
+                "hl" to targetTag,
+                "rt" to "c"
+            )
+        ).parseWith("batchexecute/MkEWBc", ::parseBatchExecuteTranslationResponse)
+    }
+
+    private fun GoogleFallbackTranslation.toResponse(): TranslationResponse = TranslationResponse(
+        translatedText = translatedText,
+        detectedLanguage = detectedLanguage?.let(languageMapper::fromProviderCode)
+    )
+
+    private fun buildBatchRequest(text: String, sourceTag: String, targetTag: String): String {
+        val rpcArguments = buildJsonArray {
+            add(buildJsonArray {
+                add(text)
+                add(sourceTag)
+                add(targetTag)
+                add(true)
+            })
+            add(buildJsonArray { add(JsonNull) })
+        }
+        return buildJsonArray {
+            add(buildJsonArray {
+                add(buildJsonArray {
+                    add("MkEWBc")
+                    add(rpcArguments.toString())
+                    add(JsonNull)
+                    add("generic")
+                })
+            })
+        }.toString()
+    }
+
+    private inline fun Result<String, ServiceError>.parseWith(
+        endpointName: String,
+        parser: (String) -> GoogleFallbackTranslation?
+    ): Result<GoogleFallbackTranslation, ServiceError> = fold(
+        success = { body ->
+            parser(body)?.let(::Ok)
+                ?: Err(ServiceError.InvalidResponseError(
+                    "Google $endpointName returned an unsupported response."
+                ))
+        },
+        failure = ::Err
+    )
+
+    internal enum class Route(val label: String) {
+        TRANSLATE_T("translate_a/t"),
+        CHROME_SINGLE("translate_a/single?client=chrome"),
+        BATCH_EXECUTE("batchexecute/MkEWBc")
+    }
+
+    companion object {
+        internal const val TRANSLATE_T_ENDPOINT = "https://clients5.google.com/translate_a/t"
+        internal const val CHROME_SINGLE_ENDPOINT = "https://clients5.google.com/translate_a/single"
+        internal const val BATCH_EXECUTE_ENDPOINT =
+            "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
+
+        private const val MAX_CHROME_SINGLE_CHARACTERS = 1_500
+        private const val MAX_FAST_TEXT_CHARACTERS = 800
+        internal const val MAX_BATCH_CHUNK_CHARACTERS = 4_500
+        private const val MAX_PARALLEL_BATCH_REQUESTS = 2
+        private val SENTENCE_ENDINGS = setOf('.', '!', '?', '。', '！', '？')
+        private const val DEFAULT_CIRCUIT_OPEN_MILLIS = 15 * 60 * 1_000L
+        private const val DEFAULT_TRANSIENT_CIRCUIT_OPEN_MILLIS = 30_000L
+        private const val DEFAULT_SHORT_BUDGET_MILLIS = 1_500L
+        private const val DEFAULT_MEDIUM_BUDGET_MILLIS = 4_000L
+        private const val DEFAULT_LONG_BUDGET_MILLIS = 12_000L
+        private const val DEFAULT_SHORT_ROUTE_TIMEOUT_MILLIS = 500L
+        private const val DEFAULT_MEDIUM_ROUTE_TIMEOUT_MILLIS = 1_800L
+        private const val DEFAULT_LONG_ROUTE_TIMEOUT_MILLIS = 5_000L
+    }
+}

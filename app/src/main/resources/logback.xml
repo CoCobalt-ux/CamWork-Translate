@@ -33,11 +33,11 @@
          chatty day could produce a single unopenable file.
          ================================================================ -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>${LOG_DIR}/qtranslate.log</file>
+        <file>${LOG_DIR}/camwork-translate.log</file>
 
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <!-- Daily rollover, gzip compressed. %i is required for the size cap. -->
-            <fileNamePattern>${LOG_DIR}/qtranslate.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <fileNamePattern>${LOG_DIR}/camwork-translate.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
             <maxFileSize>10MB</maxFileSize>
             <maxHistory>14</maxHistory>
             <totalSizeCap>50MB</totalSizeCap>

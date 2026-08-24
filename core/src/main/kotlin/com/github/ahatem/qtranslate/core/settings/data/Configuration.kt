@@ -96,7 +96,9 @@ enum class HotkeyAction {
     SHOW_QUICK_TRANSLATE,
     LISTEN_TO_TEXT,
     OPEN_OCR,
-    REPLACE_WITH_TRANSLATION,  // Rob #2 / Davide — translate and replace selected text
+    // CamWork quick selection translation. A modifier-only default is handled by JNativeHook;
+    // user-assigned regular combinations are handled by the ordinary hotkey provider.
+    REPLACE_WITH_TRANSLATION,
     CYCLE_TARGET_LANGUAGE,     // Yan #3 — cycle through available target languages
     SHOW_DICTIONARY,           // open floating dictionary popup
     SHOW_IMAGES,               // open floating image popup (default: Ctrl+Shift+Q, GLOBAL)
@@ -110,6 +112,23 @@ enum class HotkeyAction {
     OPEN_SETTINGS,             // open the settings dialog (default: Ctrl+Comma, LOCAL)
     SHOW_HISTORY,              // open the translation history dialog (default: Ctrl+Shift+H, LOCAL)
     TRANSLATE_DOCUMENT         // open the document translation dialog (default: Ctrl+Shift+D, LOCAL)
+}
+
+/**
+ * Определяет поведение короткого одиночного Shift после выделения текста.
+ *
+ * [BIDIRECTIONAL] — явный короткий Shift заменяет выделение переводом в обе стороны:
+ * язык модели → иностранный target и иностранный текст → язык модели.
+ * [REPLACE_ONLY] — заменяет только текст, уверенно распознанный как язык модели.
+ * [OVERLAY_ONLY] — всегда показывает результат поверх текущего приложения.
+ * [DISABLED] — полностью отключает жест.
+ */
+@Serializable
+enum class ShiftTapTranslationMode {
+    BIDIRECTIONAL,
+    REPLACE_ONLY,
+    OVERLAY_ONLY,
+    DISABLED
 }
 
 /**
@@ -129,10 +148,10 @@ enum class DictionaryAutoSource {
 
 /**
  * Whether a hotkey fires globally (system-wide via jKeymaster) or
- * locally (only when QTranslate has focus, via Swing InputMap).
+ * locally (only when CamWork Translate has focus, via Swing InputMap).
  *
  * Global hotkeys intercept keys from any application — use sparingly.
- * Local hotkeys only fire inside QTranslate — safe for common shortcuts.
+ * Local hotkeys only fire inside CamWork Translate — safe for common shortcuts.
  *
  * Dinar's request: allow per-action control so e.g. Ctrl+Tab isn't
  * stolen from the browser while still keeping Ctrl+Q global.
@@ -140,7 +159,7 @@ enum class DictionaryAutoSource {
 @Serializable
 enum class HotkeyScope {
     GLOBAL,  // Registered with jKeymaster — fires system-wide
-    LOCAL    // Registered via Swing InputMap — fires only inside QTranslate
+    LOCAL    // Registered via Swing InputMap — fires only inside CamWork Translate
 }
 
 /**
@@ -172,13 +191,27 @@ data class HotkeyBinding(
         if (hasBinding) KeyStroke.getKeyStroke(keyCode, modifiers) else null
 
     companion object {
+        /**
+         * Единственный источник истины для быстрого перевода выделения.
+         *
+         * Shift без дополнительных модификаторов намеренно не регистрируется через системный
+         * provider: безопасный tap-жест проверяет свежее выделение, длительность нажатия и
+         * блокировку Win+Shift+S через JNativeHook.
+         */
+        val DEFAULT_SELECTION_TRANSLATION = HotkeyBinding(
+            action = HotkeyAction.REPLACE_WITH_TRANSLATION,
+            keyCode = java.awt.event.KeyEvent.VK_SHIFT,
+            modifiers = 0,
+            scope = HotkeyScope.GLOBAL
+        )
+
         val DEFAULTS: List<HotkeyBinding> = listOf(
             // SHOW_MAIN_WINDOW: double-Ctrl via JNativeHook — no KeyStroke, always GLOBAL
             HotkeyBinding(HotkeyAction.SHOW_MAIN_WINDOW,         keyCode = 0,                                          modifiers = 0,                                         scope = HotkeyScope.GLOBAL, isDoubleCtrlEnabled = true),
             HotkeyBinding(HotkeyAction.SHOW_QUICK_TRANSLATE,     keyCode = java.awt.event.KeyEvent.VK_Q,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.LISTEN_TO_TEXT,           keyCode = java.awt.event.KeyEvent.VK_E,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             HotkeyBinding(HotkeyAction.OPEN_OCR,                 keyCode = java.awt.event.KeyEvent.VK_I,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
-            HotkeyBinding(HotkeyAction.REPLACE_WITH_TRANSLATION, keyCode = java.awt.event.KeyEvent.VK_T,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK or java.awt.event.InputEvent.SHIFT_DOWN_MASK, scope = HotkeyScope.GLOBAL),
+            DEFAULT_SELECTION_TRANSLATION,
             HotkeyBinding(HotkeyAction.CYCLE_TARGET_LANGUAGE,    keyCode = java.awt.event.KeyEvent.VK_L,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.LOCAL),
             HotkeyBinding(HotkeyAction.SHOW_DICTIONARY,          keyCode = java.awt.event.KeyEvent.VK_D,               modifiers = java.awt.event.InputEvent.CTRL_DOWN_MASK,  scope = HotkeyScope.GLOBAL),
             // Shift+the quick-translate key: this is the same gesture on the same selection,
@@ -269,8 +302,15 @@ data class Configuration(
 
     // ---- General Behaviour ----
     val launchOnSystemStartup: Boolean = false,
-    val autoCheckForUpdates: Boolean = true,
+    val autoCheckForUpdates: Boolean = false,
     val isGlobalHotkeysEnabled: Boolean = true,
+    val isShiftTapTranslateEnabled: Boolean = true,
+    /** Режим короткого Shift; отдельный enum позволяет менять сценарий без переназначения клавиш. */
+    val shiftTapTranslationMode: ShiftTapTranslationMode = ShiftTapTranslationMode.BIDIRECTIONAL,
+    /** Язык, на котором модель пишет исходящие сообщения. */
+    val modelLanguage: String = "ru",
+    /** Автоматически показывает пассивный перевод иностранного выделения мышью. */
+    val isAutoSelectionTranslateEnabled: Boolean = true,
     val isSelectionIconEnabled: Boolean = false,
     /**
      * The interface language, or blank for "not chosen yet, follow the operating system".
@@ -286,7 +326,10 @@ data class Configuration(
      */
     val interfaceLanguage: String = "",
     val isInstantTranslationEnabled: Boolean = false,
-    val isSpellCheckingEnabled: Boolean = true,
+    // Google Spell Checker использует отдельный неофициальный endpoint и при постоянной фоновой
+    // проверке быстро получает rate limit, замедляя основной перевод. Функция остаётся доступной,
+    // но в production-профиле включается пользователем осознанно.
+    val isSpellCheckingEnabled: Boolean = false,
     val extraOutputType: ExtraOutputType = ExtraOutputType.None,
     val extraOutputSource: ExtraOutputSource = ExtraOutputSource.Output,
     /**
@@ -421,7 +464,7 @@ data class Configuration(
      * Set to `true` the first time the one-time donation nudge is shown.
      * Prevents the nudge from ever appearing again after it has been displayed once.
      */
-    val donationNudgeShown: Boolean = false,
+    val donationNudgeShown: Boolean = true,
 
     // ---- Network ----
     val network: NetworkConfig = NetworkConfig()
@@ -440,11 +483,15 @@ data class Configuration(
                 hotkeys                      = HotkeyBinding.DEFAULTS,
                 launchOnSystemStartup        = false,
                 isGlobalHotkeysEnabled       = true,
+                isShiftTapTranslateEnabled   = true,
+                shiftTapTranslationMode      = ShiftTapTranslationMode.BIDIRECTIONAL,
+                modelLanguage                = "ru",
+                isAutoSelectionTranslateEnabled = true,
                 isSelectionIconEnabled       = false,
-                autoCheckForUpdates          = true,
-                interfaceLanguage            = "en",
+                autoCheckForUpdates          = false,
+                interfaceLanguage            = "",
                 isInstantTranslationEnabled  = false,
-                isSpellCheckingEnabled       = true,
+                isSpellCheckingEnabled       = false,
                 extraOutputType              = ExtraOutputType.None,
                 extraOutputSource            = ExtraOutputSource.Output,
                 summaryLength                = StandardOptions.SUMMARY_LENGTH.defaultValue,

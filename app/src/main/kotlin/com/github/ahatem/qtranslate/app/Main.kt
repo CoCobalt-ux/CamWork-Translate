@@ -51,7 +51,7 @@ fun main() = runBlocking {
     val logFactory = LogbackLoggerFactory()
     val logger     = logFactory.getLogger("Main")
 
-    logger.info("QTranslate ${AppConstants.APP_VERSION} starting...")
+    logger.info("${AppConstants.APP_NAME} ${AppConstants.APP_VERSION} starting...")
     logger.info("App data directory: ${appData.absolutePath}")
 
     val json         = Json { ignoreUnknownKeys = true; isLenient = true }
@@ -97,7 +97,7 @@ fun main() = runBlocking {
                 type = NotificationType.WARNING,
                 code = NotificationCode.Custom(
                     title = "Settings took too long to load",
-                    body = "QTranslate started with default settings so it would not hang. " +
+                    body = "${AppConstants.APP_NAME} started with default settings so it would not hang. " +
                         "Your saved settings are still on disk — restarting may load them."
                 )
             )

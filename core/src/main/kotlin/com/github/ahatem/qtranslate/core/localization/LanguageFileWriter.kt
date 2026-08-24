@@ -33,7 +33,7 @@ class LanguageFileWriter(private val englishTemplate: String) {
         val out = mutableListOf<String>()
         var section = ""
 
-        for (line in englishTemplate.split(newline)) {
+        for (line in englishTemplate.split(Regex("\\r?\\n"))) {
             val trimmed = line.trim()
 
             when {

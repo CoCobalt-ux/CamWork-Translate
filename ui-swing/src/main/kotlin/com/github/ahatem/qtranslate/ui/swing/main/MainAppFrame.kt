@@ -1,6 +1,7 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
 import com.formdev.flatlaf.FlatLaf
+import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.components.FlatButton
 import com.formdev.flatlaf.util.FontUtils
 import com.formdev.flatlaf.util.UIScale
@@ -63,6 +64,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.swing.Swing
 import java.awt.*
 import com.github.ahatem.qtranslate.ui.swing.shared.util.copyToClipboard
+import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.*
 import java.net.URI
@@ -73,6 +75,9 @@ import kotlin.system.exitProcess
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
 import com.github.ahatem.qtranslate.ui.swing.shared.util.connectedScreenBounds
 import com.github.ahatem.qtranslate.ui.swing.shared.util.isPositionReachable
+
+/** Время, за которое приложение-источник успевает прочитать текст после Ctrl+V. */
+private const val CLIPBOARD_PASTE_SETTLE_MS = 1_200L
 
 class MainAppFrame(
     private val mainStore: MainStore,
@@ -90,17 +95,21 @@ class MainAppFrame(
     private val translateString: (suspend (String, LanguageCode) -> Result<String>)? = null,
     /** The application's own secrets, for the proxy password on the Network settings page. */
     private val appSecrets: AppSecretStore? = null
-) : JFrame("QTranslate") {
+) : JFrame(AppConstants.APP_NAME) {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("MainAppFrame"))
 
     private var trayIcon: TrayIcon? = null
+    private var trayIconImages: TrayIconImages? = null
+    private var pendingTraySingleClick: javax.swing.Timer? = null
+    private var pasteTranslationJob: Job? = null
 
     private val aboutDialog by lazy { InfoDialog(this) }
     private val updateDialog by lazy { UpdateDialog(this) }
     private val historyDialog by lazy { HistoryDialog(this) }
     private val dictionaryDialog by lazy { DictionaryDialog(this, iconManager) }
-    private val loadingIndicator by lazy { LoadingIndicator(this) }
+    private val loadingIndicatorDelegate = lazy { LoadingIndicator(this) }
+    private val loadingIndicator by loadingIndicatorDelegate
 
     private val documentTranslationDialog by lazy {
         DocumentTranslationDialog(
@@ -177,9 +186,19 @@ class MainAppFrame(
                 )
                 mainStore.dispatch(MainIntent.Translate())
             },
-            // Reads the source text, not the translation — the popup is most often used
-            // to check how the original word is pronounced.
-            onListen = { mainStore.dispatch(MainIntent.ListenToText(TextSource.Input)) },
+            // Окно показывает результат перевода, поэтому и озвучивается результат. Для
+            // автоматического оверлея используется его временный target (RU/UK), а не языковая
+            // пара основного окна.
+            onListen = {
+                val state = mainStore.state.value
+                mainStore.dispatch(
+                    MainIntent.ListenToText(
+                        textSource = TextSource.Output,
+                        text = state.translatedText,
+                        language = state.resolvedQuickTranslateTargetLanguage
+                    )
+                )
+            },
             onStopListening = { mainStore.dispatch(MainIntent.StopTTS) },
             onCopy = { mainStore.state.value.translatedText.copyToClipboard() },
             onSavePosition = { pos ->
@@ -261,7 +280,13 @@ class MainAppFrame(
         iconManager,
         localizer.getString("main_window_language_bar.translate_button")
     ) { text ->
-        mainStore.dispatch(MainIntent.ShowQuickTranslate(text))
+        runOnUi {
+            loadingIndicator.showTranslating(
+                message = localizer.getString("shift_overlay.translating"),
+                timeoutMessage = localizer.getString("shift_overlay.too_slow")
+            )
+        }
+        mainStore.dispatch(MainIntent.TranslateSelectionFromButton(text))
     }
 
     private fun openPluginConfiguration(serviceId: String) {
@@ -310,6 +335,16 @@ class MainAppFrame(
         onShowQuickTranslate = { text ->
             appScope.launch { mainStore.dispatch(MainIntent.ShowQuickTranslate(text)) }
         },
+        onShiftTapTranslate = { text ->
+            if (text.isBlank()) {
+                runOnUi {
+                    loadingIndicator.showError(localizer.getString("shift_overlay.capture_failed"))
+                }
+            } else {
+                // Только MVI-intent: окно приложения не показывается и фокус остаётся в источнике.
+                mainStore.dispatch(MainIntent.TranslateShiftSelection(text))
+            }
+        },
         onListenToText = { text ->
             mainStore.dispatch(MainIntent.ListenToText(TextSource.Input, text))
         },
@@ -339,16 +374,42 @@ class MainAppFrame(
         onTranslate = { mainStore.dispatch(MainIntent.Translate()) },
         onSelectionDetected = { text, location ->
             runOnUi {
-                val enabled = settingsStore.state.value.originalConfiguration.isSelectionIconEnabled
-                // Suppress the button while QTranslate itself is focused — selecting text
-                // inside the app already has the toolbar and hotkeys available.
-                if (enabled && !isActive) selectionTranslateButton.showAt(location, text)
+                // Матрица уже решила, что нужна кнопка; здесь остаётся лишь
+                // не дублировать её внутри самого CamWork Translate.
+                if (!isActive) selectionTranslateButton.showAt(location, text)
+            }
+        },
+        onAutoTranslateSelection = { text ->
+            // Внутри CamWork уже есть обычная кнопка Translate; auto-overlay нужен внешним окнам.
+            if (!isActive) {
+                runOnUi {
+                    loadingIndicator.showTranslating(
+                        message = localizer.getString("shift_overlay.translating"),
+                        timeoutMessage = localizer.getString("shift_overlay.too_slow")
+                    )
+                }
+                mainStore.dispatch(MainIntent.AutoTranslateSelection(text))
             }
         },
         onPointerPressed = { location ->
             runOnUi {
                 selectionTranslateButton.dismissIfOutside(location)
                 dismissPopupsPressedOutside(location)
+            }
+        },
+        onShiftTapStarted = {
+            runOnUi {
+                loadingIndicator.showTranslating(
+                    message = localizer.getString("shift_overlay.translating"),
+                    timeoutMessage = localizer.getString("shift_overlay.too_slow")
+                )
+            }
+        },
+        onSystemScreenCaptureStarted = {
+            mainStore.dispatch(MainIntent.CancelSelectionTranslations)
+            pasteTranslationJob?.cancel(CancellationException("System screen capture started"))
+            if (loadingIndicatorDelegate.isInitialized()) {
+                runOnUi { loadingIndicator.dismiss() }
             }
         }
     )
@@ -359,7 +420,7 @@ class MainAppFrame(
      * Driven by the native hook rather than by an AWT listener. The click that dismisses a popup
      * almost always lands in another application — the document being read — and AWT never sees
      * those: it only delivers events destined for this program's own windows. An AWT-based
-     * version of this appeared to work when clicking on QTranslate itself and did nothing at all
+     * version of this appeared to work when clicking on CamWork Translate itself and did nothing at all
      * in the case that matters.
      *
      * Pinned popups are left alone, which is the point of pinning.
@@ -400,6 +461,15 @@ class MainAppFrame(
         globalKeyListener.setSelectionIconEnabled(
             settingsStore.state.value.originalConfiguration.isSelectionIconEnabled
         )
+        globalKeyListener.setAutoSelectionTranslateEnabled(
+            settingsStore.state.value.originalConfiguration.isAutoSelectionTranslateEnabled
+        )
+        globalKeyListener.setShiftTapTranslateEnabled(
+            settingsStore.state.value.originalConfiguration.let {
+                it.isShiftTapTranslateEnabled &&
+                    it.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
+            }
+        )
 
         SwingUtilities.invokeLater {
             contentPane.add(mainContentView, BorderLayout.CENTER)
@@ -428,6 +498,10 @@ class MainAppFrame(
             }
 
             iconImages = loadIcons()
+
+            // Название остаётся у JFrame для панели задач, Alt+Tab и accessibility, но в
+            // декорированной шапке его заменяет единый фирменный lockup CamWork Translate.
+            rootPane.putClientProperty(FlatClientProperties.TITLE_BAR_SHOW_TITLE, false)
 
             mainContentView.render(mainStore.state.value, settingsStore.state.value)
             pack()
@@ -583,7 +657,13 @@ class MainAppFrame(
                         // is looking.
                         val popupPending = popupRequested && !quickTranslateDialog.isVisible
                         val shouldShow = isLoading && (isReplacing || popupPending)
-                        loadingIndicator.render(LoadingIndicatorState(isVisible = shouldShow))
+                        loadingIndicator.render(
+                            LoadingIndicatorState(
+                                isVisible = shouldShow,
+                                message = localizer.getString("shift_overlay.translating"),
+                                timeoutMessage = localizer.getString("shift_overlay.too_slow")
+                            )
+                        )
                     }
                 }
         }
@@ -618,16 +698,35 @@ class MainAppFrame(
                 }
         }
 
-        // Selection translate button — toggling the setting takes effect immediately,
-        // and disabling it hides any button that is currently on screen.
+        // Auto-overlay независим от кнопки выделения: оба используют один clipboard capture.
         appScope.launch(handler) {
             settingsStore.state
-                .map { it.originalConfiguration.isSelectionIconEnabled }
-                .distinctUntilChanged()
-                .collect { enabled ->
-                    globalKeyListener.setSelectionIconEnabled(enabled)
-                    if (!enabled) withContext(Dispatchers.Swing) { selectionTranslateButton.dismiss() }
+                .map { state ->
+                    val config = state.originalConfiguration
+                    config.isAutoSelectionTranslateEnabled to
+                        TrayInteractionPolicy.isAutoSelectionEffective(
+                            config.isGlobalHotkeysEnabled,
+                            config.isAutoSelectionTranslateEnabled
+                        )
                 }
+                .distinctUntilChanged()
+                .collect { (configured, effective) ->
+                    globalKeyListener.setAutoSelectionTranslateEnabled(configured)
+                    withContext(Dispatchers.Swing) { updateTrayIcon(effective) }
+                }
+        }
+
+        // Настройка безопасного Shift-жеста применяется сразу после сохранения.
+        appScope.launch(handler) {
+            settingsStore.state
+                .map {
+                    it.originalConfiguration.let { config ->
+                        config.isShiftTapTranslateEnabled &&
+                            config.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
+                    }
+                }
+                .distinctUntilChanged()
+                .collect(globalKeyListener::setShiftTapTranslateEnabled)
         }
 
         appScope.launch(handler) {
@@ -650,7 +749,30 @@ class MainAppFrame(
                         statusBarController.handleEvent(event)
                     }
                     is MainEvent.PasteTranslation -> if (event.translatedText.isNotBlank()) {
-                        pasteTextToActiveApp(event.translatedText)
+                        pasteTextToActiveApp(
+                            text = event.translatedText,
+                            expiresAtMillis = event.expiresAtMillis,
+                            onSuccess = {
+                                if (event.showShiftFeedback) runOnUi {
+                                    loadingIndicator.showSuccess(
+                                        localizer.getString("shift_overlay.replaced")
+                                    )
+                                }
+                            },
+                            onFailure = {
+                                if (event.showShiftFeedback) runOnUi {
+                                    loadingIndicator.showError(
+                                        localizer.getString("shift_overlay.paste_failed")
+                                    )
+                                }
+                            }
+                        )
+                    }
+                    is MainEvent.ShiftTranslationFailed -> withContext(Dispatchers.Swing) {
+                        loadingIndicator.showError(resolveShiftTranslationFailure(event.reason))
+                    }
+                    MainEvent.AutoSelectionTranslationFinished -> withContext(Dispatchers.Swing) {
+                        loadingIndicator.dismiss()
                     }
                     is MainEvent.ShowUpdateDialog -> withContext(Dispatchers.Swing) {
                         showUpdateDialog(NotificationCode.UpdateAvailable(
@@ -712,17 +834,20 @@ class MainAppFrame(
             }
         }
 
-        // Hotkey binding changes — re-register whenever saved config changes
+        // Hotkey binding и master-switch отслеживаются вместе: изменение только master-switch
+        // раньше не доходило до native listener, если список сочетаний оставался прежним.
         appScope.launch(handler) {
             settingsStore.state
-                .map { it.originalConfiguration.hotkeys }
+                .map {
+                    it.originalConfiguration.let { config ->
+                        config.hotkeys to config.isGlobalHotkeysEnabled
+                    }
+                }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { bindings ->
+                .collect { (bindings, isGlobalHotkeysEnabled) ->
                     globalKeyListener.updateBindings(bindings)
-                    globalKeyListener.setHotkeysEnabled(
-                        settingsStore.state.value.originalConfiguration.isGlobalHotkeysEnabled
-                    )
+                    globalKeyListener.setHotkeysEnabled(isGlobalHotkeysEnabled)
                     withContext(Dispatchers.Swing) { registerLocalHotkeys() }
                 }
         }
@@ -925,7 +1050,7 @@ class MainAppFrame(
 
     /**
      * Registers LOCAL-scope hotkeys via Swing InputMap/ActionMap.
-     * These only fire when QTranslate has focus — they never intercept keys
+     * These only fire when CamWork Translate has focus — they never intercept keys
      * from other applications. Called after globalKeyListener.initialize() and
      * whenever bindings change (Dinar's per-action scope request).
      */
@@ -978,24 +1103,91 @@ class MainAppFrame(
     }
 
 
-    private fun pasteTextToActiveApp(text: String) {
-        appScope.launch {
-            runCatching {
-                delay(150) // let any in-flight UI work settle
+    private fun pasteTextToActiveApp(
+        text: String,
+        expiresAtMillis: Long = Long.MAX_VALUE,
+        onSuccess: () -> Unit = {},
+        onFailure: (Throwable) -> Unit = {}
+    ) {
+        val previousPasteJob = pasteTranslationJob
+        previousPasteJob?.cancel(CancellationException("New translation paste requested"))
+        pasteTranslationJob = appScope.launch {
+            previousPasteJob?.join()
+            if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
+            if (System.currentTimeMillis() > expiresAtMillis) {
+                onFailure(IllegalStateException("Selection expired before paste"))
+                return@launch
+            }
+            delay(150) // let any in-flight UI work settle
+            if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
+            if (System.currentTimeMillis() > expiresAtMillis) {
+                onFailure(IllegalStateException("Selection expired before paste"))
+                return@launch
+            }
 
-                val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+            val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+            val originalClipboard = runCatching { clipboard.getContents(null) }.getOrNull()
+            var clipboardOverridden = false
+            var pasteSent = false
+            try {
+                if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
                 clipboard.setContents(StringSelection(text), null)
+                clipboardOverridden = true
+                yield()
+                if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
 
                 val robot = Robot()
                 robot.autoDelay = 20
-                robot.keyPress(KeyEvent.VK_CONTROL)
+                val pasteModifier = if (
+                    System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
+                ) KeyEvent.VK_META else KeyEvent.VK_CONTROL
+                robot.keyPress(pasteModifier)
                 robot.keyPress(KeyEvent.VK_V)
                 robot.keyRelease(KeyEvent.VK_V)
-                robot.keyRelease(KeyEvent.VK_CONTROL)
-            }.onFailure {
-                logger.warn("Failed to paste translation: ${it.message}")
+                robot.keyRelease(pasteModifier)
+                robot.waitForIdle()
+                pasteSent = true
+                // Большинство Windows-приложений считывают clipboard асинхронно после WM_PASTE.
+                delay(CLIPBOARD_PASTE_SETTLE_MS)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Throwable) {
+                logger.warn("Failed to paste translation: ${error.message}")
+                onFailure(error)
+                return@launch
+            } finally {
+                if (clipboardOverridden) {
+                    val translationIsStillInClipboard = runCatching {
+                        clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor) &&
+                            clipboard.getData(DataFlavor.stringFlavor).toString() == text
+                    }.getOrDefault(false)
+                    if (shouldRestorePasteClipboard(
+                            ownsTranslationClipboard = translationIsStillInClipboard,
+                            isScreenCaptureSuppressed =
+                                globalKeyListener.isSystemScreenCaptureSuppressed()
+                        )
+                    ) {
+                        originalClipboard?.let { original ->
+                            runCatching { clipboard.setContents(original, null) }
+                        }
+                    }
+                }
             }
+            if (pasteSent) onSuccess()
         }
+    }
+
+    private fun resolveShiftTranslationFailure(
+        reason: MainEvent.ShiftTranslationFailure
+    ): String = when (reason) {
+        MainEvent.ShiftTranslationFailure.DISABLED ->
+            localizer.getString("shift_overlay.disabled")
+        MainEvent.ShiftTranslationFailure.UNSUPPORTED_DIRECTION ->
+            localizer.getString("shift_overlay.unsupported_direction")
+        MainEvent.ShiftTranslationFailure.NO_TARGET_LANGUAGE ->
+            localizer.getString("shift_overlay.no_target_language")
+        MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED ->
+            localizer.getString("shift_overlay.translation_failed")
     }
 
     private fun applyOrientation(isRtl: Boolean) {
@@ -1051,9 +1243,9 @@ class MainAppFrame(
                     SettingsIntent.ToggleSetting { it.copy(isSpellCheckingEnabled = enabled) }
                 )
             },
-            onToggleInstantTranslation = { enabled ->
+            onToggleSelectionTranslation = { enabled ->
                 settingsStore.dispatch(
-                    SettingsIntent.ToggleSetting { it.copy(isInstantTranslationEnabled = enabled) }
+                    SettingsIntent.ToggleSetting { it.copy(isAutoSelectionTranslateEnabled = enabled) }
                 )
             },
             onToggleExtraOutput = { enabled ->
@@ -1071,9 +1263,9 @@ class MainAppFrame(
             onShowHistory = { showHistoryDialog() },
             onTranslateDocument = { documentTranslationDialog.open() },
             onShowSettings = { openSettingsDialog() },
-            onShowHowToUse = { openUrl("https://github.com/ahatem/QTranslate/wiki") },
+            onShowHowToUse = { openUrl(AppConstants.HELP_URL) },
             onShowAboutQTranslate = { onShowAboutDialog() },
-            onContactUs = { openUrl("https://github.com/ahatem/QTranslate/issues/new") },
+            onContactUs = { openUrl(AppConstants.CONTACT_URL) },
             onToggleAutoCheckForUpdates = { enabled ->
                 settingsStore.dispatch(
                     SettingsIntent.ToggleSetting { it.copy(autoCheckForUpdates = enabled) }
@@ -1118,7 +1310,7 @@ class MainAppFrame(
 
         val strings = MenuStrings(
             spellCheck = localizer.getString("main_window_main_menu.spell_check"),
-            instantTranslation = localizer.getString("main_window_main_menu.instant_translation"),
+            selectionTranslation = localizer.getString("main_window_main_menu.selection_translation"),
             extraOutput = localizer.getString("main_window_main_menu.show_extra_output"),
             viewOptions = localizer.getString("main_window_main_menu.options_submenu"),
             dictionary = localizer.getString("system_tray_menu.dictionary"),
@@ -1155,11 +1347,16 @@ class MainAppFrame(
             return
         }
 
-        val multiResImage = java.awt.image.BaseMultiResolutionImage(*iconsList.toTypedArray())
+        trayIconImages = TrayIconImageFactory.create(iconsList)
+        val trayConfiguration = settingsStore.state.value.originalConfiguration
+        val isAutoSelectionEnabled = TrayInteractionPolicy.isAutoSelectionEffective(
+            trayConfiguration.isGlobalHotkeysEnabled,
+            trayConfiguration.isAutoSelectionTranslateEnabled
+        )
 
-        trayIcon = TrayIcon(multiResImage, "QTranslate").apply {
+        trayIcon = TrayIcon(trayIconImages!!.forState(isAutoSelectionEnabled), AppConstants.APP_NAME).apply {
             isImageAutoSize = true
-            toolTip = "QTranslate"
+            toolTip = AppConstants.APP_NAME
 
             addMouseListener(object : MouseAdapter() {
                 override fun mouseReleased(e: MouseEvent) {
@@ -1177,8 +1374,13 @@ class MainAppFrame(
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
-                    if (e.button == MouseEvent.BUTTON1 && e.clickCount == 1) {
-                        runOnUi { showAndFocus() }
+                    when (TrayInteractionPolicy.decide(e.button, e.clickCount, e.isPopupTrigger)) {
+                        TrayClickDecision.SCHEDULE_TOGGLE -> scheduleTrayAutoSelectionToggle()
+                        TrayClickDecision.CANCEL_TOGGLE_AND_OPEN -> {
+                            cancelPendingTraySingleClick()
+                            runOnUi { showAndFocus() }
+                        }
+                        TrayClickDecision.IGNORE -> Unit
                     }
                 }
             })
@@ -1189,8 +1391,53 @@ class MainAppFrame(
         } catch (e: AWTException) {
             logger.error("Failed to add tray icon", e)
             trayIcon = null
+            trayIconImages = null
         }
     }
+
+    private fun scheduleTrayAutoSelectionToggle() {
+        cancelPendingTraySingleClick()
+        val delayMs = TrayInteractionPolicy.doubleClickDelayMs(
+            Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval")
+        )
+        pendingTraySingleClick = javax.swing.Timer(delayMs) {
+            pendingTraySingleClick = null
+            val currentConfig = settingsStore.state.value.workingConfiguration
+            val toggledState = TrayInteractionPolicy.toggledAutoSelectionState(
+                currentConfig.isAutoSelectionTranslateEnabled
+            )
+            // Runtime меняется в тот же тик, что и зелёная иконка. Сохранение настроек идёт
+            // асинхронно и больше не оставляет listener в прежнем состоянии.
+            globalKeyListener.setAutoSelectionTranslateEnabled(toggledState)
+            settingsStore.dispatch(
+                SettingsIntent.ToggleSetting { config ->
+                    config.copy(isAutoSelectionTranslateEnabled = toggledState)
+                }
+            )
+            updateTrayIcon(
+                TrayInteractionPolicy.isAutoSelectionEffective(
+                    currentConfig.isGlobalHotkeysEnabled,
+                    toggledState
+                )
+            )
+        }.apply {
+            isRepeats = false
+            start()
+        }
+    }
+
+    private fun cancelPendingTraySingleClick() {
+        pendingTraySingleClick?.stop()
+        pendingTraySingleClick = null
+    }
+
+    private fun updateTrayIcon(isAutoSelectionEnabled: Boolean) {
+        val images = trayIconImages ?: return
+        trayIcon?.image = images.forState(isAutoSelectionEnabled)
+    }
+
+    private fun TrayIconImages.forState(isAutoSelectionEnabled: Boolean): Image =
+        if (isAutoSelectionEnabled) active else neutral
 
     private fun createTrayPopupMenu(): JPopupMenu {
         val currentConfig = settingsStore.state.value.workingConfiguration
@@ -1256,9 +1503,11 @@ class MainAppFrame(
             }
 
             override fun windowClosed(e: WindowEvent?) {
+                cancelPendingTraySingleClick()
                 appScope.cancel()
                 trayIcon?.let { SystemTray.getSystemTray().remove(it) }
                 trayIcon = null
+                trayIconImages = null
                 exitProcess(0)
             }
         })
@@ -1420,6 +1669,8 @@ class MainAppFrame(
     }
 
     private fun setupMenuBar() {
+        val brandLabel = CamWorkBrandLabel(iconManager)
+
         val settingsButton = createButtonWithIcon(iconManager, Icons.SETTINGS, 18).apply {
             buttonType = FlatButton.ButtonType.toolBarButton
             toolTipText = localizer.getString("main_window_main_menu.settings")
@@ -1430,6 +1681,7 @@ class MainAppFrame(
         }
 
         jMenuBar = JMenuBar().apply {
+            add(brandLabel)
             add(Box.createHorizontalGlue())
             add(settingsButton)
         }
@@ -1447,7 +1699,11 @@ class MainAppFrame(
     }
 
     private fun mapToQuickTranslateState(mainState: MainState, config: Configuration): QuickTranslateDialogState {
-        val displaySourceLanguage = mainState.detectedSourceLanguage ?: mainState.sourceLanguage
+        val displaySourceLanguage = mainState.quickTranslateDetectedLanguageOverride
+            ?: mainState.quickTranslateSourceLanguageOverride
+            ?: mainState.detectedSourceLanguage
+            ?: mainState.sourceLanguage
+        val displayTargetLanguage = mainState.resolvedQuickTranslateTargetLanguage
 
         val activePreset = config.getActivePreset()
         val selectedTranslatorId = activePreset?.selectedServices?.get(ServiceRole.TRANSLATOR)
@@ -1456,6 +1712,7 @@ class MainAppFrame(
         return QuickTranslateDialogState(
             isVisible = mainState.isQuickTranslateDialogVisible,
             isLoading = mainState.isLoading,
+            isPassive = mainState.isQuickTranslateDialogPassive,
             translatedText = mainState.translatedText,
             isPinned = mainState.isQuickTranslateDialogPinned,
             triggerCount = mainState.quickTranslateTriggerCount,
@@ -1463,9 +1720,10 @@ class MainAppFrame(
             definition = mainState.inlineDefinition,
 
             sourceLanguage = displaySourceLanguage,
-            targetLanguage = mainState.targetLanguage,
+            targetLanguage = displayTargetLanguage,
             availableLanguages = mainState.availableLanguages,
-            detectedSourceLanguage = mainState.detectedSourceLanguage,
+            detectedSourceLanguage = mainState.quickTranslateDetectedLanguageOverride
+                ?: mainState.detectedSourceLanguage,
 
             translatorSelectorState = QuickTranslateSelectorState(
                 availableTranslators = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
@@ -1549,6 +1807,13 @@ class MainAppFrame(
                 val config = settingsStore.state.value.workingConfiguration
                 globalKeyListener.setHotkeysEnabled(config.isGlobalHotkeysEnabled)
                 globalKeyListener.setSelectionIconEnabled(config.isSelectionIconEnabled)
+                globalKeyListener.setAutoSelectionTranslateEnabled(
+                    config.isAutoSelectionTranslateEnabled
+                )
+                globalKeyListener.setShiftTapTranslateEnabled(
+                    config.isShiftTapTranslateEnabled &&
+                        config.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
+                )
                 registerLocalHotkeys()
             }
 
@@ -1570,13 +1835,13 @@ class MainAppFrame(
         val state = InfoDialogState(
             isVisible = true,
             title = localizer.getString("about_dialog.title"),
-            appName = "QTranslate",
+            appName = AppConstants.APP_NAME,
             versionText = localizer.getString("common.version", AppConstants.APP_VERSION),
             descriptionHtml = localizer.getString("about_dialog.description"),
-            websiteUrl = "https://github.com/ahatem/qtranslate",
-            icon = iconManager.getIcon("icons/app/128.png", 32, 32),
+            websiteUrl = AppConstants.WEBSITE_URL,
+            icon = iconManager.getIcon("icons/app/icon-128.png", 72, 72),
             closeButtonText = localizer.getString("common.close"),
-            supportUrl = "https://buymeacoffee.com/ahmedhatem",
+            supportUrl = AppConstants.UPSTREAM_SOURCE_URL,
             supportButtonText = localizer.getString("about_dialog.support_button")
         )
 

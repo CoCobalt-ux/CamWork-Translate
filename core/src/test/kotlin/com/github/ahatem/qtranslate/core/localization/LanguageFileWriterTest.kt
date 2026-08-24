@@ -81,6 +81,17 @@ class LanguageFileWriterTest {
     }
 
     @Test
+    fun `смешанные окончания строк не скрывают переводы`() {
+        val mixedTemplate = "[common]\r\nok = \"OK\"\ncancel = \"Cancel\"\r\n"
+        val written = LanguageFileWriter(mixedTemplate).write(
+            meta,
+            mapOf("common.ok" to "Да", "common.cancel" to "Нет")
+        )
+
+        assertEquals(mapOf("common.ok" to "Да", "common.cancel" to "Нет"), parser.parse(written).entries)
+    }
+
+    @Test
     fun `an untranslated key is absent rather than left in English`() {
         val written = writeAll(mapOf("common.ok" to "Được"))
 

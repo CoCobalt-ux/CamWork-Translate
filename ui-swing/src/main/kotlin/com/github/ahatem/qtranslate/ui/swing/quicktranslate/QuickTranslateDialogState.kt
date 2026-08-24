@@ -13,6 +13,8 @@ import com.github.ahatem.qtranslate.core.shared.arch.UiState
 data class QuickTranslateDialogState(
     val isVisible: Boolean,
     val isLoading: Boolean,
+    /** Пассивный Shift-overlay не активирует окно и не забирает фокус у приложения-источника. */
+    val isPassive: Boolean = false,
     val translatedText: String,
     val isPinned: Boolean,
     /** Bumped when the user asks for this popup again; a change restarts the countdown. */

@@ -8,6 +8,7 @@ import com.github.ahatem.qtranslate.api.translator.Translator
 import com.github.ahatem.qtranslate.core.history.HistoryRepository
 import com.github.ahatem.qtranslate.core.history.HistorySnapshot
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
+import com.github.ahatem.qtranslate.core.settings.data.ActiveService
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputSource
@@ -55,27 +56,54 @@ class TranslateTextUseCase(
     loggerFactory: LoggerFactory
 ) {
     private val logger: Logger = loggerFactory.getLogger("TranslateTextUseCase")
+    private val translatorFailover = TranslatorFailover(activeServiceManager, logger::warn)
+    private val translationJobLock = Any()
+    @Volatile
     private var translationJob: Job? = null
 
     fun cancel() {
-        translationJob?.cancel(CancellationException("Input cleared"))
-        translationJob = null
+        cancelCurrentTranslation("Input cleared")
     }
 
-    // Stored so handleExtraOutput can access current input text for ExtraOutputSource.Input
-    private var currentGetState: (() -> MainState)? = null
+    private fun cancelCurrentTranslation(reason: String) {
+        synchronized(translationJobLock) {
+            translationJob?.cancel(CancellationException(reason))
+            translationJob = null
+        }
+    }
+
+    /** Атомарно заменяет активный запрос и возвращает именно созданный для вызова Job. */
+    private fun launchLatestTranslation(
+        cancellationReason: String,
+        block: suspend CoroutineScope.() -> Unit
+    ): Job {
+        lateinit var newJob: Job
+        synchronized(translationJobLock) {
+            translationJob?.cancel(CancellationException(cancellationReason))
+            newJob = scope.launch(start = CoroutineStart.LAZY, block = block)
+            translationJob = newJob
+            newJob.invokeOnCompletion {
+                synchronized(translationJobLock) {
+                    if (translationJob === newJob) translationJob = null
+                }
+            }
+            newJob.start()
+        }
+        return newJob
+    }
 
     suspend operator fun invoke(
         getState: () -> MainState,
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
-        textOverride: String? = null
+        textOverride: String? = null,
+        includeExtraOutput: Boolean = true,
+        applyTranslationRules: Boolean = true,
+        sameLanguageFallbackTarget: LanguageCode? = null
     ) {
-        currentGetState = getState
-        translationJob?.cancel(CancellationException("New translation requested"))
-
         val textToTranslate = textOverride ?: getState().inputText
         if (textToTranslate.isBlank()) {
+            cancelCurrentTranslation("New translation requested")
             logger.debug("Translation skipped: input text is blank")
             return
         }
@@ -84,22 +112,28 @@ class TranslateTextUseCase(
         // no longer carry their own — the host composes it and keys the registry by it.
         val active = activeServiceManager.getActive<Translator>(ServiceRole.TRANSLATOR)
         if (active == null) {
+            cancelCurrentTranslation("New translation requested")
             logger.warn("No translator service available")
             onStatusUpdate(StatusCode.NoTranslatorActive, NotificationType.ERROR, true)
             return
         }
         val translator = active.service
-        val translatorId = active.id
 
         logger.info("Starting translation with '${translator.name}'")
 
-        translationJob = scope.launch {
+        val requestJob = launchLatestTranslation("New translation requested") {
             try {
                 onStatusUpdate(StatusCode.Translating, NotificationType.INFO, false)
                 updateState { copy(isLoading = true, translatedText = "", extraOutputText = "", isExtraOutputLoading = false) }
 
                 val currentState = getState()
-                val rules        = settingsState.value.translationRules
+                // Фоновые сценарии могут задавать точный target (например, EN -> язык модели).
+                // В них пользовательские правила главного окна не должны незаметно менять маршрут.
+                val rules = if (applyTranslationRules) {
+                    settingsState.value.translationRules
+                } else {
+                    emptyList()
+                }
                 val isAutoDetect = currentState.sourceLanguage == LanguageCode.AUTO
 
                 // When source is explicitly set, we already know the language — apply
@@ -128,20 +162,25 @@ class TranslateTextUseCase(
                             "length=${textToTranslate.length}"
                 )
 
-                val result = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-                    translator.translate(request)
+                val execution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
+                    translatorFailover.translate(active, request)
                 }
 
-                if (result == null) {
+                if (execution == null) {
                     logger.error("Translation timed out after ${AppConstants.TRANSLATION_TIMEOUT_MS}ms")
                     updateState { copy(isLoading = false, isExtraOutputLoading = false) }
                     onStatusUpdate(StatusCode.TranslationTimeout, NotificationType.ERROR, true)
-                    return@launch
+                    return@launchLatestTranslation
                 }
 
-                result.fold(
+                execution.result.fold(
                     success = { response ->
-                        logger.info("Translation successful: '${response.translatedText.take(50)}...'")
+                        // Текст моделей не должен попадать в production-логи. Для диагностики
+                        // достаточно сервиса, длины и факта успешного ответа.
+                        logger.info(
+                            "Translation successful with '${execution.translator.name}', " +
+                                "resultLength=${response.translatedText.length}"
+                        )
 
                         val detectedLanguage = response.detectedLanguage
                             .takeIf { isAutoDetect }
@@ -154,23 +193,40 @@ class TranslateTextUseCase(
                         // 4. The rule target differs from what we just translated to
                         if (isAutoDetect && detectedLanguage != null) {
                             val ruleTarget = resolveTargetFromRules(detectedLanguage, rules)
-                            if (ruleTarget != null && ruleTarget != initialTarget) {
+                            val automaticFallback = if (ruleTarget == null) {
+                                AutomaticTranslationTargetPolicy.fallbackForSameDetectedLanguage(
+                                    detectedLanguage = detectedLanguage,
+                                    requestedTarget = initialTarget,
+                                    modelLanguage = sameLanguageFallbackTarget
+                                )
+                            } else {
+                                null
+                            }
+                            val resolvedRetryTarget = ruleTarget
+                                ?.takeIf { it != initialTarget }
+                                ?: automaticFallback
+
+                            if (resolvedRetryTarget != null) {
                                 logger.debug(
-                                    "Rule matched detected '${detectedLanguage.tag}' → " +
-                                            "re-translating to '${ruleTarget.tag}'"
+                                    "Auto-detected '${detectedLanguage.tag}' matches target " +
+                                        "'${initialTarget.tag}' or a rule changed it; " +
+                                        "re-translating to '${resolvedRetryTarget.tag}'"
                                 )
                                 handleReTranslation(
                                     textToTranslate  = textToTranslate,
                                     sourceLanguage   = currentState.sourceLanguage,
-                                    ruleTarget       = ruleTarget,
+                                    ruleTarget       = resolvedRetryTarget,
                                     detectedLanguage = detectedLanguage,
                                     currentState     = currentState,
-                                    translator       = translator,
-                                    translatorId     = translatorId,
+                                    active            = ActiveService(
+                                        execution.translatorId,
+                                        execution.translator
+                                    ),
                                     updateState      = updateState,
-                                    onStatusUpdate   = onStatusUpdate
+                                    onStatusUpdate   = onStatusUpdate,
+                                    includeExtraOutput = includeExtraOutput
                                 )
-                                return@launch
+                                return@launchLatestTranslation
                             }
                         }
 
@@ -178,7 +234,7 @@ class TranslateTextUseCase(
                         onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)
 
                         val (newHistory, newHistoryIndex) = buildHistory(
-                            currentState, textToTranslate, response.translatedText, translatorId,
+                            currentState, textToTranslate, response.translatedText, execution.translatorId,
                             detectedSourceLanguage = detectedLanguage?.tag
                         )
 
@@ -186,15 +242,20 @@ class TranslateTextUseCase(
                         // the two are independent and the user should not wait for a second
                         // round trip to read the first result.
                         publishPrimaryThenExtraOutput(
+                            inputText          = textToTranslate,
                             translatedText    = response.translatedText,
                             detectedLanguage  = detectedLanguage,
                             history           = newHistory,
                             historyIndex      = newHistoryIndex,
                             sourceForBackward = detectedLanguage ?: currentState.sourceLanguage,
                             targetForBackward = initialTarget,
-                            translator        = translator,
+                            activeTranslator  = ActiveService(
+                                execution.translatorId,
+                                execution.translator
+                            ),
                             updateState       = updateState,
-                            onStatusUpdate    = onStatusUpdate
+                            onStatusUpdate    = onStatusUpdate,
+                            includeExtraOutput = includeExtraOutput
                         )
                     },
                     failure = { error ->
@@ -216,7 +277,7 @@ class TranslateTextUseCase(
             }
         }
 
-        translationJob?.join()
+        requestJob.join()
     }
 
     /**
@@ -229,10 +290,10 @@ class TranslateTextUseCase(
         ruleTarget: LanguageCode,
         detectedLanguage: LanguageCode,
         currentState: MainState,
-        translator: Translator,
-        translatorId: String,
+        active: ActiveService<Translator>,
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
+        includeExtraOutput: Boolean,
     ) {
         val retryRequest = TranslationRequest(
             text           = textToTranslate,
@@ -240,38 +301,44 @@ class TranslateTextUseCase(
             targetLanguage = ruleTarget
         )
 
-        val retryResult = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-            translator.translate(retryRequest)
+        val retryExecution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
+            translatorFailover.translate(active, retryRequest)
         }
 
-        if (retryResult == null) {
+        if (retryExecution == null) {
             logger.error("Re-translation timed out")
             updateState { copy(isLoading = false, isExtraOutputLoading = false) }
             onStatusUpdate(StatusCode.TranslationTimeout, NotificationType.ERROR, true)
             return
         }
 
-        retryResult.fold(
+        retryExecution.result.fold(
             success = { retryResponse ->
-                logger.info("Re-translation successful: '${retryResponse.translatedText.take(50)}...'")
+                logger.info("Re-translation successful, resultLength=${retryResponse.translatedText.length}")
                 onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)
 
                 val (newHistory, newHistoryIndex) = buildHistory(
-                    currentState, textToTranslate, retryResponse.translatedText, translatorId,
+                    currentState, textToTranslate, retryResponse.translatedText,
+                    retryExecution.translatorId,
                     detectedSourceLanguage = detectedLanguage.tag
                 )
 
                 publishPrimaryThenExtraOutput(
+                    inputText          = textToTranslate,
                     translatedText    = retryResponse.translatedText,
                     detectedLanguage  = detectedLanguage,
                     history           = newHistory,
                     historyIndex      = newHistoryIndex,
                     sourceForBackward = detectedLanguage,
                     targetForBackward = ruleTarget,
-                    translator        = translator,
+                    activeTranslator  = ActiveService(
+                        retryExecution.translatorId,
+                        retryExecution.translator
+                    ),
                     updateState       = updateState,
                     onStatusUpdate    = onStatusUpdate,
-                    ruleTarget        = ruleTarget
+                    ruleTarget        = ruleTarget,
+                    includeExtraOutput = includeExtraOutput
                 )
             },
             failure = { error ->
@@ -365,11 +432,11 @@ class TranslateTextUseCase(
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit
     ): Boolean {
-        currentGetState = getState
         val state = getState()
         val extraOutputType = settingsState.value.extraOutputType
 
         if (extraOutputType == ExtraOutputType.None) {
+            cancelCurrentTranslation("Extra output disabled")
             updateState { copy(extraOutputText = "", isExtraOutputLoading = false) }
             return true
         }
@@ -378,7 +445,7 @@ class TranslateTextUseCase(
         // would still need the input, and backward translation needs the output either way.
         if (state.translatedText.isBlank()) return false
 
-        val translator = activeServiceManager.getActive<Translator>(ServiceRole.TRANSLATOR)?.service
+        val activeTranslator = activeServiceManager.getActive<Translator>(ServiceRole.TRANSLATOR)
             ?: run {
                 logger.warn("No translator service available")
                 onStatusUpdate(StatusCode.NoTranslatorActive, NotificationType.ERROR, true)
@@ -387,15 +454,15 @@ class TranslateTextUseCase(
 
         // Cancels any extra-output request still in flight, so switching type twice quickly
         // cannot land the first answer under the second choice.
-        translationJob?.cancel(CancellationException("Extra output type changed"))
-        translationJob = scope.launch {
+        launchLatestTranslation("Extra output type changed") {
             updateState { copy(extraOutputText = "", isExtraOutputLoading = true) }
             try {
                 val extraOutput = handleExtraOutput(
+                    inputText         = state.inputText,
                     targetText        = state.translatedText,
                     sourceForBackward = state.detectedSourceLanguage ?: state.sourceLanguage,
                     targetForBackward = state.targetLanguage,
-                    translator        = translator,
+                    activeTranslator  = activeTranslator,
                     onStatusUpdate    = onStatusUpdate
                 )
 
@@ -437,19 +504,21 @@ class TranslateTextUseCase(
      *   as a result of the detected source language.
      */
     private suspend fun publishPrimaryThenExtraOutput(
+        inputText: String,
         translatedText: String,
         detectedLanguage: LanguageCode?,
         history: List<HistorySnapshot>,
         historyIndex: Int,
         sourceForBackward: LanguageCode,
         targetForBackward: LanguageCode,
-        translator: Translator,
+        activeTranslator: ActiveService<Translator>,
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
-        ruleTarget: LanguageCode? = null
+        ruleTarget: LanguageCode? = null,
+        includeExtraOutput: Boolean = true
     ) {
         val extraOutputType = settingsState.value.extraOutputType
-        val expectsExtraOutput = extraOutputType != ExtraOutputType.None
+        val expectsExtraOutput = includeExtraOutput && extraOutputType != ExtraOutputType.None
 
         updateState {
             copy(
@@ -471,10 +540,11 @@ class TranslateTextUseCase(
 
         val extraOutput = try {
             handleExtraOutput(
+                inputText         = inputText,
                 targetText        = translatedText,
                 sourceForBackward = sourceForBackward,
                 targetForBackward = targetForBackward,
-                translator        = translator,
+                activeTranslator  = activeTranslator,
                 onStatusUpdate    = onStatusUpdate
             )
         } catch (cancellation: CancellationException) {
@@ -499,10 +569,11 @@ class TranslateTextUseCase(
     }
 
     private suspend fun handleExtraOutput(
+        inputText: String,
         targetText: String,
         sourceForBackward: LanguageCode,
         targetForBackward: LanguageCode,
-        translator: Translator,
+        activeTranslator: ActiveService<Translator>,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
     ): String {
         val config = settingsState.value
@@ -510,14 +581,14 @@ class TranslateTextUseCase(
         // or on the translated output. Resolved by the caller before this is called.
         val sourceText = when (config.extraOutputSource) {
             ExtraOutputSource.Output -> targetText
-            ExtraOutputSource.Input  -> currentGetState?.invoke()?.inputText ?: ""
+            ExtraOutputSource.Input  -> inputText
         }
         return when (config.extraOutputType) {
             ExtraOutputType.BackwardTranslate -> performBackwardTranslation(
                 targetText     = targetText,
                 targetLanguage = sourceForBackward,
                 sourceLanguage = targetForBackward,
-                translator     = translator,
+                activeTranslator = activeTranslator,
                 onStatusUpdate = onStatusUpdate
             )
             ExtraOutputType.Summarize -> summarizeUseCase(
@@ -538,7 +609,7 @@ class TranslateTextUseCase(
         targetText: String,
         targetLanguage: LanguageCode,
         sourceLanguage: LanguageCode,
-        translator: Translator,
+        activeTranslator: ActiveService<Translator>,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
     ): String {
         if (targetLanguage == LanguageCode.AUTO) {
@@ -548,16 +619,19 @@ class TranslateTextUseCase(
 
         onStatusUpdate(StatusCode.PerformingBackwardTranslation, NotificationType.INFO, false)
 
-        val result = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-            translator.translate(TranslationRequest(targetText, sourceLanguage, targetLanguage))
+        val execution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
+            translatorFailover.translate(
+                activeTranslator,
+                TranslationRequest(targetText, sourceLanguage, targetLanguage)
+            )
         }
 
-        return if (result == null) {
+        return if (execution == null) {
             logger.error("Backward translation timed out")
             onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)
             "Backward translation timed out."
         } else {
-            result.fold(
+            execution.result.fold(
                 success = { response ->
                     logger.debug("Backward translation successful")
                     onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)

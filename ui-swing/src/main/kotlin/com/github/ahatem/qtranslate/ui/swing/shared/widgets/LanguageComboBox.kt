@@ -25,11 +25,13 @@ import javax.swing.plaf.basic.BasicComboPopup
 class LanguageComboBox(
     private val onLanguageSelected: (language: LanguageCode) -> Unit,
     private val localizer: LocalizationManager,
-    private val compact: Boolean = false
+    compact: Boolean = false
 ) : JComboBox<LanguageCode>() {
 
     private var isRendering = false
     private var currentLanguages: List<LanguageCode> = emptyList()
+    private var compactMode: Boolean = compact
+    private val languageRenderer = LanguageRenderer(this, localizer) { compactMode }
 
     private val actionListener = ActionListener {
         if (!isRendering) {
@@ -45,7 +47,7 @@ class LanguageComboBox(
     }
 
     init {
-        renderer = LanguageRenderer(this, localizer, compact)
+        renderer = languageRenderer
         addActionListener(actionListener)
 
         addKeyListener(object : KeyAdapter() {
@@ -56,23 +58,28 @@ class LanguageComboBox(
             }
         })
 
-        if (compact) {
+        addPopupMenuListener(object : PopupMenuListener {
+            override fun popupMenuWillBecomeVisible(event: PopupMenuEvent) = widenPopupToFitNames()
+            override fun popupMenuWillBecomeInvisible(event: PopupMenuEvent) = Unit
+            override fun popupMenuCanceled(event: PopupMenuEvent) = Unit
+        })
+
+        if (compactMode) {
             // A combo sizes itself to its widest item, and the items are full language names, so
             // it would still take the width of "Chinese (Simplified)" while displaying "ZH-CN".
             // The prototype is the widest code rather than the widest name.
             prototypeDisplayValue = LanguageCode(WIDEST_CODE)
 
-            // The list, however, still has to fit the names. Swing sizes the drop-down to the
-            // control, which after the line above is far too narrow to read, so it is widened
-            // back out as it opens.
-            addPopupMenuListener(object : PopupMenuListener {
-                override fun popupMenuWillBecomeVisible(event: PopupMenuEvent) =
-                    widenPopupToFitNames()
-
-                override fun popupMenuWillBecomeInvisible(event: PopupMenuEvent) = Unit
-                override fun popupMenuCanceled(event: PopupMenuEvent) = Unit
-            })
         }
+    }
+
+    /** Меняет только представление закрытого списка; модель и выбранный язык сохраняются. */
+    fun setCompactMode(enabled: Boolean) {
+        if (compactMode == enabled) return
+        compactMode = enabled
+        prototypeDisplayValue = if (enabled) LanguageCode(WIDEST_CODE) else null
+        revalidate()
+        repaint()
     }
 
     /**
@@ -150,7 +157,7 @@ class LanguageComboBox(
     private class LanguageRenderer(
         private val comboBox: JComboBox<LanguageCode>,
         private val localizer: LocalizationManager,
-        private val compact: Boolean
+        private val isCompact: () -> Boolean
     ) : DefaultListCellRenderer() {
 
         override fun getListCellRendererComponent(
@@ -172,7 +179,7 @@ class LanguageComboBox(
                         value.getDisplayName(autoDetectLabel = autoDetectLabel)
                     }
 
-                if (compact && isClosedControl) {
+                if (isCompact() && isClosedControl) {
                     // The code of whatever is actually in use. With Auto resolved, that is the
                     // detected language rather than the word "auto", which is the more useful of
                     // the two in four characters.
@@ -180,10 +187,19 @@ class LanguageComboBox(
                     text = effective.tag.uppercase()
                     // The name the code stands for, since the code alone is not always obvious.
                     toolTipText = fullName
+                    comboBox.toolTipText = fullName
                     componentOrientation = ComponentOrientation.LEFT_TO_RIGHT
                 } else {
-                    text = fullName
+                    text = if (isClosedControl && comboBox.width > 0) {
+                        val availableWidth = (comboBox.width - UIScale.scale(CLOSED_CONTROL_PADDING)).coerceAtLeast(0)
+                        com.github.ahatem.qtranslate.ui.swing.main.layout.ResponsiveUi.elideText(
+                            fullName,
+                            availableWidth,
+                            comboBox.getFontMetrics(comboBox.font)::stringWidth
+                        )
+                    } else fullName
                     toolTipText = null
+                    if (isClosedControl) comboBox.toolTipText = fullName
                     componentOrientation = if (fullName.isRTL()) ComponentOrientation.RIGHT_TO_LEFT
                     else ComponentOrientation.LEFT_TO_RIGHT
                 }
@@ -198,5 +214,6 @@ class LanguageComboBox(
 
         /** Room for the list's own borders and scrollbar beside the widest name. */
         const val POPUP_PADDING = 40
+        const val CLOSED_CONTROL_PADDING = 38
     }
 }

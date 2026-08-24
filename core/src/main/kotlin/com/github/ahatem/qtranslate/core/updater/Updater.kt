@@ -89,9 +89,16 @@ class Updater(
      * plugin while calling it an update is worse than asking them to choose.
      */
     private fun downloadUrlFor(response: GitHubReleaseResponse): String? {
+        val osName = System.getProperty("os.name").orEmpty()
+        val platform = when {
+            osName.startsWith("Windows", ignoreCase = true) -> ReleaseAssets.Platform.WINDOWS
+            osName.startsWith("Mac", ignoreCase = true) -> ReleaseAssets.Platform.MACOS
+            else -> ReleaseAssets.Platform.OTHER
+        }
         val chosen = ReleaseAssets.selectDownload(
             assetNames = response.assets.map { it.name },
-            onWindows = System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+            platform = platform,
+            architecture = System.getProperty("os.arch").orEmpty()
         )
         if (chosen == null) {
             logger.warn(

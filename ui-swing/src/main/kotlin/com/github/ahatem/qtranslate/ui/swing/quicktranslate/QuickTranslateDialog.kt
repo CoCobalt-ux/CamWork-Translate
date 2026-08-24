@@ -3,6 +3,7 @@ package com.github.ahatem.qtranslate.ui.swing.quicktranslate
 import com.github.ahatem.qtranslate.ui.swing.shared.util.clearBorder
 import com.formdev.flatlaf.FlatClientProperties
 import com.formdev.flatlaf.extras.FlatSVGIcon
+import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.settings.data.Position
@@ -165,7 +166,7 @@ class QuickTranslateDialog(
     private val popup = FloatingPopupBehavior(
         window = this,
         owner = owner,
-        minimumSize = Dimension(PopupSizing.minWidth(), PopupSizing.minHeight()),
+        minimumSize = QuickTranslateSizing.minimumSize(passive = true),
         pinnedBorderWidth = PINNED_BORDER_WIDTH,
         resizeHandle = RESIZE_HANDLE_SIZE
     ).apply {
@@ -202,6 +203,8 @@ class QuickTranslateDialog(
 
     /** The trigger this popup last reacted to; see [QuickTranslateDialogState.triggerCount]. */
     private var lastTriggerCount = 0
+    /** True только для перевода входящего текста, вызванного коротким Shift. */
+    private var isPassiveOverlay = false
 
     /**
      * Whether speech is playing, as of the last render.
@@ -260,6 +263,8 @@ class QuickTranslateDialog(
 
     // Render entrypoint
     override fun render(state: QuickTranslateDialogState) {
+        val passivePresentationChanged = isPassiveOverlay != state.isPassive
+        isPassiveOverlay = state.isPassive
         val wasVisible = isVisible
         val visibilityChanged = wasVisible != state.isVisible
 
@@ -313,7 +318,7 @@ class QuickTranslateDialog(
 
         // Asked for again while already open: refresh in place, come back to full opacity, and
         // restart the countdown. Re-sized for the new text, since it is a different translation.
-        if (retriggered) {
+        if (retriggered || passivePresentationChanged) {
             fadeTo(1f, FADE_MS)
             if (!isResizing && !isDragging) applySize(state.translatedText)
             popup.noteActivity()
@@ -342,6 +347,10 @@ class QuickTranslateDialog(
     // Full content sync
     private fun updateContent(state: QuickTranslateDialogState) {
         this.isPinned = state.isPinned
+        // В пассивном EN→RU popup скрываем выбор провайдера, но оставляем прослушивание:
+        // это действие не меняет перевод и полезно прямо в окне автоматического результата.
+        translatorComboBox.isVisible = !state.isPassive
+        listenButton.isVisible = true
         // Only while something is already on screen: before that the popup is withheld and the
         // standalone loading indicator covers the wait.
         loadingBar.isLoading = state.isLoading && isVisible
@@ -473,7 +482,8 @@ class QuickTranslateDialog(
 
         // Set before showing: changing focusableWindowState on a window already on screen makes
         // AWT discard and rebuild the native peer, which flickers and can drop focus.
-        focusableWindowState = true
+        // Пассивный перевод появляется поверх Telegram/браузера, не снимая выделение.
+        focusableWindowState = !isPassiveOverlay
         isVisible = true
         installAwtMouseListener()
         // Not if the pointer is already inside it -- the popup opens at the cursor, so it often
@@ -504,11 +514,6 @@ class QuickTranslateDialog(
     // sizing (reuse measurePane; skip heavy ops during resize)
     private fun applySize(text: String) {
         val config = currentConfig ?: return
-        if (!config.autoSizeEnabled) {
-            size = config.lastKnownSize.toDimension()
-            return
-        }
-
         if (isResizing) {
             // defer measurement until resize end
             return
@@ -518,31 +523,57 @@ class QuickTranslateDialog(
         // happens to be placed — prevents wrong-monitor bounds on multi-monitor setups.
         val gc = MouseInfo.getPointerInfo()?.device?.defaultConfiguration ?: graphicsConfiguration
         val screenBounds = gc.bounds
-        // Bounded by a readable line length first and the screen second. A share of the screen
-        // alone stretches one sentence across half a wide monitor, which is hard to read for the
-        // same reason a book is not printed edge to edge.
-        val maxWidth = PopupSizing.maxTextWidth(
-            measurePane.getFontMetrics(outputTextArea.font),
-            screenBounds
+        val passive = isPassiveOverlay
+        val minimum = QuickTranslateSizing.minimumSize(passive)
+        minimumSize = minimum
+
+        val metrics = measurePane.getFontMetrics(outputTextArea.font)
+        val maxWidth = QuickTranslateSizing.maxDialogWidth(
+            averageCharacterWidth = metrics.charWidth('n'),
+            screenWidth = screenBounds.width,
+            passive = passive
         )
-        val maxHeight = PopupSizing.maxHeight(screenBounds)
+        val maxHeight = QuickTranslateSizing.maxDialogHeight(screenBounds.height, passive)
+
+        // Пассивный Shift-popup всегда подстраивается под результат: сохранённый большой размер
+        // обычного окна не должен превращать короткий перевод в пустую карточку.
+        if (!QuickTranslateSizing.shouldAutoSize(config.autoSizeEnabled, passive)) {
+            size = Dimension(
+                config.lastKnownSize.width.coerceIn(minimum.width, maxWidth),
+                config.lastKnownSize.height.coerceIn(minimum.height, maxHeight)
+            )
+            return
+        }
 
         measurePane.font = outputTextArea.font
         if (measurePane.text != text) measurePane.text = text
-        measurePane.size = Dimension(maxWidth, Int.MAX_VALUE)
 
-        val textWidth = measurePane.preferredSize.width + 40
-        val textHeight = measurePane.preferredSize.height + 30
+        val naturalTextWidth = text.lineSequence()
+            .maxOfOrNull(metrics::stringWidth)
+            ?: 0
+        val finalWidth = QuickTranslateSizing.targetWidth(
+            naturalTextWidth = naturalTextWidth,
+            headerWidth = topPanel.preferredSize.width,
+            maximumWidth = maxWidth,
+            passive = passive
+        )
 
-        val borderSize = RESIZE_HANDLE_SIZE * 2
-        val finalWidth = (textWidth + borderSize)
-            .coerceAtMost(maxWidth)
-            .coerceAtLeast(minimumSize.width)
+        val textViewportWidth = (finalWidth - QuickTranslateSizing.horizontalChrome()).coerceAtLeast(1)
+        measurePane.size = Dimension(textViewportWidth, Int.MAX_VALUE)
+        val textHeight = measurePane.preferredSize.height + UIScale.scale(12)
 
-        val nonTextHeight = topPanel.preferredSize.height + 20
-        val finalHeight = (textHeight + nonTextHeight + borderSize)
-            .coerceAtMost(maxHeight)
-            .coerceAtLeast(minimumSize.height)
+        if (definitionStrip.isVisible) {
+            definitionStrip.setSize(textViewportWidth, Int.MAX_VALUE)
+        }
+        val definitionHeight = if (definitionStrip.isVisible) definitionStrip.preferredSize.height else 0
+        val chromeHeight = topPanel.preferredSize.height + loadingBar.preferredSize.height +
+            definitionHeight + UIScale.scale(RESIZE_HANDLE_SIZE + 4)
+        val finalHeight = QuickTranslateSizing.targetHeight(
+            measuredTextHeight = textHeight,
+            chromeHeight = chromeHeight,
+            maximumHeight = maxHeight,
+            passive = passive
+        )
 
         if (width != finalWidth || height != finalHeight) {
             size = Dimension(finalWidth, finalHeight)

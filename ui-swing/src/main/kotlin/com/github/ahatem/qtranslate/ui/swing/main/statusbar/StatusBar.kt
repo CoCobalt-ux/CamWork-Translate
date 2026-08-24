@@ -4,6 +4,8 @@ import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.util.createButtonWithIcon
 import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
+import com.github.ahatem.qtranslate.ui.swing.main.layout.ResponsiveUi
+import com.formdev.flatlaf.util.UIScale
 import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
@@ -142,8 +144,8 @@ class StatusBar(
             currentText = text
             currentType = type
 
-            // Full text as tooltip so even truncated messages are fully readable on hover.
-            toolTipText = if (text.isNotBlank() && type != NotificationType.INFO) text else null
+            // Полный текст доступен и для INFO: на узком окне любая строка может быть сокращена.
+            toolTipText = text.takeIf { it.isNotBlank() }
 
             if (changed) {
                 revalidate()
@@ -163,8 +165,13 @@ class StatusBar(
                 g2.font = font
                 val fm = g2.fontMetrics
 
+                val displayedText = ResponsiveUi.elideText(
+                    currentText,
+                    (width - 16).coerceAtLeast(0),
+                    fm::stringWidth
+                )
                 val chipH = fm.height + 6
-                val chipW = fm.stringWidth(currentText) + 16
+                val chipW = fm.stringWidth(displayedText) + 16
                 val arcH = (chipH * cornerArcFraction).toFloat()
                 val chipY = (height - chipH) / 2
 
@@ -201,7 +208,7 @@ class StatusBar(
                 // Draw text
                 g2.color = color
                 val textY = chipY + fm.ascent + 3
-                g2.drawString(currentText, chipX + 8, textY)
+                g2.drawString(displayedText, chipX + 8, textY)
             } finally {
                 g2.dispose()
             }
@@ -211,8 +218,10 @@ class StatusBar(
             val f = font
             val fm = getFontMetrics(f)
             val w = if (currentText.isNotEmpty()) fm.stringWidth(currentText) + 16 else 0
-            return Dimension(maxOf(w, 0), fm.height + 8)
+            return Dimension(w.coerceIn(0, UIScale.scale(MAX_PREFERRED_WIDTH)), fm.height + 8)
         }
+
+        override fun getMinimumSize(): Dimension = Dimension(0, getPreferredSize().height)
 
         private fun resolveColor(): Color {
             return when (currentType) {
@@ -273,5 +282,9 @@ class StatusBar(
 
         private fun isTooBright(color: Color): Boolean =
             0.299 * color.red + 0.587 * color.green + 0.114 * color.blue > 220
+
+        private companion object {
+            const val MAX_PREFERRED_WIDTH = 420
+        }
     }
 }

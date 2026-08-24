@@ -31,6 +31,17 @@ configure = "Настроить"
 clear_all = "Очистить все"
 auto_detect = "Автоопределение"
 
+[shift_overlay]
+translating = "Перевод…"
+replaced = "Перевод вставлен"
+capture_failed = "Не удалось прочитать выделенный текст"
+disabled = "Перевод по Shift отключён"
+unsupported_direction = "Выделенный текст не совпадает с языком модели"
+no_target_language = "Выберите язык исходящего перевода"
+translation_failed = "Не удалось перевести. Проверьте интернет или переводчик"
+paste_failed = "Не удалось заменить выделенный текст"
+too_slow = "Перевод не отвечает"
+
 # ===================================================================
 # MAIN APPLICATION WINDOW
 # ===================================================================
@@ -79,7 +90,7 @@ layout_presets = "Пресеты интерфейса"
 layout_preset_classic = "Классический"
 layout_preset_side_by_side = "Бок о бок"
 layout_preset_compact = "Компактный"
-instant_translation = "Мгновенный перевод"
+selection_translation = "Перевод выделенного текста"
 show_extra_output = "Показывать доп. результат"
 spell_check = "Проверка орфографии"
 options_submenu = "Опции"
@@ -94,7 +105,7 @@ how_to_use = "Как использовать"
 contact_us = "Связаться с нами"
 auto_check_for_updates = "Автопроверка обновлений"
 check_for_updates = "Проверить обновления"
-about_qtranslate = "О программе QTranslate"
+about_qtranslate = "О программе CamWork Translate"
 exit = "Выход"
 
 [document_translation]
@@ -130,7 +141,7 @@ error_detail_copied = "Скопировано!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "Показать QTranslate"
+show_application = "Показать CamWork Translate"
 recognize_text = "Распознавание текста (OCR)"
 dictionary = "Словарь"
 image_search = "Поиск изображений"
@@ -176,9 +187,6 @@ popups = "Всплывающие окна"
 startup_updates_group = "Запуск и обновления"
 launch_on_startup = "Запускать при старте системы"
 auto_check_updates = "Автоматически проверять обновления"
-selection_group = "Выделение текста"
-selection_icon = "Показывать кнопку перевода после выделения текста"
-selection_icon_hint = "Показывает небольшую кнопку рядом с текстом, выделенным перетаскиванием в других приложениях. Нажмите её, чтобы перевести выделенное."
 history_group = "История"
 enable_history = "Включить историю переводов"
 clear_history_on_exit = "Очищать историю при выходе"
@@ -273,7 +281,7 @@ tip_accept_update = "Сохранить данные и снова включи�
 tip_clean_install = "Стереть все данные плагина перед повторным включением"
 # Dialogs
 install_dialog_title = "Выберите JAR плагина"
-install_dialog_filter = "Плагин QTranslate (*.jar)"
+install_dialog_filter = "Плагин CamWork Translate (*.jar)"
 install_success_title = "Плагин установлен"
 install_success_msg = "Плагин успешно установлен."
 install_fail_title = "Ошибка установки"
@@ -284,6 +292,17 @@ no_settings_msg = "У этого плагина нет настраиваемы�
 [settings_hotkeys]
 global_group = "Глобальные горячие клавиши"
 enable_global = "Включить глобальные клавиши"
+shift_tap_translate = "Быстрый перевод и замена выделенного текста"
+shift_tap_translate_hint = "Клавиша задаётся ниже в строке «Быстрый перевод и замена». По умолчанию короткий Shift; удержание, сочетания и Win+Shift+S игнорируются."
+auto_selection_translate = "Перевод выделенного текста"
+auto_selection_translate_hint = "Опубликованный иностранный текст переводится автоматически. В полях ввода появляется мини-кнопка; короткий Shift работает в обоих случаях."
+shift_mode = "Действие хоткея:"
+shift_mode_bidirectional = "Заменять выделение переводом в обе стороны"
+shift_mode_replace = "Только заменять текст модели"
+shift_mode_overlay = "Всегда показывать перевод поверх"
+shift_mode_disabled = "Отключено"
+model_language = "Язык модели:"
+model_language_hint = "Текст, уверенно определённый на этом языке, переводится в выбранный целевой язык и заменяется в исходном приложении."
 assignments_group = "Назначение клавиш"
 column_action = "Действие"
 column_hotkey = "Клавиша"
@@ -295,7 +314,7 @@ action_show_main = "Показать главное окно"
 action_quick_translate = "Быстрый перевод"
 action_listen = "Прослушать выделение"
 action_ocr = "OCR с экрана"
-action_replace = "Заменить выделение переводом (экспер.)"
+action_replace = "Быстрый перевод и замена"
 action_cycle_language = "Переключить целевой язык"
 action_show_dictionary = "Показать словарь"
 action_show_images = "Показать изображения"
@@ -334,8 +353,8 @@ recorder_invalid_key = "Эта клавиша не может использов
 
 [settings_translation]
 behavior_group = "Поведение"
-instant_translation = "Мгновенный перевод (при вводе)"
-instant_hint = "Запускает перевод автоматически после завершения набора текста."
+instant_translation = "Переводить при вводе в приложении"
+instant_hint = "Автоматически переводит текст после короткой паузы при вводе в окне приложения."
 spell_check_input = "Проверка орфографии при вводе"
 extra_output_group = "Дополнительный вывод"
 extra_output_type = "Тип:"
@@ -447,10 +466,10 @@ test_nothing_to_check = "Нечего проверять"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "О программе QTranslate"
-description = "Оригинальный QTranslate был заброшен. Это полная переработка — та же идея, но на основе плагинов, чтобы программа никогда не устаревала."
-support_button = "Поддержать проект ♥"
-donation_nudge = "Вы много переводили с QTranslate! Если он вам полезен, подумайте о поддержке проекта (О программе → Поддержать ♥)"
+title = "О программе CamWork Translate"
+description = "Модифицированная версия разработана ITWORKSYSTEMS LTD / CamWork для моделей CamWork на основе свободного проекта QTranslate по лицензии MIT."
+support_button = "Исходный проект и лицензии"
+donation_nudge = "CamWork Translate готов помочь в следующем диалоге."
 
 [history_dialog]
 title = "История переводов"
@@ -493,7 +512,7 @@ manage_presets  = "Управление пресетами..."
 
 [update_dialog]
 title = "Доступно обновление"
-header = "Доступна новая версия QTranslate!"
+header = "Доступна новая версия CamWork Translate!"
 # %1$s = new version number, %2$s = current version number
 details_format = "Версия %s уже доступна (у вас установлена %s). Хотите обновить?"
 skip_button = "Пропустить эту версию"
@@ -505,7 +524,7 @@ view_on_github_button = "Открыть на GitHub"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "Закрыть QTranslate"
+title           = "Закрыть CamWork Translate"
 message         = "Что вы хотите сделать?"
 minimize_to_tray = "Свернуть в трей"
 exit            = "Выйти"

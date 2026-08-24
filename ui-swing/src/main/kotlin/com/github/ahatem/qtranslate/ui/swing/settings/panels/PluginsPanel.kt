@@ -512,7 +512,7 @@ class PluginsPanel(
             add(buildMetadataItem(localizationManager.getString("settings_plugins.detail_category"),
                 PluginPanelModel.categories(plugin).joinToString(", ") { categoryName(it) }))
             add(buildMetadataItem(localizationManager.getString("settings_plugins.detail_api"),
-                "QTranslate API ${plugin.manifest.minApiVersion}+"))
+                "CamWork Translate API ${plugin.manifest.minApiVersion}+"))
             add(buildMetadataItem(localizationManager.getString("settings_plugins.detail_file"),
                 File(plugin.jarPath).name, plugin.jarPath))
             add(buildMetadataItem(localizationManager.getString("settings_plugins.detail_languages"),

@@ -18,7 +18,16 @@ object AppConstants {
      * would have shipped an app that compares its own 1.3.0 against the 1.4.0 release it came
      * from and tells every new user an update is waiting.
      */
-    const val APP_VERSION = "1.4.1"
+    const val APP_NAME = "CamWork Translate"
+    const val APP_VERSION = "1.2.0"
+    const val DATA_DIRECTORY_NAME = "CamWork Translate"
+    const val WEBSITE_URL = "https://camwork.club"
+    const val HELP_URL = "https://wiki.camwork.club"
+    const val CONTACT_URL = "mailto:support@camwork.club"
+    const val UPSTREAM_SOURCE_URL = "https://github.com/ahatem/QTranslate"
+
+    /** Собственный канал обновлений будет включён после публикации первого релиза CamWork. */
+    const val APP_UPDATES_AVAILABLE = false
 
     // ============================================================
     // Timing

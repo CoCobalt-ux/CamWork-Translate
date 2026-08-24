@@ -207,6 +207,7 @@ suspend fun buildDependencies(
         settingsState   = configState,
         updater         = updater,
         notificationBus = notificationBus,
+        updatesAvailable = AppConstants.APP_UPDATES_AVAILABLE,
         loggerFactory   = loggerFactory
     )
 

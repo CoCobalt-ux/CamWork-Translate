@@ -6,7 +6,9 @@ plugins {
 }
 
 kotlin {
-    jvmToolchain(11)
+    // Gradle 9 требует Java 17+, поэтому отдельный JDK 11 для внутренней логики сборки лишний.
+    // Это не меняет совместимость байткода самого приложения с Java 11.
+    jvmToolchain(17)
 }
 
 dependencies {

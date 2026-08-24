@@ -55,7 +55,7 @@ internal class PluginInstaller(
      */
     suspend fun installPlugin(sourceJar: File): Result<Unit, String> {
         val manifest = loader.getManifestFromJar(sourceJar)
-            ?: return Err("The selected file is not a valid QTranslate plugin (no plugin.json found).")
+            ?: return Err("The selected file is not a valid CamWork Translate plugin (no plugin.json found).")
 
         // Check for duplicate ID before touching the filesystem.
         // Read the registry under the mutex, then return early outside it —

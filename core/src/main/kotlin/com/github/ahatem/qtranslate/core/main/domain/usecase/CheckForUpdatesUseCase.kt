@@ -30,6 +30,7 @@ class CheckForUpdatesUseCase(
     private val settingsState: StateFlow<Configuration>,
     private val updater: Updater,
     private val notificationBus: NotificationBus,
+    private val updatesAvailable: Boolean = true,
     loggerFactory: LoggerFactory
 ) {
     private val logger: Logger = loggerFactory.getLogger("CheckForUpdatesUseCase")
@@ -44,6 +45,10 @@ class CheckForUpdatesUseCase(
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
         force: Boolean = false
     ) {
+        if (!updatesAvailable) {
+            logger.debug("Канал обновлений приложения пока не опубликован — проверка пропущена")
+            return
+        }
         if (!force && !settingsState.value.autoCheckForUpdates) {
             logger.debug("Auto-update check disabled — skipping")
             return

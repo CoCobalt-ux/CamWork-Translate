@@ -8,18 +8,18 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-class QTranslateThemeTest {
+class CamWorkThemeTest {
 
     @Test
-    fun `bundled QTranslate themes load with the expected mode`() {
-        assertTheme("themes/qtranslate-light.theme.json", "QTranslate Light", false)
-        assertTheme("themes/qtranslate-dark.theme.json", "QTranslate Dark", true)
+    fun `встроенные темы CamWork загружаются в правильном режиме`() {
+        assertTheme("themes/qtranslate-light.theme.json", "CamWork Light", false)
+        assertTheme("themes/qtranslate-dark.theme.json", "CamWork Dark", true)
     }
 
     @Test
-    fun `platform defaults use QTranslate themes`() {
-        assertEquals("custom:qtranslate_light", ThemeManager.platformDefaultLightThemeId())
-        assertEquals("custom:qtranslate_dark", ThemeManager.platformDefaultDarkThemeId())
+    fun `темы CamWork используются по умолчанию`() {
+        assertEquals("custom:camwork_light", ThemeManager.platformDefaultLightThemeId())
+        assertEquals("custom:camwork_dark", ThemeManager.platformDefaultDarkThemeId())
     }
 
     @Test
@@ -30,24 +30,24 @@ class QTranslateThemeTest {
 
     @Test
     fun `theme text and primary actions meet WCAG contrast targets`() {
-        // QTranslate Light — warm parchment; gold carries fills, bronze carries accent text
-        assertContrast("#1E1D1A", "#F6F2E9", 7.0)   // body text on canvas
-        assertContrast("#1E1D1A", "#FBF8F1", 7.0)   // body text on editor surface
-        assertContrast("#5F5B4C", "#F6F2E9", 4.5)   // muted text
-        assertContrast("#807B6A", "#F6F2E9", 3.0)   // disabled text
-        assertContrast("#1E1D1A", "#B8943A", 4.5)   // label on the gold primary button
-        assertContrast("#8A6A1E", "#F6F2E9", 4.5)   // bronze as link and accent text
-        assertContrast("#1E1D1A", "#EADFBF", 7.0)   // text over a selection
+        // Светлая тема: тёмный текст и контрастный бирюзовый для действий.
+        assertContrast("#10262B", "#F3F7F7", 7.0)
+        assertContrast("#10262B", "#FFFFFF", 7.0)
+        assertContrast("#425B60", "#F3F7F7", 4.5)
+        assertContrast("#687D81", "#F3F7F7", 3.0)
+        assertContrast("#061B18", "#00A88F", 4.5)
+        assertContrast("#007361", "#F3F7F7", 4.5)
+        assertContrast("#10262B", "#C9F3E8", 7.0)
 
-        // QTranslate Dark — brand gold on near-black
-        assertContrast("#BCAC8F", "#0C0C0C", 7.0)   // body text on canvas
-        assertContrast("#BCAC8F", "#181714", 7.0)   // body text on editor surface
-        assertContrast("#8D8975", "#0C0C0C", 4.5)   // muted text
-        assertContrast("#726F5C", "#0C0C0C", 3.0)   // disabled text
-        assertContrast("#14120A", "#B8943A", 4.5)   // label on the gold primary button
-        assertContrast("#B8943A", "#0C0C0C", 4.5)   // gold as accent text
-        assertContrast("#D6B063", "#0C0C0C", 4.5)   // link
-        assertContrast("#BCAC8F", "#4A3A18", 4.5)   // text over a selection
+        // Тёмная тема: фирменный неоновый бирюзовый на глубоком синем фоне.
+        assertContrast("#E7F5F2", "#0B1118", 7.0)
+        assertContrast("#E7F5F2", "#121D27", 7.0)
+        assertContrast("#A2B6B2", "#0B1118", 4.5)
+        assertContrast("#778C88", "#0B1118", 3.0)
+        assertContrast("#071A17", "#64FFDA", 4.5)
+        assertContrast("#64FFDA", "#0B1118", 4.5)
+        assertContrast("#7CFFE1", "#0B1118", 4.5)
+        assertContrast("#E7F5F2", "#174B40", 4.5)
     }
 
     /**
@@ -58,25 +58,25 @@ class QTranslateThemeTest {
      */
     @Test
     fun `muted and disabled text stay readable on every surface`() {
-        listOf("#0C0C0C", "#181714", "#201F1A").forEach { surface ->
-            assertContrast("#8D8975", surface, 4.5)
-            assertContrast("#726F5C", surface, 3.0)
-            assertContrast("#BCAC8F", surface, 7.0)
+        listOf("#0B1118", "#121D27", "#192733").forEach { surface ->
+            assertContrast("#A2B6B2", surface, 4.5)
+            assertContrast("#778C88", surface, 3.0)
+            assertContrast("#E7F5F2", surface, 7.0)
         }
-        listOf("#F6F2E9", "#FBF8F1", "#EAE4D6").forEach { surface ->
-            assertContrast("#5F5B4C", surface, 4.5)
-            assertContrast("#807B6A", surface, 3.0)
-            assertContrast("#1E1D1A", surface, 7.0)
+        listOf("#F3F7F7", "#FFFFFF", "#E5EEEE").forEach { surface ->
+            assertContrast("#425B60", surface, 4.5)
+            assertContrast("#687D81", surface, 3.0)
+            assertContrast("#10262B", surface, 7.0)
         }
     }
 
     @Test
     fun `status colours are readable on both canvases`() {
-        listOf("#4A6B1F", "#8F5714", "#B0342F").forEach {
-            assertContrast(it, "#F6F2E9", 4.5)
+        listOf("#197346", "#8A5800", "#B42318").forEach {
+            assertContrast(it, "#F3F7F7", 4.5)
         }
-        listOf("#94AE62", "#E0913C", "#D06B62").forEach {
-            assertContrast(it, "#0C0C0C", 4.5)
+        listOf("#73E2A7", "#FDBA74", "#FF8A80").forEach {
+            assertContrast(it, "#0B1118", 4.5)
         }
     }
 

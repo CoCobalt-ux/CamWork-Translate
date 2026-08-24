@@ -145,7 +145,7 @@ internal class WikimediaClient(
 
         val HEADERS = mapOf(
             "Accept" to "application/json",
-            "User-Agent" to "QTranslate/1.0 (https://github.com/ahatem/QTranslate)"
+            "User-Agent" to "CamWork-Translate/1.0 (https://camwork.club)"
         )
     }
 }

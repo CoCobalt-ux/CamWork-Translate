@@ -33,7 +33,7 @@ abstract class ValidateReleaseSizesTask : DefaultTask() {
         val portable = portableArtifact.get().asFile
         val bundledPluginsBytes = ZipFile(portable).use { zip ->
             zip.entries().asSequence()
-                .filter { !it.isDirectory && it.name.matches(Regex("QTranslate/plugins/.*-plugin\\.jar")) }
+                .filter { !it.isDirectory && it.name.matches(Regex("CamWork Translate/plugins/.*-plugin\\.jar")) }
                 .sumOf { it.size }
         }
         val measurements = listOf(

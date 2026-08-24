@@ -17,14 +17,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Set up Java 21
+      - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '17'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
+
+      - name: Set up Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
 
       - name: Extract version
         id: version
@@ -70,81 +74,162 @@ jobs:
           }
           Write-Host "APP_VERSION $actual matches tag $expected."
 
-      - name: Build full distribution
+      - name: Build portable Windows app image
         shell: pwsh
-        # The property must be quoted: PowerShell otherwise splits the argument at the
-        # first dot, passing Gradle a bogus ".3.0" task name and failing the build.
-        run: ./gradlew assemblePortable "-PreleaseVersion=${{ steps.version.outputs.version }}" --no-daemon
+        run: ./scripts/build-windows-release.ps1 -Version "${{ steps.version.outputs.version }}" -JavaHome $env:JAVA_HOME
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
-
-      - name: Assemble portable Windows app image
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $packageVersion = ($version -split '-')[0]
-          $portableArchive = "build/release/QTranslate-$version.zip"
-
-          Expand-Archive -LiteralPath $portableArchive -DestinationPath portable-distribution
-          New-Item -ItemType Directory -Force package-input | Out-Null
-          Copy-Item portable-distribution/QTranslate/QTranslate.jar package-input/QTranslate.jar
-
-          # jlink only includes modules listed here. Providers loaded reflectively via
-          # ServiceLoader (JCA crypto, locale data) are invisible to static analysis, so
-          # they must be requested explicitly or they silently vanish from the runtime.
-          $modules = @(
-            'java.base', 'java.desktop', 'java.instrument', 'java.logging',
-            'java.management', 'java.naming', 'java.net.http', 'java.prefs',
-            'java.security.jgss', 'java.xml.crypto', 'jdk.charsets', 'jdk.unsupported',
-            # SunEC provider. Without it every ECDHE/ECDSA TLS handshake fails, which
-            # breaks all network services ("EC KeyPairGenerator not available").
-            'jdk.crypto.ec',
-            # Locale data for the 13 bundled languages. Without it the JDK falls back to
-            # ROOT/English number, date, and display-name formatting.
-            'jdk.localedata',
-            # ZIP FileSystem provider. Not required by the app itself, but bundled plugins
-            # are third-party code that may rely on it; the module costs ~100 KB.
-            'jdk.zipfs'
-          ) -join ','
-          jlink `
-            --add-modules $modules `
-            --strip-debug `
-            --no-header-files `
-            --no-man-pages `
-            --strip-native-commands `
-            --compress=2 `
-            --output qtranslate-runtime
-
-          jpackage `
-            --type app-image `
-            --name QTranslate `
-            --input package-input `
-            --main-jar QTranslate.jar `
-            --main-class com.github.ahatem.qtranslate.app.MainKt `
-            --app-version $packageVersion `
-            --icon ui-swing/src/main/resources/icons/app/icon.ico `
-            --runtime-image qtranslate-runtime `
-            --dest windows-package `
-            --java-options '-Dfile.encoding=UTF-8'
-
-          Copy-Item portable-distribution/QTranslate/plugins windows-package/QTranslate/plugins -Recurse
-          Copy-Item portable-distribution/QTranslate/languages windows-package/QTranslate/languages -Recurse
-          Copy-Item portable-distribution/QTranslate/themes windows-package/QTranslate/themes -Recurse
-          Copy-Item portable-distribution/QTranslate/icons windows-package/QTranslate/icons -Recurse
-          Copy-Item portable-distribution/QTranslate/THIRD_PARTY_LICENSES windows-package/QTranslate/THIRD_PARTY_LICENSES -Recurse
-          Compress-Archive -Path windows-package/QTranslate -DestinationPath "QTranslate-$version-windows-x64.zip"
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v7
         with:
-          name: qtranslate-windows-x64
-          path: QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip
+          name: camwork-translate-windows-x64
+          path: |
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip.sha256
           if-no-files-found: error
+
+  macos-package:
+    name: Build macOS ${{ matrix.arch }} package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            java_architecture: aarch64
+            java_home_suffix: ARM64
+          - arch: x64
+            runner: macos-15-intel
+            java_architecture: x64
+            java_home_suffix: X64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          architecture: ${{ matrix.java_architecture }}
+          java-version: |
+            17
+            21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Extract version
+        id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID and notarization credentials
+        id: mac-signing
+        if: ${{ secrets.MACOS_SIGNING_IDENTITY != '' }}
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          for variable in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY \
+            NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD; do
+            if [[ -z "${!variable}" ]]; then
+              echo "Отсутствует обязательный секрет macOS: $variable" >&2
+              exit 1
+            fi
+          done
+
+          certificate="$RUNNER_TEMP/camwork-developer-id.p12"
+          keychain="$RUNNER_TEMP/camwork-signing.keychain-db"
+          keychain_password="$(uuidgen)$(uuidgen)"
+          notary_profile="camwork-notary-${{ matrix.arch }}"
+
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -k "$keychain" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/productbuild
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          xcrun notarytool store-credentials "$notary_profile" \
+            --apple-id "$NOTARY_APPLE_ID" \
+            --team-id "$NOTARY_TEAM_ID" \
+            --password "$NOTARY_PASSWORD" \
+            --keychain "$keychain"
+
+          echo "keychain=$keychain" >> "$GITHUB_OUTPUT"
+          echo "notary-profile=$notary_profile" >> "$GITHUB_OUTPUT"
+          echo "signing-identity=$SIGNING_IDENTITY" >> "$GITHUB_OUTPUT"
+
+      - name: Build native app and DMG
+        shell: bash
+        run: |
+          jdk17_variable="JAVA_HOME_17_${{ matrix.java_home_suffix }}"
+          jdk17_home="${!jdk17_variable}"
+          BUILD_ARGUMENTS=(
+            --version "${{ steps.version.outputs.version }}"
+            --arch "${{ matrix.arch }}"
+            --format dmg
+            --java-home "$jdk17_home"
+          )
+          SIGNING_IDENTITY="${{ steps.mac-signing.outputs.signing-identity }}"
+          if [[ -n "$SIGNING_IDENTITY" ]]; then
+            BUILD_ARGUMENTS+=(
+              --signing-identity "$SIGNING_IDENTITY"
+              --signing-keychain "${{ steps.mac-signing.outputs.keychain }}"
+              --notary-profile "${{ steps.mac-signing.outputs.notary-profile }}"
+              --notarize
+            )
+          else
+            echo "::warning::Секреты Apple Developer ID не заданы — собирается неподписанный ad-hoc DMG (только для личного использования/QA, без нотаризации)."
+          fi
+          bash ./scripts/build-macos-release.sh "${BUILD_ARGUMENTS[@]}"
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Upload macOS package
+        uses: actions/upload-artifact@v7
+        with:
+          name: camwork-translate-macos-${{ matrix.arch }}
+          path: |
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+
+      - name: Remove temporary signing keychain
+        if: always()
+        shell: bash
+        run: |
+          keychain="${{ steps.mac-signing.outputs.keychain }}"
+          if [[ -n "$keychain" && -f "$keychain" ]]; then
+            security delete-keychain "$keychain"
+          fi
+          rm -f -- "$RUNNER_TEMP/camwork-developer-id.p12"
 
   release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
-    needs: windows-package
+    needs: [windows-package, macos-package]
 
     steps:
       - name: Checkout
@@ -173,13 +258,25 @@ jobs:
       - name: Download Windows package
         uses: actions/download-artifact@v8
         with:
-          name: qtranslate-windows-x64
+          name: camwork-translate-windows-x64
           path: build/release
 
-      - name: Add Windows checksum
+      - name: Download macOS packages
+        uses: actions/download-artifact@v8
+        with:
+          pattern: camwork-translate-macos-*
+          path: build/release
+          merge-multiple: true
+
+      - name: Add native package checksums
         run: |
           cd build/release
-          sha256sum "QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip" >> SHA256SUMS.txt
+          sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg" >> SHA256SUMS.txt
 
       - name: Generate changelog
         id: changelog
@@ -221,40 +318,50 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          name: QTranslate ${{ steps.version.outputs.version }}
+          name: CamWork Translate ${{ steps.version.outputs.version }}
           body: |
-            ## What's changed
+            ## Что изменилось
 
             ${{ steps.changelog.outputs.log }}
 
             ---
 
-            **Full changelog:** https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md
+            **Полная история:** https://github.com/${{ github.repository }}/blob/main/CHANGELOG_CAMWORK.md
 
-            ## Downloads
+            ## Загрузки
 
-            | Download | Who it is for | Java needed |
+            | Файл | Для кого | Нужна Java |
             |---|---|---|
-            | **[⬇ Windows (.exe)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip)** | **Start here on Windows.** Extract and run `QTranslate.exe`. | No — runtime included |
-            | **[⬇ Portable (all platforms)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-${{ steps.version.outputs.version }}.zip)** | macOS, Linux, or Windows without an installer. Extract and run `QTranslate.jar`. | Java 11+ |
-            | **[⬇ App only (.jar)](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/QTranslate-App-${{ steps.version.outputs.version }}.jar)** | No plugins. For custom setups and plugin development. | Java 11+ |
+            | **[⬇ Установщик Windows x64](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe)** | **Основной вариант для моделей.** Запустить EXE; права администратора не нужны. | Нет, runtime включён |
+            | **[⬇ Переносимый Windows x64](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip)** | Распаковать в доступную для записи папку и запустить `CamWork Translate.exe`. | Нет, runtime включён |
+            | **[⬇ macOS Apple Silicon](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg)** | Mac на M1/M2/M3/M4 и новее. | Нет, runtime включён |
+            | **[⬇ macOS Intel](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg)** | Mac с процессором Intel. | Нет, runtime включён |
+            | **[⬇ Переносимый ZIP](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}.zip)** | Windows, macOS или Linux с установленной Java. | Java 11+ |
+            | **[⬇ Только приложение](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-App-${{ steps.version.outputs.version }}.jar)** | Разработка и собственный комплект плагинов. | Java 11+ |
 
-            The portable ZIP already contains every bundled plugin. The individual
-            plugin JARs in the assets below are only needed to add or update a single
-            plugin in an existing installation — most users can ignore them.
+            Windows- и переносимый архивы уже содержат все штатные плагины.
 
-            ## Verification
+            ## Проверка файла
 
-            Optional. Download [SHA256SUMS.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt)
-            into the same folder as your download and run:
+            Загрузите [SHA256SUMS.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt)
+            в тот же каталог и выполните:
             ```
             sha256sum -c SHA256SUMS.txt
             ```
 
           files: |
-            build/release/QTranslate-App-${{ steps.version.outputs.version }}.jar
-            build/release/QTranslate-${{ steps.version.outputs.version }}.zip
-            build/release/QTranslate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/CamWork-Translate-App-${{ steps.version.outputs.version }}.jar
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg.sha256
             build/release/plugins/*.jar
             build/release/release-metadata.json
             build/release/SIZE_REPORT.md

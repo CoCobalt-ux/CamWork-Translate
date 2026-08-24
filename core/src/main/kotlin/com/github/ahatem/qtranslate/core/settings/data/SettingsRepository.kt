@@ -11,10 +11,27 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
+
+/**
+ * Плагины, которые остаются установленными, но не запускаются на совершенно новой установке.
+ * Google, Bing и DeepL намеренно отсутствуют: они образуют готовую основную цепочку перевода.
+ */
+internal val FRESH_INSTALL_DISABLED_PLUGIN_IDS: Set<String> = setOf(
+    "ai-plugin",
+    "csv-services",
+    "libretranslate-services",
+    "mozhi-services",
+    "mymemory-services",
+    "reverso-services",
+    "wikimedia-reference",
+    "yandex-web-services"
+)
 
 /**
  * What happened when a stored configuration could not be read.
@@ -54,6 +71,8 @@ class SettingsRepository(
             File(appDataDirectory, "datastore/${AppConstants.DATASTORE_FILE}")
         }
     )
+    private val pluginDefaultsInitializationMutex = Mutex()
+    @Volatile private var pluginDefaultsInitialized = false
 
     // -------------------------------------------------------------------------
     // Configuration
@@ -90,7 +109,7 @@ class SettingsRepository(
                 backupFile = backup,
                 reason = buildString {
                     append("Your settings file could not be read (${e.javaClass.simpleName}) ")
-                    append("and QTranslate has started with defaults. ")
+                    append("and CamWork Translate has started with defaults. ")
                     append(
                         backup?.let { "A copy of the unreadable file was saved as ${it.name}." }
                             ?: "The file could not be copied aside."
@@ -153,7 +172,7 @@ class SettingsRepository(
             backupFile = backup,
             reason = buildString {
                 append("Your settings could not be read (${error.javaClass.simpleName}) ")
-                append("and QTranslate has started with defaults. ")
+                append("and CamWork Translate has started with defaults. ")
                 append(
                     backup?.let { "A copy of the previous settings was saved to ${it.name}." }
                         ?: "The previous settings could not be backed up."
@@ -173,6 +192,10 @@ class SettingsRepository(
         try {
             logger.debug("Loading initial configuration...")
             configuration.first().also {
+                // Формируем продуктовый набор до показа окна. Иначе пользователь мог успеть
+                // сохранить любую настройку между запуском UI и фоновой загрузкой плагинов,
+                // и новая установка ошибочно выглядела бы как существующая.
+                ensurePluginDefaultsInitialized()
                 logger.info("Initial configuration loaded successfully")
             }
         } catch (e: Exception) {
@@ -208,13 +231,38 @@ class SettingsRepository(
     // Plugin enabled/disabled state
     // -------------------------------------------------------------------------
 
+    /** Не повторяет транзакцию DataStore при создании HTTP-контекста каждого плагина. */
+    private suspend fun ensurePluginDefaultsInitialized() {
+        if (pluginDefaultsInitialized) return
+        pluginDefaultsInitializationMutex.withLock {
+            if (!pluginDefaultsInitialized) {
+                loadDisabledPluginIds()
+                pluginDefaultsInitialized = true
+            }
+        }
+    }
+
     /**
-     * Returns the set of plugin IDs that the user has explicitly disabled.
-     * Returns an empty set on failure.
+     * Возвращает сохранённый набор отключённых плагинов.
+     *
+     * Если ни конфигурация, ни состояние плагинов ещё не записывались, это первый запуск:
+     * сохраняются безопасные продуктовые значения по умолчанию. Если конфигурация уже есть,
+     * отсутствие отдельного ключа означает старую установку — для неё сохраняется прежнее
+     * поведение «все плагины включены». Так обновление не меняет выбор существующего пользователя.
+     * Возвращает пустой набор при ошибке чтения, не перезаписывая повреждённое хранилище.
      */
     suspend fun loadDisabledPluginIds(): Set<String> =
         try {
-            dataStore.data.map { it[Keys.DISABLED_PLUGIN_IDS] ?: emptySet() }.first()
+            dataStore.edit { preferences ->
+                if (preferences[Keys.DISABLED_PLUGIN_IDS] == null) {
+                    preferences[Keys.DISABLED_PLUGIN_IDS] =
+                        if (preferences[Keys.CONFIG_JSON] == null) {
+                            FRESH_INSTALL_DISABLED_PLUGIN_IDS
+                        } else {
+                            emptySet()
+                        }
+                }
+            }[Keys.DISABLED_PLUGIN_IDS] ?: emptySet()
         } catch (e: Exception) {
             logger.error("Failed to load disabled plugin IDs", e)
             emptySet()

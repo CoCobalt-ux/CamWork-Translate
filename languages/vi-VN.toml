@@ -93,7 +93,7 @@ how_to_use = "Cách sử dụng"
 contact_us = "Liên hệ với chúng tôi"
 auto_check_for_updates = "Tự động kiểm tra cập nhật"
 check_for_updates = "Kiểm tra cập nhật"
-about_qtranslate = "Giới thiệu về QTranslate"
+about_qtranslate = "Giới thiệu về CamWork Translate"
 exit = "Thoát"
 
 [document_translation]
@@ -129,7 +129,7 @@ error_detail_copied = "Đã sao chép!"
 # SYSTEM TRAY MENU
 # ===================================================================
 [system_tray_menu]
-show_application = "Hiển thị QTranslate"
+show_application = "Hiển thị CamWork Translate"
 recognize_text = "Nhận dạng văn bản (OCR)"
 dictionary = "Từ điển"
 image_search = "Tìm kiếm hình ảnh"
@@ -175,9 +175,6 @@ popups = "Cửa sổ bật lên"
 startup_updates_group = "Khởi động & Cập nhật"
 launch_on_startup = "Khởi động cùng hệ thống"
 auto_check_updates = "Tự động kiểm tra cập nhật"
-selection_group = "Chọn văn bản"
-selection_icon = "Hiển thị nút dịch sau khi chọn văn bản"
-selection_icon_hint = "Hiển thị một nút nhỏ gần văn bản bạn chọn bằng cách kéo chuột trong các ứng dụng khác. Nhấp vào đó để dịch phần đã chọn."
 history_group = "Lịch sử"
 enable_history = "Bật lịch sử dịch thuật"
 clear_history_on_exit = "Xóa lịch sử khi đóng ứng dụng"
@@ -281,7 +278,7 @@ tip_accept_update = "Giữ nguyên dữ liệu hiện có và bật lại plugin
 tip_clean_install = "Xóa sạch mọi dữ liệu plugin trước khi bật lại"
 # Dialogs
 install_dialog_title = "Chọn tệp JAR của Plugin"
-install_dialog_filter = "Plugin QTranslate (*.jar)"
+install_dialog_filter = "Plugin CamWork Translate (*.jar)"
 install_success_title = "Đã cài đặt Plugin"
 install_success_msg = "Cài đặt plugin thành công."
 install_fail_title = "Cài đặt thất bại"
@@ -455,10 +452,7 @@ test_nothing_to_check = "Không có gì để kiểm tra"
 # OTHER DIALOGS
 # ===================================================================
 [about_dialog]
-title = "Giới thiệu về QTranslate"
-description = "QTranslate bản gốc đã bị ngưng phát triển. Đây là bản viết lại hoàn toàn — giữ nguyên ý tưởng, thiết kế theo hướng plugin để ứng dụng không bao giờ lỗi thời."
-support_button = "Ủng hộ dự án này ♥"
-donation_nudge = "Bạn đã dịch rất nhiều với QTranslate! Nếu bạn thấy hữu ích, hãy cân nhắc ủng hộ dự án (Giới thiệu → Hỗ trợ ♥)"
+title = "Giới thiệu về CamWork Translate"
 
 [history_dialog]
 title = "Lịch sử dịch"
@@ -501,7 +495,7 @@ manage_presets  = "Quản lý Cài đặt sẵn..."
 
 [update_dialog]
 title = "Có bản cập nhật mới"
-header = "Đã có phiên bản QTranslate mới!"
+header = "Đã có phiên bản CamWork Translate mới!"
 # %1$s = new version number, %2$s = current version number
 details_format = "Phiên bản %s hiện đã có sẵn (bạn đang dùng %s). Bạn có muốn cập nhật không?"
 skip_button = "Bỏ qua phiên bản này"
@@ -513,7 +507,7 @@ view_on_github_button = "Xem trên GitHub"
 # CLOSE DIALOG
 # ===================================================================
 [close_dialog]
-title           = "Đóng QTranslate"
+title           = "Đóng CamWork Translate"
 message         = "Bạn muốn làm gì?"
 minimize_to_tray = "Thu nhỏ xuống khay hệ thống"
 exit            = "Thoát"

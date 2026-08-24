@@ -4,8 +4,11 @@ plugins {
     alias(libs.plugins.shadow)
 }
 
-group = "com.github.ahatem"
-version = System.getenv("APP_VERSION") ?: "dev"
+group = "club.camwork"
+version = providers.gradleProperty("releaseVersion")
+    .orElse(providers.environmentVariable("APP_VERSION"))
+    .orElse("dev")
+    .get()
 
 application {
     mainClass.set("com.github.ahatem.qtranslate.app.MainKt")
@@ -58,8 +61,8 @@ dependencies {
 }
 
 tasks.shadowJar {
-    // Output: QTranslate.jar — the name users will see and double-click
-    archiveBaseName.set("QTranslate")
+    // Выходной JAR с отдельным именем, чтобы не смешиваться с исходным приложением.
+    archiveBaseName.set("CamWork-Translate")
     archiveClassifier.set("")
     archiveVersion.set("")
 
@@ -143,7 +146,7 @@ val prepareManualQaRuntime by tasks.registering(Delete::class) {
 
 tasks.register<JavaExec>("runWithPlugins") {
     group = "application"
-    description = "Launches the full QTranslate UI with bundled and external plugins for manual QA."
+    description = "Launches the full CamWork Translate UI with bundled and external plugins for manual QA."
     dependsOn(prepareManualQaRuntime)
     classpath = sourceSets.main.get().runtimeClasspath
     mainClass.set(application.mainClass)
