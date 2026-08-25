@@ -227,6 +227,14 @@ Assert-Condition -Condition (
     $releaseWorkflow.Contains('macos-x64.dmg')
 ) `
     -Message 'Ссылки macOS в release body должны добавляться только при включённом production macOS.'
+Assert-Condition -Condition (
+    $releaseWorkflow.Contains('Normalize checksum names for GitHub Release') -and
+    $releaseWorkflow.Contains('published_name = Path(relative_name.strip()).name') -and
+    $releaseWorkflow.Contains('Duplicate GitHub Release asset name')
+) `
+    -Message 'SHA256SUMS должен содержать плоские уникальные имена опубликованных GitHub assets.'
+Assert-Condition -Condition ($releaseWorkflow.Contains('sha256sum -c --ignore-missing SHA256SUMS.txt')) `
+    -Message 'Инструкция релиза должна проверять скачанное подмножество assets без ложных ошибок отсутствия.'
 
 Assert-Condition -Condition ($macQaWorkflow.Contains('workflow_dispatch:')) `
     -Message 'macOS QA workflow должен запускаться вручную.'
