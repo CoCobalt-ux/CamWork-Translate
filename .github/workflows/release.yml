@@ -327,6 +327,31 @@ jobs:
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip" >> SHA256SUMS.txt
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg" >> SHA256SUMS.txt
 
+      - name: Normalize checksum names for GitHub Release
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          checksum_path = Path("build/release/SHA256SUMS.txt")
+          normalized_lines = []
+          published_names = set()
+
+          for line in checksum_path.read_text(encoding="utf-8").splitlines():
+              digest, separator, relative_name = line.partition("  ")
+              if not separator or len(digest) != 64:
+                  raise SystemExit(f"Invalid checksum line: {line!r}")
+
+              published_name = Path(relative_name.strip()).name
+              if published_name in published_names:
+                  raise SystemExit(f"Duplicate GitHub Release asset name: {published_name}")
+
+              published_names.add(published_name)
+              normalized_lines.append(f"{digest}  {published_name}")
+
+          checksum_path.write_text("\n".join(normalized_lines) + "\n", encoding="utf-8")
+          PY
+
       - name: Generate changelog
         id: changelog
         run: |
@@ -411,7 +436,7 @@ jobs:
               "Windows- и переносимый архивы уже содержат все штатные плагины.",
               "## Проверка файла",
               f"Загрузите [SHA256SUMS.txt]({base_url}/SHA256SUMS.txt) в тот же каталог и выполните:",
-              "```\nsha256sum -c SHA256SUMS.txt\n```",
+              "```\nsha256sum -c --ignore-missing SHA256SUMS.txt\n```",
           ]) + "\n"
           Path("build/release/RELEASE_BODY.md").write_text(body, encoding="utf-8")
           PY
