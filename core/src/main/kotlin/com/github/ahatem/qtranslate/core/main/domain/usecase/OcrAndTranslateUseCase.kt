@@ -72,7 +72,10 @@ class OcrAndTranslateUseCase(
                 }
             },
             failure = { error ->
-                logger.error("OCR failed: ${error.message}", error.cause)
+                logger.error(
+                    "OCR failed: errorType=${error::class.simpleName}, " +
+                        "causeType=${error.cause?.javaClass?.simpleName ?: "none"}"
+                )
                 val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.OcrFailed(summary), NotificationType.ERROR, true)
                 ""

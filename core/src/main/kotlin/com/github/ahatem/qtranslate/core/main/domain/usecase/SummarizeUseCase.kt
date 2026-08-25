@@ -59,7 +59,10 @@ class SummarizeUseCase(
                 response.summary
             },
             failure = { error ->
-                logger.error("Summarize failed: ${error.message}", error.cause)
+                logger.error(
+                    "Summarize failed: errorType=${error::class.simpleName}, " +
+                        "causeType=${error.cause?.javaClass?.simpleName ?: "none"}"
+                )
                 val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.SummarizeFailed(summary), NotificationType.ERROR, true)
                 ""

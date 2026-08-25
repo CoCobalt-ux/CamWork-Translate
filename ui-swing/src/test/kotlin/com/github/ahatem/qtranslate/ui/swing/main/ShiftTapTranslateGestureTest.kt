@@ -89,13 +89,26 @@ class ShiftTapTranslateGestureTest {
     }
 
     @Test
-    fun `устаревшее выделение игнорируется`() {
+    fun `выделение не протухает из-за паузы пользователя`() {
         val gesture = ShiftTapTranslateGesture(shift)
 
         gesture.onSelectionCompleted(1_000)
         gesture.onKeyPressed(shift, 5_100)
 
-        assertFalse(gesture.onKeyReleased(shift, 5_200))
+        assertTrue(gesture.onKeyReleased(shift, 5_200))
+    }
+
+    @Test
+    fun `обычный ввод инвалидирует старое выделение`() {
+        val gesture = ShiftTapTranslateGesture(shift)
+
+        gesture.onSelectionCompleted(1_000)
+        gesture.onKeyPressed(letter, 1_100)
+        gesture.onKeyReleased(letter, 1_150)
+        gesture.onKeyPressed(shift, 1_200)
+
+        assertFalse(gesture.onKeyReleased(shift, 1_250))
+        assertTrue(gesture.lastDecision == ShiftTapDecision.NO_SELECTION)
     }
 
     @Test

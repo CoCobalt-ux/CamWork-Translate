@@ -52,11 +52,16 @@ internal fun restoreSelectionBoundaryWhitespace(
         originalText.substring(lastContent + 1)
 }
 
-internal enum class SelectionTranslationExecution {
-    DELIVERED,
-    IGNORED,
-    INVALID_TRANSLATION,
-    REJECTED
+internal sealed interface SelectionTranslationAttempt {
+    data class Translated(val text: String) : SelectionTranslationAttempt
+    data class Failed(val reason: SelectionTranslationFailureReason) : SelectionTranslationAttempt
+}
+
+internal sealed interface SelectionTranslationExecution {
+    data object DELIVERED : SelectionTranslationExecution
+    data object IGNORED : SelectionTranslationExecution
+    data object REJECTED : SelectionTranslationExecution
+    data class FAILED(val reason: SelectionTranslationFailureReason) : SelectionTranslationExecution
 }
 
 /**
@@ -66,16 +71,20 @@ internal enum class SelectionTranslationExecution {
 internal suspend fun executeSelectionTranslation(
     translationInput: String,
     action: SelectionTranslationAction,
-    translate: suspend (String) -> String,
+    translate: suspend (String) -> SelectionTranslationAttempt,
     canDeliver: () -> Boolean,
     onReplace: suspend (String) -> Unit,
     onPassiveOverlay: suspend (String) -> Unit
 ): SelectionTranslationExecution {
     if (action == SelectionTranslationAction.IGNORE) return SelectionTranslationExecution.IGNORED
 
-    val translatedText = translate(translationInput).trim()
+    val attempt = translate(translationInput)
+    if (attempt is SelectionTranslationAttempt.Failed) {
+        return SelectionTranslationExecution.FAILED(attempt.reason)
+    }
+    val translatedText = (attempt as SelectionTranslationAttempt.Translated).text.trim()
     if (translatedText.isBlank() || translatedText == translationInput.trim()) {
-        return SelectionTranslationExecution.INVALID_TRANSLATION
+        return SelectionTranslationExecution.FAILED(SelectionTranslationFailureReason.NO_CHANGE)
     }
     if (!canDeliver()) return SelectionTranslationExecution.REJECTED
 

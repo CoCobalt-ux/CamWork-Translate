@@ -106,7 +106,7 @@ internal class LibreTranslateService(
             .fold(
                 onSuccess = { com.github.michaelbull.result.Ok(it) },
                 onFailure = {
-                    context.logger.warn("LibreTranslate returned an invalid response: ${it.message}")
+                    context.logger.warn("LibreTranslate returned an invalid response")
                     Err(ServiceError.InvalidResponseError("LibreTranslate returned an invalid JSON response.", it))
                 }
             )

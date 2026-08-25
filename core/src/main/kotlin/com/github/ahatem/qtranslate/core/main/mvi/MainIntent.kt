@@ -152,20 +152,26 @@ sealed interface MainIntent : UiIntent {
      */
     data class TranslateShiftSelection(
         val selectedText: String,
-        val capturedAtMillis: Long = System.currentTimeMillis()
+        val capturedAtMillis: Long = System.currentTimeMillis(),
+        val requestId: Long = 0L
     ) : MainIntent
 
     /** Автоматический пассивный перевод подтверждённого выделения мышью, без Shift. */
     data class AutoTranslateSelection(
         val selectedText: String,
-        val capturedAtMillis: Long = System.currentTimeMillis()
+        val capturedAtMillis: Long = System.currentTimeMillis(),
+        val requestId: Long = 0L
     ) : MainIntent
 
     /** Явный неразрушительный перевод по мини-кнопке возле выделения. */
     data class TranslateSelectionFromButton(
         val selectedText: String,
-        val capturedAtMillis: Long = System.currentTimeMillis()
+        val capturedAtMillis: Long = System.currentTimeMillis(),
+        val requestId: Long = 0L
     ) : MainIntent
+
+    /** Захват выделения не дал текста; ошибка относится к clipboard/фокусу, а не к сети. */
+    data class ReportShiftCaptureFailure(val requestId: Long = 0L) : MainIntent
 
     /** Инвалидирует фоновый результат выделения, например при открытии системного скриншота. */
     data object CancelSelectionTranslations : MainIntent

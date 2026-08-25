@@ -60,6 +60,8 @@ class AppDependencies(
     val appScope: CoroutineScope,
     val mainStore: MainStore,
     val translateStringUseCase: TranslateStringUseCase,
+    /** Полный host pipeline с managed fallback; также используется packaged smoke-test. */
+    val translateTextUseCase: TranslateTextUseCase,
     val settingsStore: SettingsStore,
     val pluginManager: PluginManager,
     val iconManager: IconManager,
@@ -142,6 +144,7 @@ suspend fun buildDependencies(
         pluginKeyValueStore         = keyValueStore,
         loggerFactory               = loggerFactory,
         notificationBus             = notificationBus,
+        trustedBundledPluginHashes  = BundledPluginTrust.load(),
         textResolver                = LocalizedPluginTextResolver(
             localizationManager = localizationManager,
             pluginLocalization  = PluginLocalization(
@@ -289,6 +292,7 @@ suspend fun buildDependencies(
         appScope            = appScope,
         mainStore           = mainStore,
         translateStringUseCase = translateStringUseCase,
+        translateTextUseCase = translateUseCase,
         settingsStore       = settingsStore,
         pluginManager       = pluginManager,
         appSecrets          = appSecrets,

@@ -57,7 +57,7 @@ class SearchImagesUseCase(
             return
         }
 
-        logger.info("Searching images for '$term' with '${service.name}'")
+        logger.info("Image search started: service='${service.name}', queryLength=${term.length}")
 
         searchJob = scope.launch {
             try {
@@ -76,7 +76,7 @@ class SearchImagesUseCase(
                 }
 
                 if (result == null) {
-                    logger.warn("Image search timed out for '$term'")
+                    logger.warn("Image search timed out: queryLength=${term.length}")
                     onStatusUpdate(StatusCode.ImageSearchTimeout, NotificationType.WARNING, true)
                     updateState { copy(isImageSearchLoading = false, imageSearchFailed = true, imageResults = emptyList()) }
                     return@launch
@@ -85,11 +85,13 @@ class SearchImagesUseCase(
                 result.fold(
                     success = { response ->
                         if (response.results.isEmpty()) {
-                            logger.info("No images found for '$term'")
+                            logger.info("Image search completed without results: queryLength=${term.length}")
                             onStatusUpdate(StatusCode.ImagesNotFound(term), NotificationType.INFO, true)
                             updateState { copy(isImageSearchLoading = false, imageResults = emptyList()) }
                         } else {
-                            logger.info("Found ${response.results.size} images for '$term'")
+                            logger.info(
+                                "Image search completed: results=${response.results.size}, queryLength=${term.length}"
+                            )
                             onStatusUpdate(StatusCode.ImageSearchReady, NotificationType.INFO, true)
                             updateState {
                                 copy(
@@ -102,7 +104,9 @@ class SearchImagesUseCase(
                     },
                     failure = { error ->
                         val summary = error.toString()
-                        logger.warn("Image search failed for '$term': $summary")
+                        logger.warn(
+                            "Image search failed: errorType=${error::class.simpleName}, queryLength=${term.length}"
+                        )
                         onStatusUpdate(StatusCode.ImageSearchFailed(summary), NotificationType.ERROR, true)
                         updateState { copy(isImageSearchLoading = false, imageSearchFailed = true, imageResults = emptyList()) }
                     }
@@ -111,7 +115,7 @@ class SearchImagesUseCase(
                 throw e
             } catch (e: Exception) {
                 val summary = e.message ?: "Unknown error"
-                logger.warn("Unexpected error during image search: $summary")
+                logger.warn("Unexpected image search error: errorType=${e::class.simpleName}")
                 onStatusUpdate(StatusCode.ImageSearchFailed(summary), NotificationType.ERROR, true)
                 updateState { copy(isImageSearchLoading = false, imageSearchFailed = true, imageResults = emptyList()) }
             }

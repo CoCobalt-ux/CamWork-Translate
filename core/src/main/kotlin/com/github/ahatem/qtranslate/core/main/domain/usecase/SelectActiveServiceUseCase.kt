@@ -91,7 +91,7 @@ class SelectActiveServiceUseCase(
                 ?.takeUnless { config.isServiceDisabled(it, ServiceRole.TRANSLATOR) }
                 ?.let { services[it] as? Translator }
 
-            val languages = if (translator != null && selectedTranslatorId != null) {
+            val languages = if (translator != null) {
                 resolveLanguages(selectedTranslatorId, translator, langCache)
             } else {
                 emptyList()

@@ -126,7 +126,7 @@ class HandleTextToSpeechUseCase(
                         }
 
                         if (bytes == null || bytes.isEmpty()) {
-                            logger.error("Failed to download audio stream from ${audio.url}")
+                            logger.error("Failed to download TTS audio stream")
                             onStatusUpdate(StatusCode.AudioDownloadFailed, NotificationType.ERROR, true)
                         } else {
                             logger.info("Stream downloaded — playing ${bytes.size} bytes (${audio.format})")
@@ -138,7 +138,10 @@ class HandleTextToSpeechUseCase(
                 }
             }
             .onErr { error ->
-                logger.error("TTS failed: ${error.message}", error.cause)
+                logger.error(
+                    "TTS failed: errorType=${error::class.simpleName}, " +
+                        "causeType=${error.cause?.javaClass?.simpleName ?: "none"}"
+                )
                 val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.TtsFailed(summary), NotificationType.ERROR, true)
             }

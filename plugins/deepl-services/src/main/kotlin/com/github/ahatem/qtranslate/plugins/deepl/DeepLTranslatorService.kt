@@ -21,6 +21,9 @@ import com.github.michaelbull.result.toResultOr
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.ceil
+import kotlin.math.max
 
 internal class DeepLTranslatorService(
     private val context: PluginContext,
@@ -28,8 +31,8 @@ internal class DeepLTranslatorService(
     private val settings: () -> DeepLSettings,
     private val onModeChanged: (DeepLMode) -> Unit = {},
     private val minimumWebRequestIntervalMillis: Long = 2_000,
-    private val rateLimitBackoffMillis: Long = 10_000,
-    private val maxWebRetries: Int = 1
+    private val rateLimitCircuitOpenMillis: Long = DEFAULT_RATE_LIMIT_CIRCUIT_OPEN_MILLIS,
+    private val clockMillis: () -> Long = System::currentTimeMillis
 ) : Translator {
     override val key = "deepl-services-translator"
     override val name = "DeepL"
@@ -40,6 +43,7 @@ internal class DeepLTranslatorService(
     private val responseParser =
         com.github.ahatem.qtranslate.plugins.common.createJsonParser<DeepLTranslateResponse>(context)
     private val webRequestMutex = Mutex()
+    private val webRateLimitBlockedUntilMillis = AtomicLong(0L)
     private var lastWebRequestAtNanos = 0L
     private var rejectedApiKey: String? = null
 
@@ -107,6 +111,7 @@ internal class DeepLTranslatorService(
 
     private suspend fun translateWeb(request: TranslationRequest): Result<TranslationResponse, ServiceError> =
         coroutineBinding {
+            currentWebRateLimitError()?.let { Err(it).bind<TranslationResponse>() }
             val responses = splitForWeb(request.text).map { text ->
                 translateWebSegment(request.copy(text = text)).bind()
             }
@@ -135,7 +140,9 @@ internal class DeepLTranslatorService(
 
                 if (responseBody.contains("Too many requests", ignoreCase = true) ||
                     responseBody.contains("\"code\":1042911")) {
-                    Err(ServiceError.RateLimitError(FREE_RATE_LIMIT_MESSAGE)).bind<String>()
+                    val error = ServiceError.RateLimitError(FREE_RATE_LIMIT_MESSAGE)
+                    openWebRateLimitCircuit(error)
+                    Err(error).bind<String>()
                 }
 
                 val translation = responseParser.parse(responseBody).bind().translations
@@ -161,22 +168,32 @@ internal class DeepLTranslatorService(
     }
 
     private suspend fun postWeb(body: String): Result<String, ServiceError> {
+        currentWebRateLimitError()?.let { return Err(it) }
         val headers = ApiConfig().createJsonHeaders(mapOf(
             "Authorization" to "None",
             "Accept" to "application/json"
         ))
-        var attempt = 0
-        while (true) {
-            val result = httpClient.post(WEB_ENDPOINT, headers, body)
-            val rateLimit = result.fold(
-                success = { null },
-                failure = { it as? ServiceError.RateLimitError }
-            )
-            if (rateLimit == null || attempt >= maxWebRetries) return result.mapError(::mapWebHttpError)
+        return httpClient.post(WEB_ENDPOINT, headers, body).mapError { error ->
+            val mapped = mapWebHttpError(error)
+            if (mapped is ServiceError.RateLimitError) openWebRateLimitCircuit(mapped)
+            mapped
+        }
+    }
 
-            val retryAfterMillis = rateLimit.retryAfterSeconds?.times(1_000L) ?: 0L
-            delay(maxOf(rateLimitBackoffMillis, retryAfterMillis))
-            attempt++
+    private fun currentWebRateLimitError(): ServiceError.RateLimitError? {
+        val remainingMillis = webRateLimitBlockedUntilMillis.get() - clockMillis()
+        if (remainingMillis <= 0L) return null
+        return ServiceError.RateLimitError(
+            message = FREE_RATE_LIMIT_MESSAGE,
+            retryAfterSeconds = ceil(remainingMillis / 1_000.0).toInt()
+        )
+    }
+
+    private fun openWebRateLimitCircuit(error: ServiceError.RateLimitError) {
+        val retryAfterMillis = error.retryAfterSeconds?.toLong()?.times(1_000L) ?: 0L
+        val blockedUntil = clockMillis() + max(rateLimitCircuitOpenMillis, retryAfterMillis)
+        webRateLimitBlockedUntilMillis.accumulateAndGet(blockedUntil) { current, proposed ->
+            maxOf(current, proposed)
         }
     }
 
@@ -228,6 +245,7 @@ internal class DeepLTranslatorService(
         private const val WEB_ENDPOINT = "https://oneshot-free.www.deepl.com/v1/translate"
         private const val FREE_RATE_LIMIT_MESSAGE =
             "DeepL free endpoint is rate-limited. Add an API key for official access or try again later."
+        private const val DEFAULT_RATE_LIMIT_CIRCUIT_OPEN_MILLIS = 5 * 60 * 1_000L
         private const val MAX_WEB_CHARACTERS = 5_000
         private val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 

@@ -11,7 +11,6 @@ internal class ShiftTapTranslateGesture(
     private val triggerKeyCode: Int?,
     private val selectionModifierKeyCodes: Set<Int> = emptySet(),
     private val selectAllKeyCode: Int? = null,
-    private val selectionWindowMs: Long = DEFAULT_SELECTION_WINDOW_MS,
     private val maxTapDurationMs: Long = DEFAULT_MAX_TAP_DURATION_MS,
     private val cooldownMs: Long = DEFAULT_COOLDOWN_MS,
 ) {
@@ -24,6 +23,10 @@ internal class ShiftTapTranslateGesture(
     private var selectAllInProgress = false
     private var selectAllMainKeyReleased = false
     private var selectAllIsInvalid = false
+
+    @Volatile
+    var lastDecision: ShiftTapDecision = ShiftTapDecision.NOT_TRIGGER_KEY
+        private set
 
     /** Новое нажатие мыши обычно снимает предыдущее выделение. */
     @Synchronized
@@ -70,6 +73,17 @@ internal class ShiftTapTranslateGesture(
             selectAllIsInvalid = false
         }
 
+        // Печатный ввод или навигация после выделения меняют его смысл. Комбинации с Ctrl/Meta
+        // не очищают маркер: среди них Ctrl+A и синтетический Ctrl+C для безопасного захвата.
+        val selectionModifierDown = pressedKeys.any { it in selectionModifierKeyCodes }
+        if (selectionCompletedAt != null &&
+            keyCode != triggerKeyCode &&
+            keyCode !in selectionModifierKeyCodes &&
+            !selectionModifierDown
+        ) {
+            selectionCompletedAt = null
+        }
+
         if (keyCode == triggerKeyCode) {
             if (selectAllInProgress) selectAllIsInvalid = true
             triggerPressedAt = nowMs
@@ -97,14 +111,17 @@ internal class ShiftTapTranslateGesture(
         triggerPressedAt = null
 
         val tapDuration = pressedAt?.let { nowMs - it }
-        val selectionAge = selectedAt?.let { nowMs - it }
         val cooldownAge = lastTriggeredAt?.let { nowMs - it }
 
-        val shouldTrigger = !triggerIsInvalid &&
-            !otherKeyIsDown &&
-            tapDuration != null && tapDuration in 0..maxTapDurationMs &&
-            selectionAge != null && selectionAge in 0..selectionWindowMs &&
-            (cooldownAge == null || cooldownAge >= cooldownMs)
+        lastDecision = when {
+            pressedAt == null -> ShiftTapDecision.NOT_TRIGGER_KEY
+            triggerIsInvalid || otherKeyIsDown -> ShiftTapDecision.SYSTEM_OR_KEY_CHORD
+            tapDuration !in 0..maxTapDurationMs -> ShiftTapDecision.HELD_TOO_LONG
+            selectedAt == null -> ShiftTapDecision.NO_SELECTION
+            cooldownAge != null && cooldownAge < cooldownMs -> ShiftTapDecision.COOLDOWN
+            else -> ShiftTapDecision.TRIGGERED
+        }
+        val shouldTrigger = lastDecision == ShiftTapDecision.TRIGGERED
 
         // Одно выделение даёт ровно одну попытку. Даже невалидная комбинация не должна
         // оставлять скрытый триггер, который сработает от следующего случайного нажатия.
@@ -125,6 +142,7 @@ internal class ShiftTapTranslateGesture(
         selectAllInProgress = false
         selectAllMainKeyReleased = false
         selectAllIsInvalid = false
+        lastDecision = ShiftTapDecision.NOT_TRIGGER_KEY
     }
 
     /** Ctrl+A/Meta+A считается выделением только после полного отпускания сочетания. */
@@ -142,10 +160,18 @@ internal class ShiftTapTranslateGesture(
     }
 
     private companion object {
-        const val DEFAULT_SELECTION_WINDOW_MS = 4_000L
         const val DEFAULT_MAX_TAP_DURATION_MS = 350L
         // Событие выделения одноразовое, поэтому дополнительный cooldown только отбрасывал
         // следующее легитимное быстрое выделение и создавал эффект «срабатывает через раз».
         const val DEFAULT_COOLDOWN_MS = 0L
     }
+}
+
+internal enum class ShiftTapDecision {
+    TRIGGERED,
+    NO_SELECTION,
+    HELD_TOO_LONG,
+    SYSTEM_OR_KEY_CHORD,
+    COOLDOWN,
+    NOT_TRIGGER_KEY
 }

@@ -142,6 +142,48 @@ class DeepLTranslatorServiceTest {
     }
 
     @Test
+    fun `HTTP 429 открывает circuit и следующий запрос завершается без сети`() = runBlocking {
+        var now = 1_000L
+        val client = ScriptedHttpClient(mutableListOf(
+            Err(ServiceError.RateLimitError("generic HTTP error")),
+            Ok(WEB_SUCCESS)
+        ))
+        val service = createService(
+            client = client,
+            settings = DeepLSettings(),
+            onModeChanged = {},
+            rateLimitCircuitOpenMillis = 60_000L,
+            clockMillis = { now }
+        )
+
+        assertIs<ServiceError.RateLimitError>(service.translate(request).failure())
+        val fastFailure = assertIs<ServiceError.RateLimitError>(service.translate(request).failure())
+
+        assertEquals(1, client.urls.size, "Открытый circuit не должен обращаться к DeepL")
+        assertEquals(60, fastFailure.retryAfterSeconds)
+
+        now += 60_001L
+        service.translate(request).fold(
+            success = { assertEquals("Bonjour", it.translatedText) },
+            failure = { fail(it.message) }
+        )
+        assertEquals(2, client.urls.size)
+    }
+
+    @Test
+    fun `embedded rate limit также открывает circuit без внутреннего retry`() = runBlocking {
+        val client = ScriptedHttpClient(mutableListOf(
+            Ok("""{"error":{"code":1042911,"message":"Too many requests"}}""")
+        ))
+        val service = createService(client, DeepLSettings(), {})
+
+        assertIs<ServiceError.RateLimitError>(service.translate(request).failure())
+        assertIs<ServiceError.RateLimitError>(service.translate(request).failure())
+
+        assertEquals(1, client.urls.size)
+    }
+
+    @Test
     fun `splits long web input without dropping source text`() = runBlocking {
         val source = "word ".repeat(1_300)
         val client = EchoWebHttpClient()
@@ -160,15 +202,22 @@ class DeepLTranslatorServiceTest {
         client: HttpClient,
         settings: DeepLSettings,
         onModeChanged: (DeepLMode) -> Unit,
-        context: PluginContext = FakePluginContext()
+        context: PluginContext = FakePluginContext(),
+        rateLimitCircuitOpenMillis: Long = 60_000L,
+        clockMillis: () -> Long = System::currentTimeMillis
     ) = DeepLTranslatorService(
         context = context,
         httpClient = client,
         settings = { settings },
         onModeChanged = onModeChanged,
         minimumWebRequestIntervalMillis = 0,
-        rateLimitBackoffMillis = 0,
-        maxWebRetries = 0
+        rateLimitCircuitOpenMillis = rateLimitCircuitOpenMillis,
+        clockMillis = clockMillis
+    )
+
+    private fun <T> Result<T, ServiceError>.failure(): ServiceError = fold(
+        success = { error("Ожидалась ошибка: $it") },
+        failure = { it }
     )
 
     private companion object {

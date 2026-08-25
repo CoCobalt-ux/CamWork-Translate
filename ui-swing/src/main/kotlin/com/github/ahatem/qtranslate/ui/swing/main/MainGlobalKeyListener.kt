@@ -27,6 +27,7 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.KeyEvent
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.UUID
 
 /**
@@ -91,7 +92,7 @@ class MainGlobalKeyListener(
     private val onShowApp: (String) -> Unit,
     private val onShowQuickTranslate: (String) -> Unit,
     /** Единый двунаправленный сценарий настраиваемого quick-selection hotkey. */
-    private val onShiftTapTranslate: (String) -> Unit,
+    private val onShiftTapTranslate: (String, Long) -> Unit,
     private val onListenToText: (String) -> Unit,
     private val onOpenSnippingTool: () -> Unit,
     @Suppress("unused")
@@ -103,10 +104,10 @@ class MainGlobalKeyListener(
     /** Mini-button для EDITABLE/UNKNOWN или READ_ONLY при выключенном auto-overlay. */
     private val onSelectionDetected: (String, Point) -> Unit = { _, _ -> },
     /** Автоматический пассивный перевод после подтверждённого выделения мышью. */
-    private val onAutoTranslateSelection: (String) -> Unit = {},
+    private val onAutoTranslateSelection: (String, Long) -> Unit = { _, _ -> },
     private val onPointerPressed: (Point) -> Unit = {},
     /** Вызывается сразу при отпускании короткого Shift, ещё до чтения clipboard. */
-    private val onShiftTapStarted: () -> Unit = {},
+    private val onShiftTapStarted: (Long) -> Unit = {},
     /** Инвалидирует ожидающий перевод/вставку до открытия системного screenshot UI. */
     private val onSystemScreenCaptureStarted: () -> Unit = {}
 ) {
@@ -138,6 +139,7 @@ class MainGlobalKeyListener(
     private val initialized = AtomicBoolean(false)
     private val autoSelectionTranslateEnabled = AtomicBoolean(true)
     private val shiftTapTranslateEnabled = AtomicBoolean(true)
+    private val requestSequence = AtomicLong(0)
 
     @Volatile private var bindings: List<HotkeyBinding> = HotkeyBinding.DEFAULTS
 
@@ -383,6 +385,12 @@ class MainGlobalKeyListener(
             val shouldTranslateSelection = shiftTapGesture.onKeyReleased(e.keyCode)
             if (shouldTranslateSelection && hotkeysEnabled.get() && shiftTapTranslateEnabled.get()) {
                 triggerConfiguredSelectionTranslation()
+            } else if (e.keyCode == NativeKeyEvent.VC_SHIFT &&
+                shiftTapGesture.lastDecision != ShiftTapDecision.NOT_TRIGGER_KEY
+            ) {
+                logger.debug(
+                    "Selection tap rejected: reason=${shiftTapGesture.lastDecision}"
+                )
             }
 
             if (e.keyCode != NativeKeyEvent.VC_CONTROL) return
@@ -511,6 +519,7 @@ class MainGlobalKeyListener(
         if (!shouldInspectMouseSelection()) return
         selectionCaptureJob?.cancel()
         selectionCaptureJob = scope.launch {
+            val requestId = requestSequence.incrementAndGet()
             val debounce = if (isAutoSelectionActive()) {
                 AUTO_SELECTION_DEBOUNCE_MS
             } else {
@@ -524,7 +533,9 @@ class MainGlobalKeyListener(
             handleSelectedText(
                 callback = { selectedText = it },
                 onClipboardEvidence = { clipboardEvidence = it },
-                preCopyDelayMs = 0
+                preCopyDelayMs = 0,
+                requestId = requestId,
+                origin = "auto_selection"
             )
             // handleSelectedText уже вышел из clipboard mutex и восстановил пользовательский
             // clipboard. Потенциально медленный UI Automation никогда не продлевает перехват.
@@ -555,7 +566,7 @@ class MainGlobalKeyListener(
                 pointer = awtPointer,
                 presentation = presentation,
                 onMiniButton = onSelectionDetected,
-                onAutoOverlay = onAutoTranslateSelection
+                onAutoOverlay = { text -> onAutoTranslateSelection(text, requestId) }
             )
         }
     }
@@ -574,8 +585,16 @@ class MainGlobalKeyListener(
         if (!hotkeysEnabled.get() || !shiftTapTranslateEnabled.get()) return
         // Явный hotkey имеет приоритет над отложенным auto-overlay того же выделения.
         selectionCaptureJob?.cancel()
-        onShiftTapStarted()
-        scope.launch { handleSelectedText(onShiftTapTranslate) }
+        val requestId = requestSequence.incrementAndGet()
+        logger.info("Selection request started: requestId=$requestId, origin=shift")
+        onShiftTapStarted(requestId)
+        scope.launch {
+            handleSelectedText(
+                callback = { text -> onShiftTapTranslate(text, requestId) },
+                requestId = requestId,
+                origin = "shift"
+            )
+        }
     }
 
     fun isSystemScreenCaptureSuppressed(): Boolean = systemScreenCaptureGuard.isSuppressed()
@@ -586,8 +605,12 @@ class MainGlobalKeyListener(
     private suspend fun handleSelectedText(
         callback: (String) -> Unit,
         onClipboardEvidence: (ClipboardSelectionEvidence?) -> Unit = {},
-        preCopyDelayMs: Long = HOTKEY_RELEASE_SETTLE_DELAY_MS
+        preCopyDelayMs: Long = HOTKEY_RELEASE_SETTLE_DELAY_MS,
+        requestId: Long = requestSequence.incrementAndGet(),
+        origin: String = "hotkey"
     ) {
+        val startedAtNanos = System.nanoTime()
+        logger.debug("Selection capture started: requestId=$requestId, origin=$origin")
         clipboardInterceptionGuard.track { lease ->
             clipboardMutex.withLock {
                 if (!clipboardInterceptionGuard.isCurrent(lease) || systemScreenCaptureGuard.isSuppressed()) {
@@ -603,25 +626,55 @@ class MainGlobalKeyListener(
                     // Give the originating key sequence time to finish before synthesizing Copy.
                     if (preCopyDelayMs > 0) delay(preCopyDelayMs)
 
-                    if (!awaitSafeSyntheticCopyWindow()) return@withLock
+                    if (!awaitSafeSyntheticCopyWindow()) {
+                        logger.warn(
+                            "Selection capture failed: requestId=$requestId, origin=$origin, " +
+                                "reason=modifier_held"
+                        )
+                        callback("")
+                        return@withLock
+                    }
 
                     var text: String? = null
                     var clipboardEvidence: ClipboardSelectionEvidence? = null
-                    for (backoffMs in longArrayOf(50, 90, 140)) {
+                    for ((attemptIndex, backoffMs) in longArrayOf(50, 90, 140).withIndex()) {
                         kotlinx.coroutines.currentCoroutineContext().ensureActive()
                         if (!clipboardInterceptionGuard.isCurrent(lease) ||
                             systemScreenCaptureGuard.isSuppressed()
                         ) break
 
-                        if (!awaitSafeSyntheticCopyWindow()) break
+                        if (!awaitSafeSyntheticCopyWindow()) {
+                            logger.warn(
+                                "Selection capture attempt failed: requestId=$requestId, " +
+                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
+                                    "reason=modifier_held"
+                            )
+                            break
+                        }
 
                         val sentinel = "qtranslate-copy-${UUID.randomUUID()}"
                         val sentinelWritten = runCatching {
                             clipboard.setContents(StringSelection(sentinel), null)
                         }.isSuccess
+                        if (!sentinelWritten) {
+                            logger.warn(
+                                "Selection capture attempt failed: requestId=$requestId, " +
+                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
+                                    "reason=clipboard_busy"
+                            )
+                            delay(backoffMs)
+                            continue
+                        }
                         ownedClipboardText = sentinel.takeIf { sentinelWritten }
 
-                        if (!simulateCopy()) break
+                        if (!simulateCopy()) {
+                            logger.warn(
+                                "Selection capture attempt failed: requestId=$requestId, " +
+                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
+                                    "reason=copy_simulation"
+                            )
+                            break
+                        }
                         delay(backoffMs)
 
                         val candidate = readClipboardText(clipboard)
@@ -631,7 +684,17 @@ class MainGlobalKeyListener(
                             clipboardEvidence = inspectClipboardSelectionEvidence(
                                 runCatching { clipboard.getContents(null) }.getOrNull()
                             )
+                            logger.info(
+                                "Selection capture completed: requestId=$requestId, origin=$origin, " +
+                                    "attempt=${attemptIndex + 1}, length=${text.length}, " +
+                                    "latencyMs=${(System.nanoTime() - startedAtNanos) / NANOS_PER_MILLISECOND}"
+                            )
                             break
+                        } else {
+                            logger.debug(
+                                "Selection capture attempt empty: requestId=$requestId, " +
+                                    "origin=$origin, attempt=${attemptIndex + 1}"
+                            )
                         }
                     }
 
@@ -641,6 +704,13 @@ class MainGlobalKeyListener(
                     ) {
                         onClipboardEvidence(clipboardEvidence)
                         callback(text.orEmpty())
+                        if (text.isNullOrBlank()) {
+                            logger.warn(
+                                "Selection capture failed: requestId=$requestId, origin=$origin, " +
+                                    "reason=empty_selection, attempts=3, " +
+                                    "latencyMs=${(System.nanoTime() - startedAtNanos) / NANOS_PER_MILLISECOND}"
+                            )
+                        }
                     }
                 } finally {
                     val expected = ownedClipboardText

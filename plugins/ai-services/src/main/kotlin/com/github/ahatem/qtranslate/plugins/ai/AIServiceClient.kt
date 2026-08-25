@@ -18,6 +18,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import java.net.URI
 import java.util.Base64
 
 /**
@@ -75,7 +76,9 @@ class AIServiceClient(
         val baseUrl = current.baseUrl.trimEnd('/')
         val endpoint = "$baseUrl/chat/completions"
 
-        pluginContext.logger.debug("AIServiceClient → $endpoint [model=${current.model}]")
+        pluginContext.logger.debug(
+            "AI request started: host=${safeHost(baseUrl)}, model=${current.model}"
+        )
 
         val requestBody = ChatCompletionRequest(
             model               = current.model,
@@ -98,7 +101,7 @@ class AIServiceClient(
                     putAll(extra)
                 }.onFailure { e ->
                     pluginContext.logger.warn(
-                        "AI Plugin: Could not parse Custom Headers JSON — skipping. Error: ${e.message}"
+                        "AI custom headers ignored: errorType=${e::class.simpleName}"
                     )
                 }
             }
@@ -153,7 +156,8 @@ class AIServiceClient(
         val endpoint = "$baseUrl/chat/completions"
 
         pluginContext.logger.debug(
-            "AIServiceClient (vision) → $endpoint [model=${current.model}, image=${image.width}×${image.height} ${image.format}]"
+            "AI vision request started: host=${safeHost(baseUrl)}, model=${current.model}, " +
+                "image=${image.width}×${image.height} ${image.format}"
         )
 
         // Build the user content array: image part + optional text part
@@ -193,7 +197,7 @@ class AIServiceClient(
                 }.onSuccess { putAll(it) }
                  .onFailure { e ->
                     pluginContext.logger.warn(
-                        "AI Plugin: Could not parse Custom Headers JSON — skipping. Error: ${e.message}"
+                        "AI custom headers ignored: errorType=${e::class.simpleName}"
                     )
                 }
             }
@@ -216,6 +220,11 @@ class AIServiceClient(
                 }
         }
     }
+
+    private fun safeHost(baseUrl: String): String =
+        runCatching { URI(baseUrl).host?.takeIf(String::isNotBlank) }
+            .getOrNull()
+            ?: "custom"
 
     private fun mapError(error: ChatError): ServiceError {
         val msg = error.message

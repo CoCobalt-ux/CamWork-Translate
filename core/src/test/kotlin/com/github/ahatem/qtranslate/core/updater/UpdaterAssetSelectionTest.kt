@@ -15,6 +15,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -45,6 +46,7 @@ class UpdaterAssetSelectionTest {
           "assets": [
             {"name": "ai-plugin-2.0.0.jar", "browser_download_url": "https://example.invalid/ai-plugin-2.0.0.jar"},
             {"name": "bing-services-1.0.0.jar", "browser_download_url": "https://example.invalid/bing-services-1.0.0.jar"},
+            {"name": "CamWork-Translate-9.9.9-Setup-windows-x64.exe", "browser_download_url": "https://example.invalid/CamWork-Translate-9.9.9-Setup-windows-x64.exe"},
             {"name": "CamWork-Translate-9.9.9-windows-x64.zip", "browser_download_url": "https://example.invalid/CamWork-Translate-9.9.9-windows-x64.zip"},
             {"name": "CamWork-Translate-9.9.9.zip", "browser_download_url": "https://example.invalid/CamWork-Translate-9.9.9.zip"},
             {"name": "CamWork-Translate-App-9.9.9.jar", "browser_download_url": "https://example.invalid/CamWork-Translate-App-9.9.9.jar"},
@@ -53,7 +55,14 @@ class UpdaterAssetSelectionTest {
         }
     """.trimIndent()
 
-    private fun updaterReturning(body: String): Updater {
+    private fun updaterReturning(
+        body: String,
+        runtimeInfo: UpdateRuntimeInfo = UpdateRuntimeInfo(
+            platform = ReleaseAssets.Platform.OTHER,
+            architecture = "x86_64",
+            windowsDistribution = ReleaseAssets.WindowsDistribution.PORTABLE
+        )
+    ): Updater {
         val engine = MockEngine {
             respond(
                 content = body,
@@ -64,7 +73,13 @@ class UpdaterAssetSelectionTest {
         val client = HttpClient(engine) {
             install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true; isLenient = true }) }
         }
-        return Updater("ahatem", "qtranslate", client, silentLogger)
+        return Updater.forRuntime(
+            repoOwner = "ahatem",
+            repoName = "qtranslate",
+            httpClient = client,
+            logger = silentLogger,
+            runtimeInfo = runtimeInfo
+        )
     }
 
     @Test
@@ -78,10 +93,50 @@ class UpdaterAssetSelectionTest {
         // Windows or not, it must be one of the application archives. Asserted as a property
         // because the platform decides which, and CI is not Windows.
         assertTrue(
-            url.endsWith("CamWork-Translate-9.9.9-windows-x64.zip") || url.endsWith("CamWork-Translate-9.9.9.zip"),
+            url.endsWith("CamWork-Translate-9.9.9-Setup-windows-x64.exe") ||
+                url.endsWith("CamWork-Translate-9.9.9-windows-x64.zip") ||
+                url.endsWith("CamWork-Translate-9.9.9.zip"),
             "Offered '$url', which is not the application"
         )
         assertTrue("plugin" !in url && "services" !in url, "Offered a plugin: $url")
+    }
+
+    @Test
+    fun `installed Windows runtime receives EXE`() = runTest {
+        val updater = updaterReturning(
+            releaseJson(),
+            UpdateRuntimeInfo(
+                platform = ReleaseAssets.Platform.WINDOWS,
+                architecture = "amd64",
+                windowsDistribution = ReleaseAssets.WindowsDistribution.INSTALLED
+            )
+        )
+
+        val available = updater.checkForUpdate("1.0.0").get() as UpdateCheckResult.UpdateAvailable
+
+        assertEquals(
+            "https://example.invalid/CamWork-Translate-9.9.9-Setup-windows-x64.exe",
+            available.info.downloadUrl
+        )
+    }
+
+    @Test
+    fun `portable Windows runtime receives ZIP and not EXE`() = runTest {
+        val updater = updaterReturning(
+            releaseJson(),
+            UpdateRuntimeInfo(
+                platform = ReleaseAssets.Platform.WINDOWS,
+                architecture = "amd64",
+                windowsDistribution = ReleaseAssets.WindowsDistribution.PORTABLE
+            )
+        )
+
+        val available = updater.checkForUpdate("1.0.0").get() as UpdateCheckResult.UpdateAvailable
+
+        assertEquals(
+            "https://example.invalid/CamWork-Translate-9.9.9-windows-x64.zip",
+            available.info.downloadUrl
+        )
     }
 
     @Test

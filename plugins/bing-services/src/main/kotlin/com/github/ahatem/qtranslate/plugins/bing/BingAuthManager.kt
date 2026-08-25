@@ -10,6 +10,8 @@ import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.coroutines.coroutineBinding
 import com.github.michaelbull.result.getOr
 import com.github.michaelbull.result.getOrElse
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import java.util.concurrent.atomic.AtomicReference
@@ -28,17 +30,41 @@ import kotlin.time.Duration.Companion.hours
  */
 class BingAuthManager(
     private val pluginContext: PluginContext,
-    private val httpClient: HttpClient
+    private val httpClient: HttpClient,
+    private val apiConfig: ApiConfig = ApiConfig(),
+    private val clockMillis: () -> Long = System::currentTimeMillis
 ) {
     private val authRef = AtomicReference<AuthState?>(null)
+    private val refreshMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
+    private val sessionUserAgent = apiConfig.defaultUserAgents.firstOrNull() ?: FALLBACK_USER_AGENT
+
+    private companion object {
+        const val TRANSLATOR_URL = "https://www.bing.com/translator"
+        const val BING_HOME_URL = "https://www.bing.com/"
+        const val FALLBACK_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
     suspend fun getAuth(): Result<BingAuth, ServiceError> {
-        val current = authRef.get()
+        val current = authRef.get()?.takeUnless { it.isExpired(clockMillis()) }
+        if (current != null) return Ok(current.auth)
 
-        return when {
-            current != null && !current.isExpired() -> Ok(current.auth)
-            else -> refreshAuth()
+        return refreshMutex.withLock {
+            authRef.get()
+                ?.takeUnless { it.isExpired(clockMillis()) }
+                ?.let { Ok(it.auth) }
+                ?: refreshAuth()
+        }
+    }
+
+    /** Удаляет только ту сессию, на которую пришёл auth-отказ. */
+    fun invalidate(auth: BingAuth) {
+        while (true) {
+            val current = authRef.get() ?: return
+            if (current.auth !== auth) return
+            if (authRef.compareAndSet(current, null)) return
         }
     }
 
@@ -46,12 +72,19 @@ class BingAuthManager(
         pluginContext.logger.info("Fetching new Bing authentication token")
 
         val html = httpClient.get(
-            url = "https://www.bing.com/translator",
-            headers = ApiConfig().createHeaders()
+            url = TRANSLATOR_URL,
+            headers = apiConfig.createHeaders(
+                additionalHeaders = mapOf(
+                    "User-Agent" to sessionUserAgent,
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer" to BING_HOME_URL
+                ),
+                randomizeUserAgent = false
+            )
         ).bind()
 
         val auth = parseAuthFromHtml(html).bind()
-        authRef.set(AuthState(auth, System.currentTimeMillis()))
+        authRef.set(AuthState(auth, clockMillis()))
 
         pluginContext.logger.info("Successfully obtained Bing authentication token")
         auth
@@ -80,7 +113,8 @@ class BingAuthManager(
                 token = helperArray[1].toString().removeSurrounding("\""),
                 muid = muid,
                 sid = sid,
-                tid = tid
+                tid = tid,
+                userAgent = sessionUserAgent
             )
         }.fold(
             onSuccess = { Ok(it) },
@@ -96,6 +130,6 @@ class BingAuthManager(
             ?: Err(ServiceError.InvalidResponseError("Failed to extract $fieldName from Bing page", null))
 
     private data class AuthState(val auth: BingAuth, val timestamp: Long) {
-        fun isExpired(): Boolean = (System.currentTimeMillis() - timestamp) >= 1.hours.inWholeMilliseconds
+        fun isExpired(nowMillis: Long): Boolean = (nowMillis - timestamp) >= 1.hours.inWholeMilliseconds
     }
 }

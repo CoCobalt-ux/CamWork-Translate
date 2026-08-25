@@ -136,4 +136,24 @@ class ShiftSelectionTranslationPolicyTest {
             restoreSelectionBoundaryWhitespace("  Привет\r\n", "Hello")
         )
     }
+
+    @Test
+    fun `неизменённый ответ имеет отдельную причину NO CHANGE`() =
+        kotlinx.coroutines.test.runTest {
+            val result = executeSelectionTranslation(
+                translationInput = "Hello",
+                action = SelectionTranslationAction.REPLACE,
+                translate = { SelectionTranslationAttempt.Translated("Hello") },
+                canDeliver = { true },
+                onReplace = { error("Неизменённый текст нельзя вставлять") },
+                onPassiveOverlay = { error("Неизменённый текст нельзя показывать") }
+            )
+
+            assertEquals(
+                SelectionTranslationExecution.FAILED(
+                    SelectionTranslationFailureReason.NO_CHANGE
+                ),
+                result
+            )
+        }
 }

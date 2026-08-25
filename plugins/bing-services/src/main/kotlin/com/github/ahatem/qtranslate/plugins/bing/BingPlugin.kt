@@ -27,7 +27,7 @@ class BingPlugin : Plugin<PluginSettings.None> {
 
     override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
         this.pluginContext = context
-        this.authManager = BingAuthManager(context, httpClient)
+        this.authManager = BingAuthManager(context, httpClient, apiConfig)
 
         pluginContext.logger.info("Bing Plugin initialized")
         return Ok(Unit)

@@ -5,13 +5,13 @@
 # Last matching pattern wins.
 
 # Default — everything
-*                          @ahatem
+*                          @CoCobalt-ux
 
 # API module — changes here affect all plugin authors, extra scrutiny needed
-/api/                      @ahatem
+/api/                      @CoCobalt-ux
 
 # CI and release workflows
-/.github/workflows/        @ahatem
+/.github/workflows/        @CoCobalt-ux
 
 # Wiki
-/wiki/                     @ahatem
+/wiki/                     @CoCobalt-ux

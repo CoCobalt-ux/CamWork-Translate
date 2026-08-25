@@ -22,19 +22,14 @@ import com.github.michaelbull.result.fold
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.StateFlow
 import com.github.ahatem.qtranslate.core.shared.util.shortSummary
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Translates the current input text and updates the [MainState] with the result.
  *
  * ### Job ownership
- * This use case holds a [translationJob] reference to cancel in-flight translations
- * when a new one is requested. **This use case must be a singleton within the
- * [com.github.ahatem.qtranslate.core.main.mvi.MainStore]** — if it is ever recreated,
- * the previous [translationJob] reference is lost and cannot be cancelled, potentially
- * leaving a stale coroutine running that writes to the old state.
- *
- * If the architecture ever requires recreating use cases, move [translationJob] onto
- * the [MainStore] and pass it in as a parameter.
+ * In-flight requests are owned by [TranslationJobCoordinator]. Each workflow uses a separate
+ * [TranslationLane], so a passive selection can never cancel an explicit Shift or the main form.
  *
  * ### Translation Rules
  * When translation rules are configured, the use case resolves the correct target
@@ -57,40 +52,18 @@ class TranslateTextUseCase(
 ) {
     private val logger: Logger = loggerFactory.getLogger("TranslateTextUseCase")
     private val translatorFailover = TranslatorFailover(activeServiceManager, logger::warn)
-    private val translationJobLock = Any()
-    @Volatile
-    private var translationJob: Job? = null
+    private val translationJobs = TranslationJobCoordinator(scope)
+    private val requestSequence = AtomicLong(0)
 
-    fun cancel() {
-        cancelCurrentTranslation("Input cleared")
+    fun cancel(lane: TranslationLane = TranslationLane.MAIN) {
+        translationJobs.cancel(lane, "Translation cancelled")
     }
 
-    private fun cancelCurrentTranslation(reason: String) {
-        synchronized(translationJobLock) {
-            translationJob?.cancel(CancellationException(reason))
-            translationJob = null
-        }
-    }
-
-    /** Атомарно заменяет активный запрос и возвращает именно созданный для вызова Job. */
     private fun launchLatestTranslation(
+        lane: TranslationLane,
         cancellationReason: String,
         block: suspend CoroutineScope.() -> Unit
-    ): Job {
-        lateinit var newJob: Job
-        synchronized(translationJobLock) {
-            translationJob?.cancel(CancellationException(cancellationReason))
-            newJob = scope.launch(start = CoroutineStart.LAZY, block = block)
-            translationJob = newJob
-            newJob.invokeOnCompletion {
-                synchronized(translationJobLock) {
-                    if (translationJob === newJob) translationJob = null
-                }
-            }
-            newJob.start()
-        }
-        return newJob
-    }
+    ): Job = translationJobs.launchLatest(lane, cancellationReason, block)
 
     suspend operator fun invoke(
         getState: () -> MainState,
@@ -99,29 +72,47 @@ class TranslateTextUseCase(
         textOverride: String? = null,
         includeExtraOutput: Boolean = true,
         applyTranslationRules: Boolean = true,
-        sameLanguageFallbackTarget: LanguageCode? = null
-    ) {
+        sameLanguageFallbackTarget: LanguageCode? = null,
+        lane: TranslationLane = TranslationLane.MAIN,
+        requestContext: TranslationRequestContext? = null
+    ): TranslationRunResult {
+        val context = requestContext ?: TranslationRequestContext(
+            requestId = requestSequence.incrementAndGet(),
+            origin = lane.name.lowercase()
+        )
         val textToTranslate = textOverride ?: getState().inputText
         if (textToTranslate.isBlank()) {
-            cancelCurrentTranslation("New translation requested")
-            logger.debug("Translation skipped: input text is blank")
-            return
+            translationJobs.cancel(lane, "Blank translation requested")
+            logger.debug(
+                "Translation rejected: requestId=${context.requestId}, origin=${context.origin}, " +
+                    "attempt=${context.attempt}, reason=invalid_input"
+            )
+            return TranslationRunResult.Failure(TranslationFailureKind.INVALID)
         }
 
         // Resolved with its id: history records which service produced each entry, and services
         // no longer carry their own — the host composes it and keys the registry by it.
         val active = activeServiceManager.getActive<Translator>(ServiceRole.TRANSLATOR)
         if (active == null) {
-            cancelCurrentTranslation("New translation requested")
-            logger.warn("No translator service available")
+            translationJobs.cancel(lane, "No translator available")
+            logger.warn(
+                "Translation rejected: requestId=${context.requestId}, origin=${context.origin}, " +
+                    "attempt=${context.attempt}, reason=no_translator"
+            )
             onStatusUpdate(StatusCode.NoTranslatorActive, NotificationType.ERROR, true)
-            return
+            return TranslationRunResult.Failure(TranslationFailureKind.SERVICE_UNAVAILABLE)
         }
         val translator = active.service
 
-        logger.info("Starting translation with '${translator.name}'")
+        logger.info(
+            "Translation started: requestId=${context.requestId}, origin=${context.origin}, " +
+                "attempt=${context.attempt}, lane=$lane, service='${translator.name}', " +
+                "length=${textToTranslate.length}"
+        )
 
-        val requestJob = launchLatestTranslation("New translation requested") {
+        val outcome = CompletableDeferred<TranslationRunResult>()
+
+        val requestJob = launchLatestTranslation(lane, "New translation requested in $lane") {
             try {
                 onStatusUpdate(StatusCode.Translating, NotificationType.INFO, false)
                 updateState { copy(isLoading = true, translatedText = "", extraOutputText = "", isExtraOutputLoading = false) }
@@ -163,13 +154,28 @@ class TranslateTextUseCase(
                 )
 
                 val execution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-                    translatorFailover.translate(active, request)
+                    translatorFailover.translate(
+                        active = active,
+                        request = request,
+                        totalTimeoutMillis = AppConstants.TRANSLATION_TIMEOUT_MS
+                    )
                 }
 
                 if (execution == null) {
-                    logger.error("Translation timed out after ${AppConstants.TRANSLATION_TIMEOUT_MS}ms")
+                    logger.error(
+                        "Translation failed: requestId=${context.requestId}, origin=${context.origin}, " +
+                            "attempt=${context.attempt}, reason=timeout, " +
+                            "elapsedLimitMs=${AppConstants.TRANSLATION_TIMEOUT_MS}"
+                    )
                     updateState { copy(isLoading = false, isExtraOutputLoading = false) }
                     onStatusUpdate(StatusCode.TranslationTimeout, NotificationType.ERROR, true)
+                    outcome.complete(
+                        TranslationRunResult.Failure(
+                            kind = TranslationFailureKind.TIMEOUT,
+                            translatorId = active.id,
+                            translatorName = translator.name
+                        )
+                    )
                     return@launchLatestTranslation
                 }
 
@@ -178,7 +184,9 @@ class TranslateTextUseCase(
                         // Текст моделей не должен попадать в production-логи. Для диагностики
                         // достаточно сервиса, длины и факта успешного ответа.
                         logger.info(
-                            "Translation successful with '${execution.translator.name}', " +
+                            "Translation response: requestId=${context.requestId}, " +
+                                "origin=${context.origin}, attempt=${context.attempt}, " +
+                                "service='${execution.translator.name}', " +
                                 "resultLength=${response.translatedText.length}"
                         )
 
@@ -212,7 +220,7 @@ class TranslateTextUseCase(
                                         "'${initialTarget.tag}' or a rule changed it; " +
                                         "re-translating to '${resolvedRetryTarget.tag}'"
                                 )
-                                handleReTranslation(
+                                val retryOutcome = handleReTranslation(
                                     textToTranslate  = textToTranslate,
                                     sourceLanguage   = currentState.sourceLanguage,
                                     ruleTarget       = resolvedRetryTarget,
@@ -224,8 +232,10 @@ class TranslateTextUseCase(
                                     ),
                                     updateState      = updateState,
                                     onStatusUpdate   = onStatusUpdate,
-                                    includeExtraOutput = includeExtraOutput
+                                    includeExtraOutput = includeExtraOutput,
+                                    context = context.copy(attempt = context.attempt + 1)
                                 )
+                                outcome.complete(retryOutcome)
                                 return@launchLatestTranslation
                             }
                         }
@@ -257,27 +267,60 @@ class TranslateTextUseCase(
                             onStatusUpdate    = onStatusUpdate,
                             includeExtraOutput = includeExtraOutput
                         )
+                        outcome.complete(
+                            TranslationRunResult.Success(
+                                translatedText = response.translatedText,
+                                translatorId = execution.translatorId,
+                                translatorName = execution.translator.name
+                            )
+                        )
                     },
                     failure = { error ->
-                        logger.error("Translation failed: ${error.message}", error.cause)
+                        val kind = error.toTranslationFailureKind()
+                        logger.error(
+                            "Translation failed: requestId=${context.requestId}, " +
+                                "origin=${context.origin}, attempt=${context.attempt}, " +
+                                "service='${execution.translator.name}', reason=$kind, " +
+                                "type=${error::class.simpleName}"
+                        )
                         updateState { copy(isLoading = false, isExtraOutputLoading = false) }
                         val summary = error.shortSummary()
                         onStatusUpdate(StatusCode.TranslationFailed(summary), NotificationType.ERROR, true)
+                        outcome.complete(
+                            TranslationRunResult.Failure(
+                                kind = kind,
+                                translatorId = execution.translatorId,
+                                translatorName = execution.translator.name
+                            )
+                        )
                     }
                 )
 
             } catch (e: CancellationException) {
-                logger.debug("Translation cancelled")
+                logger.debug(
+                    "Translation cancelled: requestId=${context.requestId}, " +
+                        "origin=${context.origin}, attempt=${context.attempt}, lane=$lane"
+                )
+                outcome.complete(TranslationRunResult.Failure(TranslationFailureKind.CANCELLED))
                 throw e
             } catch (e: Exception) {
-                logger.error("Unexpected error during translation", e)
+                logger.error(
+                    "Unexpected translation error: requestId=${context.requestId}, " +
+                        "origin=${context.origin}, attempt=${context.attempt}, lane=$lane, " +
+                        "type=${e::class.simpleName}"
+                )
                 updateState { copy(isLoading = false, isExtraOutputLoading = false) }
                 val summary = e.shortSummary()
                 onStatusUpdate(StatusCode.UnexpectedError(summary), NotificationType.ERROR, true)
+                outcome.complete(TranslationRunResult.Failure(TranslationFailureKind.UNKNOWN))
             }
         }
 
+        requestJob.invokeOnCompletion {
+            outcome.complete(TranslationRunResult.Failure(TranslationFailureKind.CANCELLED))
+        }
         requestJob.join()
+        return outcome.await()
     }
 
     /**
@@ -294,7 +337,12 @@ class TranslateTextUseCase(
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
         includeExtraOutput: Boolean,
-    ) {
+        context: TranslationRequestContext
+    ): TranslationRunResult {
+        logger.info(
+            "Translation retry started: requestId=${context.requestId}, origin=${context.origin}, " +
+                "attempt=${context.attempt}, service='${active.service.name}', length=${textToTranslate.length}"
+        )
         val retryRequest = TranslationRequest(
             text           = textToTranslate,
             sourceLanguage = sourceLanguage,
@@ -302,19 +350,35 @@ class TranslateTextUseCase(
         )
 
         val retryExecution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-            translatorFailover.translate(active, retryRequest)
+            translatorFailover.translate(
+                active = active,
+                request = retryRequest,
+                totalTimeoutMillis = AppConstants.TRANSLATION_TIMEOUT_MS
+            )
         }
 
         if (retryExecution == null) {
-            logger.error("Re-translation timed out")
+            logger.error(
+                "Translation retry failed: requestId=${context.requestId}, origin=${context.origin}, " +
+                    "attempt=${context.attempt}, reason=timeout"
+            )
             updateState { copy(isLoading = false, isExtraOutputLoading = false) }
             onStatusUpdate(StatusCode.TranslationTimeout, NotificationType.ERROR, true)
-            return
+            return TranslationRunResult.Failure(
+                kind = TranslationFailureKind.TIMEOUT,
+                translatorId = active.id,
+                translatorName = active.service.name
+            )
         }
 
-        retryExecution.result.fold(
+        return retryExecution.result.fold(
             success = { retryResponse ->
-                logger.info("Re-translation successful, resultLength=${retryResponse.translatedText.length}")
+                logger.info(
+                    "Translation retry response: requestId=${context.requestId}, " +
+                        "origin=${context.origin}, attempt=${context.attempt}, " +
+                        "service='${retryExecution.translator.name}', " +
+                        "resultLength=${retryResponse.translatedText.length}"
+                )
                 onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)
 
                 val (newHistory, newHistoryIndex) = buildHistory(
@@ -340,12 +404,28 @@ class TranslateTextUseCase(
                     ruleTarget        = ruleTarget,
                     includeExtraOutput = includeExtraOutput
                 )
+                TranslationRunResult.Success(
+                    translatedText = retryResponse.translatedText,
+                    translatorId = retryExecution.translatorId,
+                    translatorName = retryExecution.translator.name
+                )
             },
             failure = { error ->
-                logger.error("Re-translation failed: ${error.message}", error.cause)
+                val kind = error.toTranslationFailureKind()
+                logger.error(
+                    "Translation retry failed: requestId=${context.requestId}, " +
+                        "origin=${context.origin}, attempt=${context.attempt}, " +
+                        "service='${retryExecution.translator.name}', reason=$kind, " +
+                        "type=${error::class.simpleName}"
+                )
                 updateState { copy(isLoading = false, isExtraOutputLoading = false) }
                 val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.TranslationFailed(summary), NotificationType.ERROR, true)
+                TranslationRunResult.Failure(
+                    kind = kind,
+                    translatorId = retryExecution.translatorId,
+                    translatorName = retryExecution.translator.name
+                )
             }
         )
     }
@@ -436,7 +516,7 @@ class TranslateTextUseCase(
         val extraOutputType = settingsState.value.extraOutputType
 
         if (extraOutputType == ExtraOutputType.None) {
-            cancelCurrentTranslation("Extra output disabled")
+            translationJobs.cancel(TranslationLane.MAIN, "Extra output disabled")
             updateState { copy(extraOutputText = "", isExtraOutputLoading = false) }
             return true
         }
@@ -454,7 +534,7 @@ class TranslateTextUseCase(
 
         // Cancels any extra-output request still in flight, so switching type twice quickly
         // cannot land the first answer under the second choice.
-        launchLatestTranslation("Extra output type changed") {
+        launchLatestTranslation(TranslationLane.MAIN, "Extra output type changed") {
             updateState { copy(extraOutputText = "", isExtraOutputLoading = true) }
             try {
                 val extraOutput = handleExtraOutput(
@@ -622,7 +702,8 @@ class TranslateTextUseCase(
         val execution = withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
             translatorFailover.translate(
                 activeTranslator,
-                TranslationRequest(targetText, sourceLanguage, targetLanguage)
+                TranslationRequest(targetText, sourceLanguage, targetLanguage),
+                totalTimeoutMillis = AppConstants.TRANSLATION_TIMEOUT_MS
             )
         }
 
@@ -638,7 +719,10 @@ class TranslateTextUseCase(
                     response.translatedText
                 },
                 failure = { error ->
-                    logger.error("Backward translation failed: ${error.message}", error.cause)
+                    logger.error(
+                        "Backward translation failed: service='${execution.translator.name}', " +
+                            "type=${error::class.simpleName}"
+                    )
                     onStatusUpdate(StatusCode.TranslationComplete, NotificationType.SUCCESS, true)
                     "Backward translation failed: ${error.message}"
                 }

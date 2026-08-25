@@ -13,6 +13,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainEvent
 import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
+import com.github.ahatem.qtranslate.core.main.mvi.SelectionTranslationFailureReason
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
 import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
 import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
@@ -335,30 +336,22 @@ class MainAppFrame(
         onShowQuickTranslate = { text ->
             appScope.launch { mainStore.dispatch(MainIntent.ShowQuickTranslate(text)) }
         },
-        onShiftTapTranslate = { text ->
+        onShiftTapTranslate = { text, requestId ->
             if (text.isBlank()) {
                 // На macOS пустое выделение почти всегда означает не отсутствие текста, а
                 // отсутствие разрешения: синтетический Cmd+C до чужого окна не доходит, и буфер
                 // остаётся прежним. Сообщение про «нет выделенного текста» отправляло искать
                 // несуществующую ошибку.
                 val missingPermission = !MacAccessibilityPermission.isGranted()
-                runOnUi {
-                    loadingIndicator.showError(
-                        localizer.getString(
-                            if (missingPermission) {
-                                "shift_overlay.permission_required"
-                            } else {
-                                "shift_overlay.capture_failed"
-                            }
-                        )
-                    )
-                    if (missingPermission) {
-                        MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
-                    }
+                mainStore.dispatch(MainIntent.ReportShiftCaptureFailure(requestId))
+                if (missingPermission) runOnUi {
+                    MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
                 }
             } else {
                 // Только MVI-intent: окно приложения не показывается и фокус остаётся в источнике.
-                mainStore.dispatch(MainIntent.TranslateShiftSelection(text))
+                mainStore.dispatch(
+                    MainIntent.TranslateShiftSelection(selectedText = text, requestId = requestId)
+                )
             }
         },
         onListenToText = { text ->
@@ -395,7 +388,7 @@ class MainAppFrame(
                 if (!isActive) selectionTranslateButton.showAt(location, text)
             }
         },
-        onAutoTranslateSelection = { text ->
+        onAutoTranslateSelection = { text, requestId ->
             // Внутри CamWork уже есть обычная кнопка Translate; auto-overlay нужен внешним окнам.
             if (!isActive) {
                 runOnUi {
@@ -404,7 +397,9 @@ class MainAppFrame(
                         timeoutMessage = localizer.getString("shift_overlay.too_slow")
                     )
                 }
-                mainStore.dispatch(MainIntent.AutoTranslateSelection(text))
+                mainStore.dispatch(
+                    MainIntent.AutoTranslateSelection(selectedText = text, requestId = requestId)
+                )
             }
         },
         onPointerPressed = { location ->
@@ -413,7 +408,7 @@ class MainAppFrame(
                 dismissPopupsPressedOutside(location)
             }
         },
-        onShiftTapStarted = {
+        onShiftTapStarted = { _ ->
             runOnUi {
                 loadingIndicator.showTranslating(
                     message = localizer.getString("shift_overlay.translating"),
@@ -776,6 +771,10 @@ class MainAppFrame(
                             text = event.translatedText,
                             expiresAtMillis = event.expiresAtMillis,
                             onSuccess = {
+                                logger.info(
+                                    "Selection paste completed: requestId=${event.requestId}, " +
+                                        "length=${event.translatedText.length}"
+                                )
                                 if (event.showShiftFeedback) runOnUi {
                                     loadingIndicator.showSuccess(
                                         localizer.getString("shift_overlay.replaced")
@@ -783,6 +782,10 @@ class MainAppFrame(
                                 }
                             },
                             onFailure = {
+                                logger.warn(
+                                    "Selection paste failed: requestId=${event.requestId}, " +
+                                        "reason=${SelectionTranslationFailureReason.PASTE}"
+                                )
                                 if (event.showShiftFeedback) runOnUi {
                                     loadingIndicator.showError(
                                         localizer.getString("shift_overlay.paste_failed")
@@ -792,7 +795,15 @@ class MainAppFrame(
                         )
                     }
                     is MainEvent.ShiftTranslationFailed -> withContext(Dispatchers.Swing) {
-                        loadingIndicator.showError(resolveShiftTranslationFailure(event.reason))
+                        logger.warn(
+                            "Selection request failed: requestId=${event.requestId}, " +
+                                "reason=${event.reason}"
+                        )
+                        if (event.reason == SelectionTranslationFailureReason.CANCELLED) {
+                            loadingIndicator.dismiss()
+                        } else {
+                            loadingIndicator.showError(resolveShiftTranslationFailure(event.reason))
+                        }
                     }
                     MainEvent.AutoSelectionTranslationFinished -> withContext(Dispatchers.Swing) {
                         loadingIndicator.dismiss()
@@ -1201,16 +1212,27 @@ class MainAppFrame(
     }
 
     private fun resolveShiftTranslationFailure(
-        reason: MainEvent.ShiftTranslationFailure
+        reason: SelectionTranslationFailureReason
     ): String = when (reason) {
-        MainEvent.ShiftTranslationFailure.DISABLED ->
+        SelectionTranslationFailureReason.DISABLED ->
             localizer.getString("shift_overlay.disabled")
-        MainEvent.ShiftTranslationFailure.UNSUPPORTED_DIRECTION ->
+        SelectionTranslationFailureReason.UNSUPPORTED_DIRECTION ->
             localizer.getString("shift_overlay.unsupported_direction")
-        MainEvent.ShiftTranslationFailure.NO_TARGET_LANGUAGE ->
+        SelectionTranslationFailureReason.NO_TARGET_LANGUAGE ->
             localizer.getString("shift_overlay.no_target_language")
-        MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED ->
-            localizer.getString("shift_overlay.translation_failed")
+        SelectionTranslationFailureReason.NETWORK -> localizer.getString("shift_overlay.network")
+        SelectionTranslationFailureReason.RATE_LIMIT -> localizer.getString("shift_overlay.rate_limit")
+        SelectionTranslationFailureReason.TIMEOUT -> localizer.getString("shift_overlay.timeout")
+        SelectionTranslationFailureReason.AUTHENTICATION ->
+            localizer.getString("shift_overlay.authentication")
+        SelectionTranslationFailureReason.INVALID -> localizer.getString("shift_overlay.invalid")
+        SelectionTranslationFailureReason.SERVICE_UNAVAILABLE ->
+            localizer.getString("shift_overlay.service_unavailable")
+        SelectionTranslationFailureReason.NO_CHANGE -> localizer.getString("shift_overlay.no_change")
+        SelectionTranslationFailureReason.CAPTURE -> localizer.getString("shift_overlay.capture_failed")
+        SelectionTranslationFailureReason.PASTE -> localizer.getString("shift_overlay.paste_failed")
+        SelectionTranslationFailureReason.CANCELLED -> localizer.getString("shift_overlay.cancelled")
+        SelectionTranslationFailureReason.UNKNOWN -> localizer.getString("shift_overlay.translation_failed")
     }
 
     private fun applyOrientation(isRtl: Boolean) {

@@ -11,7 +11,8 @@ data class BingAuth(
     val token: String,
     val muid: String,
     val sid: String,
-    val tid: String
+    val tid: String,
+    val userAgent: String
 )
 
 @Serializable

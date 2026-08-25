@@ -107,7 +107,7 @@ class ShiftOutgoingTextCorrectorTest {
                 translate = { source ->
                     translationCalls++
                     assertEquals("Привет", source)
-                    "Hello"
+                    SelectionTranslationAttempt.Translated("Hello")
                 },
                 canDeliver = { true },
                 onReplace = pasted::add,

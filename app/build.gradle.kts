@@ -76,9 +76,39 @@ tasks.shadowJar {
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
 }
 
-val manualQaPluginProjects = rootProject.subprojects.filter {
+val bundledPluginProjects = rootProject.subprojects.filter {
     it.path.startsWith(":plugins:") && it.path != ":plugins:common"
 }
+val bundledPluginTrustDirectory = layout.buildDirectory.dir("generated/bundled-plugin-trust")
+val bundledPluginTrustManifest = bundledPluginTrustDirectory.map {
+    it.file("META-INF/camwork/bundled-plugins.sha256")
+}
+val generateBundledPluginTrustManifest by tasks.registering(GenerateBundledPluginTrustManifestTask::class) {
+    group = "build"
+    description = "Формирует встроенный SHA-256 allowlist штатных плагинов CamWork."
+    dependsOn(bundledPluginProjects.map { "${it.path}:jar" })
+    pluginJars.from(bundledPluginProjects.map { it.tasks.named<Jar>("jar").flatMap(Jar::getArchiveFile) })
+    pluginIdsByArchiveName.set(
+        bundledPluginProjects.associate { pluginProject ->
+            val manifestFile = pluginProject.file("src/main/resources/plugin.json")
+            val pluginId = groovy.json.JsonSlurper().parse(manifestFile).let { parsed ->
+                @Suppress("UNCHECKED_CAST")
+                (parsed as Map<String, Any?>).getValue("id") as String
+            }
+            pluginProject.tasks.named<Jar>("jar").get().archiveFileName.get() to pluginId
+        }
+    )
+    outputFile.set(bundledPluginTrustManifest)
+}
+
+sourceSets.main {
+    resources.srcDir(bundledPluginTrustDirectory)
+}
+tasks.processResources {
+    dependsOn(generateBundledPluginTrustManifest)
+}
+
+val manualQaPluginProjects = bundledPluginProjects
 val manualQaDirectory = layout.buildDirectory.dir("manual-qa")
 val externalPluginsDirectory = providers.gradleProperty("pluginsDir")
     .orElse(rootProject.layout.projectDirectory.dir("plugins").asFile.absolutePath)

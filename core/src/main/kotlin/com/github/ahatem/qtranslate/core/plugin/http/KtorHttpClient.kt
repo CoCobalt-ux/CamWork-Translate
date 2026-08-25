@@ -15,6 +15,7 @@ import io.ktor.client.engine.HttpClientEngine
 import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.http
 import io.ktor.client.engine.cio.*
+import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.plugins.*
 import io.ktor.client.plugins.compression.*
 import io.ktor.client.plugins.contentnegotiation.*
@@ -29,6 +30,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.Closeable
+import java.net.SocketTimeoutException
 import java.util.Base64
 
 /**
@@ -95,23 +97,14 @@ internal class KtorHttpClient(
         }
         if (config.enableRetry) {
             install(HttpRequestRetry) {
-                // Not retryOnServerErrors, which retries every 5xx whatever the method. A 5xx may
-                // mean the server did the work and failed to say so, and replaying a POST then
-                // does it twice: a second translation billed, a second quota unit spent, and for
-                // anything with a real side effect, worse. Only the methods RFC 9110 defines as
-                // idempotent are safe to send again on a 5xx.
-                //
-                // 429 is different and is retried for any method: it says the server refused the
-                // request without acting on it, so there is nothing to duplicate. It is also the
-                // status a translation API actually returns under load, and the old rule excluded
-                // it entirely — the one case worth retrying was the one case that never was.
+                // 5xx повторяется только для идемпотентных методов. 429 по умолчанию сразу
+                // возвращается плагину: интерактивный перевод быстрее переключится на другой
+                // endpoint/провайдер, чем будет ждать Retry-After внутри короткого route deadline.
                 retryIf(maxRetries = config.maxRetries) { request, response ->
                     val status = response.status.value
-                    status == TOO_MANY_REQUESTS || (status in 500..599 && request.method in IDEMPOTENT_METHODS)
+                    (config.retryRateLimits && status == TOO_MANY_REQUESTS) ||
+                        (status in 500..599 && request.method in IDEMPOTENT_METHODS)
                 }
-                // Honours Retry-After when the server sends it, falling back to backoff when it
-                // does not. Retrying sooner than a rate limiter asked for is how a rate limit
-                // becomes a longer one.
                 exponentialDelay(baseDelayMs = config.retryInitialDelayMillis.coerceAtLeast(1))
             }
         }
@@ -167,12 +160,8 @@ internal class KtorHttpClient(
             // Отмена предыдущего перевода — штатное управление потоком, а не сетевая ошибка.
             // Преобразование её в Err продолжало устаревший запрос и показывало ложный failure.
             throw e
-        } catch (e: HttpRequestTimeoutException) {
-            logger.error("POST request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            logger.error("POST request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
+            transportFailure("POST", url, e)
         }
     }
 
@@ -196,12 +185,8 @@ internal class KtorHttpClient(
             handleResponse(response, url)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: HttpRequestTimeoutException) {
-            logger.error("GET request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            logger.error("GET request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
+            transportFailure("GET", url, e)
         }
     }
 
@@ -238,12 +223,8 @@ internal class KtorHttpClient(
             handleResponse(response, url)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: HttpRequestTimeoutException) {
-            logger.error("POST form request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            logger.error("POST form request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
+            transportFailure("POST_FORM", url, e)
         }
     }
 
@@ -282,12 +263,8 @@ internal class KtorHttpClient(
             handleResponseBytes(response, url)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: HttpRequestTimeoutException) {
-            logger.error("POST form bytes request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            logger.error("POST form bytes request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
+            transportFailure("POST_FORM_BYTES", url, e)
         }
     }
 
@@ -310,12 +287,8 @@ internal class KtorHttpClient(
             handleResponseBytes(response, url)
         } catch (e: CancellationException) {
             throw e
-        } catch (e: HttpRequestTimeoutException) {
-            logger.error("GET bytes request timeout for $url", e)
-            Err(ServiceError.TimeoutError("Request timed out: $url", e))
         } catch (e: Exception) {
-            logger.error("GET bytes request failed for $url", e)
-            Err(ServiceError.NetworkError("Network error: ${e.message}", e))
+            transportFailure("GET_BYTES", url, e)
         }
     }
 
@@ -325,19 +298,23 @@ internal class KtorHttpClient(
         response: HttpResponse,
         url: String
     ): Result<String, ServiceError> {
+        val host = safeHost(url)
         return when (response.status) {
             HttpStatusCode.OK -> Ok(response.bodyAsText())
             HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden -> Err(
-                ServiceError.AuthenticationError("Authentication failed for $url")
+                ServiceError.AuthenticationError("Authentication failed for host=$host")
             )
 
             HttpStatusCode.TooManyRequests -> Err(
-                ServiceError.RateLimitError("Rate limit exceeded for $url")
+                ServiceError.RateLimitError(
+                    message = "Rate limit exceeded for host=$host",
+                    retryAfterSeconds = response.retryAfterSeconds()
+                )
             )
 
             HttpStatusCode.PaymentRequired -> {
-                val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                logger.error("HTTP 402 (Payment Required) for $url — $errorBody")
+                val errorBodyLength = runCatching { response.bodyAsText().length }.getOrDefault(-1)
+                logger.error("HTTP failure: operation=RESPONSE host=$host status=402 bodyLength=$errorBodyLength")
                 Err(
                     ServiceError.AuthenticationError(
                         "Insufficient credits. " +
@@ -348,9 +325,12 @@ internal class KtorHttpClient(
             }
 
             else -> {
-                val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                logger.error("HTTP ${response.status.value} for $url — $errorBody")
-                Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for $url\n$errorBody"))
+                val errorBodyLength = runCatching { response.bodyAsText().length }.getOrDefault(-1)
+                logger.error(
+                    "HTTP failure: operation=RESPONSE host=$host " +
+                        "status=${response.status.value} bodyLength=$errorBodyLength"
+                )
+                Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for host=$host"))
             }
         }
     }
@@ -359,20 +339,27 @@ internal class KtorHttpClient(
         response: HttpResponse,
         url: String
     ): Result<ByteArray, ServiceError> {
+        val host = safeHost(url)
         return when (response.status) {
             HttpStatusCode.OK -> Ok(response.body<ByteArray>())
             HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden -> Err(
-                ServiceError.AuthenticationError("Authentication failed for $url")
+                ServiceError.AuthenticationError("Authentication failed for host=$host")
             )
 
             HttpStatusCode.TooManyRequests -> Err(
-                ServiceError.RateLimitError("Rate limit exceeded for $url")
+                ServiceError.RateLimitError(
+                    message = "Rate limit exceeded for host=$host",
+                    retryAfterSeconds = response.retryAfterSeconds()
+                )
             )
 
             else -> {
-                val errorBody = runCatching { response.bodyAsText() }.getOrDefault("")
-                logger.error("HTTP ${response.status.value} for $url — $errorBody")
-                Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for $url\n$errorBody"))
+                val errorBodyLength = runCatching { response.bodyAsText().length }.getOrDefault(-1)
+                logger.error(
+                    "HTTP failure: operation=RESPONSE_BYTES host=$host " +
+                        "status=${response.status.value} bodyLength=$errorBodyLength"
+                )
+                Err(ServiceError.ServiceUnavailableError("HTTP ${response.status.value} for host=$host"))
             }
         }
     }
@@ -382,6 +369,33 @@ internal class KtorHttpClient(
         // The client does not close an engine it was handed, so an owned one is closed here.
         if (ownsEngine) engine.close()
     }
+
+    /** Поддерживает числовую форму Retry-After; HTTP-date остаётся без подсказки. */
+    private fun HttpResponse.retryAfterSeconds(): Int? =
+        headers[HttpHeaders.RetryAfter]?.trim()?.toIntOrNull()
+
+    /** Классифицирует транспортный сбой, не перенося URL, query/body или Throwable в логи. */
+    private fun <T> transportFailure(
+        operation: String,
+        url: String,
+        error: Exception
+    ): Result<T, ServiceError> {
+        val host = safeHost(url)
+        val errorType = error::class.simpleName ?: error.javaClass.simpleName
+        return if (error.isTransportTimeout()) {
+            logger.error("HTTP timeout: operation=$operation host=$host type=$errorType")
+            Err(ServiceError.TimeoutError("Request timed out: operation=$operation host=$host"))
+        } else {
+            logger.error("HTTP network failure: operation=$operation host=$host type=$errorType")
+            Err(ServiceError.NetworkError("Network error: operation=$operation host=$host type=$errorType"))
+        }
+    }
+
+    private fun Exception.isTransportTimeout(): Boolean =
+        this is HttpRequestTimeoutException || this is ConnectTimeoutException || this is SocketTimeoutException
+
+    private fun safeHost(url: String): String =
+        runCatching { Url(url).host.takeIf(String::isNotBlank) }.getOrNull() ?: "unknown-host"
 }
 
 /**
@@ -393,6 +407,14 @@ data class HttpClientConfig(
     val socketTimeoutMillis: Long = 15_000,
     val enableRetry: Boolean = true,
     val maxRetries: Int = 2,
+    /**
+     * Разрешает повторять HTTP 429 внутри одного провайдера.
+     *
+     * Для desktop-перевода значение выключено: circuit breaker и межпровайдерный failover уже
+     * являются уровнем повторения, а ожидание Retry-After внутри HTTP-клиента маскирует 429 как
+     * timeout и заметно увеличивает отклик. Опция сохранена для неинтерактивных клиентов.
+     */
+    val retryRateLimits: Boolean = false,
     /**
      * How long to wait before the first retry. Each attempt after that waits twice the last,
      * capped, with jitter added.

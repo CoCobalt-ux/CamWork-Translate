@@ -23,10 +23,10 @@
 
 **The translation tool that Questsoft abandoned. Rebuilt from scratch. Built to last.**
 
-[![Release](https://img.shields.io/github/v/release/ahatem/QTranslate?style=flat-square&color=4A90D9&label=latest)](https://github.com/ahatem/QTranslate/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/ahatem/QTranslate/total?style=flat-square&color=4A90D9&label=downloads)](https://github.com/ahatem/QTranslate/releases)
-[![License](https://img.shields.io/github/license/ahatem/QTranslate?style=flat-square)](LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/ahatem/QTranslate/ci.yml?branch=develop&style=flat-square&label=build)](https://github.com/ahatem/QTranslate/actions)
+[![Release](https://img.shields.io/github/v/release/CoCobalt-ux/CamWork-Translate?style=flat-square&color=4A90D9&label=latest)](https://github.com/CoCobalt-ux/CamWork-Translate/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/CoCobalt-ux/CamWork-Translate/total?style=flat-square&color=4A90D9&label=downloads)](https://github.com/CoCobalt-ux/CamWork-Translate/releases)
+[![License](https://img.shields.io/github/license/CoCobalt-ux/CamWork-Translate?style=flat-square)](LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/CoCobalt-ux/CamWork-Translate/ci.yml?branch=main&style=flat-square&label=build)](https://github.com/CoCobalt-ux/CamWork-Translate/actions)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 [![Made with Kotlin](https://img.shields.io/badge/Kotlin-2.x-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 
@@ -152,29 +152,29 @@ For longer work: open the main window, type or paste, translate. Switch engines 
 
 ## Installation
 
-All downloads live on the [**latest release page**](https://github.com/ahatem/QTranslate/releases/latest).
+All downloads live on the [**latest CamWork release page**](https://github.com/CoCobalt-ux/CamWork-Translate/releases/latest).
 
 | Your platform | Download | Java required |
 |---|---|---|
-| **Windows** | `QTranslate-<version>-windows-x64.zip` | **No** — Java is included |
-| **macOS / Linux** | `QTranslate-<version>.zip` | Java 11+ |
-| **Any (app only, no plugins)** | `QTranslate-App-<version>.jar` | Java 11+ |
+| **Windows** | `CamWork-Translate-<version>-Setup-windows-x64.exe` | **No** — Java is included |
+| **Portable** | `CamWork-Translate-<version>.zip` | Java 17+ |
+| **Any (app only, no plugins)** | `CamWork-Translate-App-<version>.jar` | Java 17+ |
 
 Every download already contains all bundled plugins, languages, and themes. Pick one — you do not need the others.
 
 ### Windows
 
-1. Download `QTranslate-<version>-windows-x64.zip`
-2. Extract to a writable folder
-3. Run `QTranslate.exe`
+1. Download `CamWork-Translate-<version>-Setup-windows-x64.exe`
+2. Run the installer; administrator rights are not required
+3. Start `CamWork Translate` from the Start menu
 
 No Java installation needed — the package ships its own trimmed runtime.
 
 ### macOS and Linux
 
-1. Install **Java 11 or later** ([Temurin](https://adoptium.net) recommended)
-2. Download and extract `QTranslate-<version>.zip`
-3. Run `QTranslate.jar`, or `java -jar QTranslate.jar` from a terminal
+1. Install **Java 17 or later** ([Temurin](https://adoptium.net) recommended)
+2. Download and extract `CamWork-Translate-<version>.zip`
+3. Run `CamWork-Translate.jar`, or `java -jar CamWork-Translate.jar` from a terminal
 
 ```
 QTranslate/

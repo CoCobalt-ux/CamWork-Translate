@@ -1,6 +1,8 @@
 package com.github.ahatem.qtranslate.core.plugin.http
 
 import com.github.ahatem.qtranslate.api.core.Logger
+import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.michaelbull.result.fold
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -11,6 +13,7 @@ import kotlinx.coroutines.test.runTest
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -46,9 +49,17 @@ class KtorHttpClientRetryTest {
         )
     }
 
-    private fun clientOn(engine: MockEngine, maxRetries: Int = 2) = KtorHttpClient(
+    private fun clientOn(
+        engine: MockEngine,
+        maxRetries: Int = 2,
+        retryRateLimits: Boolean = false
+    ) = KtorHttpClient(
         logger = silentLogger,
-        config = HttpClientConfig(enableRetry = true, maxRetries = maxRetries),
+        config = HttpClientConfig(
+            enableRetry = true,
+            maxRetries = maxRetries,
+            retryRateLimits = retryRateLimits
+        ),
         engine = engine,
         ownsEngine = false
     )
@@ -74,15 +85,38 @@ class KtorHttpClientRetryTest {
     }
 
     @Test
-    fun `a POST answered with 429 is retried, because the server did not act on it`() = runTest {
+    fun `429 по умолчанию сразу возвращается провайдеру для быстрого failover`() = runTest {
         val calls = AtomicInteger()
         val engine = countingEngine(HttpStatusCode.TooManyRequests, calls)
         clientOn(engine, maxRetries = 2).use { it.post("https://example.invalid/translate", body = "{}") }
 
-        // 429 says the request was refused rather than performed, so there is nothing to
-        // duplicate. It is also the status a translation API actually returns under load, and the
-        // rule this replaced excluded it entirely.
-        assertEquals(3, calls.get(), "429 should be retried even for a POST")
+        assertEquals(1, calls.get(), "429 должен немедленно открыть circuit/failover провайдера")
+    }
+
+    @Test
+    fun `Retry-After передаётся в типизированную ошибку без ожидания`() = runTest {
+        val calls = AtomicInteger()
+        val engine = countingEngine(HttpStatusCode.TooManyRequests, calls, retryAfterSeconds = 45)
+
+        val result = clientOn(engine).use { it.get("https://example.invalid/translate") }
+        val error = result.fold(
+            success = { kotlin.error("Ожидался rate limit") },
+            failure = { it }
+        )
+
+        assertEquals(1, calls.get())
+        assertEquals(45, assertIs<ServiceError.RateLimitError>(error).retryAfterSeconds)
+    }
+
+    @Test
+    fun `повтор 429 можно явно включить для неинтерактивного клиента`() = runTest {
+        val calls = AtomicInteger()
+        val engine = countingEngine(HttpStatusCode.TooManyRequests, calls)
+        clientOn(engine, maxRetries = 2, retryRateLimits = true).use {
+            it.post("https://example.invalid/translate", body = "{}")
+        }
+
+        assertEquals(3, calls.get())
     }
 
     @Test
@@ -96,7 +130,9 @@ class KtorHttpClientRetryTest {
         // retry, one second plus up to one of jitter, so a pass here cannot be explained by the
         // backoff having been slow anyway. That makes this the slow test in the file, on purpose.
         val startedAt = System.nanoTime()
-        clientOn(engine, maxRetries = 1).use { it.get("https://example.invalid/languages") }
+        clientOn(engine, maxRetries = 1, retryRateLimits = true).use {
+            it.get("https://example.invalid/languages")
+        }
         val waitedMillis = (System.nanoTime() - startedAt) / 1_000_000
 
         assertEquals(2, calls.get(), "expected the original attempt and one retry")
@@ -142,6 +178,7 @@ class KtorHttpClientRetryTest {
             config = HttpClientConfig(
                 enableRetry = true,
                 maxRetries = 1,
+                retryRateLimits = true,
                 retryInitialDelayMillis = 3_000
             ),
             engine = engine,

@@ -20,6 +20,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.max
 import kotlin.math.min
 
 /** Быстрая последовательность бесплатных web-endpoint Google с изоляцией отказавших маршрутов. */
@@ -39,6 +40,7 @@ internal class GoogleEndpointRouter(
     private val onRouteEvent: (String) -> Unit = {}
 ) {
     private val blockedUntilMillis = ConcurrentHashMap<Route, Long>()
+    private val consecutiveTransientFailures = ConcurrentHashMap<Route, Int>()
 
     suspend fun translate(
         text: String,
@@ -57,13 +59,10 @@ internal class GoogleEndpointRouter(
             "No Google web endpoint is currently available."
         )
 
-        // Chrome single сильнее ограничен длиной URL. `/t` уверенно принимает до 5000 символов,
-        // поэтому средний текст не должен преждевременно уходить в более тяжёлый RPC.
-        val routes = if (text.length <= MAX_CHROME_SINGLE_CHARACTERS && isFastRequest) {
-            Route.entries
-        } else {
-            listOf(Route.TRANSLATE_T, Route.BATCH_EXECUTE)
-        }
+        // translate_a/single сейчас стабильно отвечает 429 даже при исправных соседних endpoint.
+        // Не тратим на него пользовательский deadline; enum оставлен для совместимости тестов и
+        // возможного контролируемого возврата маршрута после изменения поведения Google.
+        val routes = listOf(Route.TRANSLATE_T, Route.BATCH_EXECUTE)
         for (route in routes) {
             val now = clockMillis()
             val blockedUntil = blockedUntilMillis[route] ?: 0L
@@ -85,13 +84,16 @@ internal class GoogleEndpointRouter(
             result.fold(
                 success = { parsed ->
                     blockedUntilMillis.remove(route)
+                    consecutiveTransientFailures.remove(route)
                     onRouteEvent("Google route ${route.label} succeeded")
                     return Ok(parsed.toResponse())
                 },
                 failure = { error ->
                     lastError = error
-                    blockedUntilMillis[route] = clockMillis() + circuitDuration(error)
-                    onRouteEvent("Google route ${route.label} failed: ${error.message}")
+                    recordFailure(route, error)
+                    onRouteEvent(
+                        "Google route ${route.label} failed: type=${error::class.simpleName}"
+                    )
                 }
             )
         }
@@ -111,15 +113,18 @@ internal class GoogleEndpointRouter(
             return Err(ServiceError.ServiceUnavailableError("Google batch route is temporarily unavailable."))
         }
 
-        val chunks = splitForBatch(text)
+        val plan = splitForBatch(text)
+        if (plan.chunks.isEmpty()) {
+            return Ok(TranslationResponse(translatedText = plan.leadingWhitespace))
+        }
         val chunkResults = withTimeoutOrNull(longRequestBudgetMillis) {
             coroutineScope {
                 val permits = Semaphore(MAX_PARALLEL_BATCH_REQUESTS)
-                chunks.map { chunk ->
+                plan.chunks.map { chunk ->
                     async {
                         permits.withPermit {
                             withTimeoutOrNull(longRouteTimeoutMillis) {
-                                request(route, chunk, sourceTag, targetTag)
+                                request(route, chunk.text, sourceTag, targetTag)
                             } ?: Err(ServiceError.TimeoutError("Google batch chunk timed out."))
                         }
                     }
@@ -136,10 +141,11 @@ internal class GoogleEndpointRouter(
         }
 
         blockedUntilMillis.remove(route)
-        onRouteEvent("Google route ${route.label} succeeded for ${chunks.size} chunks")
+        consecutiveTransientFailures.remove(route)
+        onRouteEvent("Google route ${route.label} succeeded for ${plan.chunks.size} chunks")
         return Ok(
             TranslationResponse(
-                translatedText = joinBatchTranslations(chunks, translations),
+                translatedText = joinBatchTranslations(plan, translations),
                 detectedLanguage = translations.firstNotNullOfOrNull { it.detectedLanguage }
                     ?.let(languageMapper::fromProviderCode)
             )
@@ -147,63 +153,133 @@ internal class GoogleEndpointRouter(
     }
 
     private fun failBatchRoute(error: ServiceError): Result<TranslationResponse, ServiceError> {
-        blockedUntilMillis[Route.BATCH_EXECUTE] = clockMillis() + circuitDuration(error)
-        onRouteEvent("Google route ${Route.BATCH_EXECUTE.label} failed: ${error.message}")
+        recordFailure(Route.BATCH_EXECUTE, error)
+        onRouteEvent(
+            "Google route ${Route.BATCH_EXECUTE.label} failed: type=${error::class.simpleName}"
+        )
         return Err(error)
     }
 
-    private fun circuitDuration(error: ServiceError): Long = when (error) {
-        is ServiceError.TimeoutError, is ServiceError.NetworkError -> transientCircuitOpenMillis
-        else -> circuitOpenMillis
+    private fun recordFailure(route: Route, error: ServiceError) {
+        when (error) {
+            is ServiceError.RateLimitError -> {
+                consecutiveTransientFailures.remove(route)
+                val retryAfterMillis = error.retryAfterSeconds?.toLong()?.times(1_000L) ?: 0L
+                blockedUntilMillis[route] = clockMillis() + max(circuitOpenMillis, retryAfterMillis)
+            }
+            is ServiceError.InvalidResponseError,
+            is ServiceError.AuthenticationError -> {
+                consecutiveTransientFailures.remove(route)
+                blockedUntilMillis[route] = clockMillis() + circuitOpenMillis
+            }
+            is ServiceError.TimeoutError,
+            is ServiceError.NetworkError,
+            is ServiceError.ServiceUnavailableError -> {
+                val failures = consecutiveTransientFailures.merge(route, 1, Int::plus) ?: 1
+                if (failures >= TRANSIENT_FAILURES_TO_OPEN) {
+                    consecutiveTransientFailures.remove(route)
+                    blockedUntilMillis[route] = clockMillis() + transientCircuitOpenMillis
+                }
+            }
+            else -> consecutiveTransientFailures.remove(route)
+        }
     }
 
-    /** Делит без потери символов, предпочитая абзац, конец предложения и затем пробел. */
-    internal fun splitForBatch(text: String): List<String> {
-        if (text.length <= MAX_BATCH_CHUNK_CHARACTERS) return listOf(text)
+    /**
+     * Делит контент и граничные пробелы отдельно. Endpoint может как сохранить, так и обрезать
+     * whitespace, поэтому разделитель не отправляется в Google и добавляется локально ровно один раз.
+     */
+    internal fun splitForBatch(text: String): BatchPlan {
+        val contentStart = text.indexOfFirst { !it.isWhitespace() }
+        if (contentStart == -1) return BatchPlan(leadingWhitespace = text, chunks = emptyList())
 
-        val result = mutableListOf<String>()
-        var start = 0
-        while (start < text.length) {
-            var end = min(start + MAX_BATCH_CHUNK_CHARACTERS, text.length)
-            if (end < text.length) {
-                if (Character.isHighSurrogate(text[end - 1])) end--
-                val minimumBoundary = start + MAX_BATCH_CHUNK_CHARACTERS / 2
-                end = findPreferredBoundary(text, minimumBoundary, end) ?: end
+        val contentEnd = text.indexOfLast { !it.isWhitespace() } + 1
+        val leadingWhitespace = text.substring(0, contentStart)
+        val trailingWhitespace = text.substring(contentEnd)
+        val chunks = mutableListOf<BatchChunk>()
+        var start = contentStart
+
+        while (start < contentEnd) {
+            val remaining = contentEnd - start
+            if (remaining <= MAX_BATCH_CHUNK_CHARACTERS) {
+                chunks += BatchChunk(
+                    text = text.substring(start, contentEnd),
+                    separatorAfter = trailingWhitespace
+                )
+                break
             }
-            result += text.substring(start, end)
-            start = end
+
+            var hardEnd = start + MAX_BATCH_CHUNK_CHARACTERS
+            if (Character.isHighSurrogate(text[hardEnd - 1]) && Character.isLowSurrogate(text[hardEnd])) {
+                hardEnd--
+            }
+            val minimumBoundary = min(start + MAX_BATCH_CHUNK_CHARACTERS / 2, hardEnd)
+            val separator = findPreferredSeparator(text, start, minimumBoundary, hardEnd, contentEnd)
+
+            if (separator != null) {
+                chunks += BatchChunk(
+                    text = text.substring(start, separator.first),
+                    separatorAfter = text.substring(separator.first, separator.last + 1)
+                )
+                start = separator.last + 1
+            } else {
+                chunks += BatchChunk(text = text.substring(start, hardEnd))
+                start = hardEnd
+            }
         }
-        return result
+        return BatchPlan(leadingWhitespace, chunks)
     }
 
-    private fun findPreferredBoundary(text: String, minimum: Int, maximum: Int): Int? {
-        for (index in maximum downTo minimum + 1) {
-            if (text[index - 1] == '\n') return index
-        }
-        for (index in maximum downTo minimum + 1) {
-            val previous = text[index - 1]
-            if (previous in SENTENCE_ENDINGS && (index == text.length || text[index].isWhitespace())) {
-                return index
+    private fun findPreferredSeparator(
+        text: String,
+        chunkStart: Int,
+        minimum: Int,
+        maximum: Int,
+        contentEnd: Int
+    ): IntRange? {
+        val candidates = mutableListOf<IntRange>()
+        var cursor = min(maximum, contentEnd - 1)
+        while (cursor >= minimum) {
+            if (!text[cursor].isWhitespace()) {
+                cursor--
+                continue
             }
+
+            var start = cursor
+            while (start > chunkStart && text[start - 1].isWhitespace()) start--
+            var end = cursor + 1
+            while (end < contentEnd && text[end].isWhitespace()) end++
+            if (start > chunkStart) candidates += start until end
+            cursor = start - 1
         }
-        for (index in maximum downTo minimum + 1) {
-            if (text[index - 1].isWhitespace()) return index
-        }
-        return null
+
+        return candidates.firstOrNull { range -> range.any { text[it] == '\n' } }
+            ?: candidates.firstOrNull { range ->
+                range.first > 0 && text[range.first - 1] in SENTENCE_ENDINGS
+            }
+            ?: candidates.firstOrNull()
     }
 
     private fun joinBatchTranslations(
-        sourceChunks: List<String>,
+        plan: BatchPlan,
         translations: List<GoogleFallbackTranslation>
     ): String = buildString {
+        append(plan.leadingWhitespace)
         translations.forEachIndexed { index, translation ->
             append(translation.translatedText)
-            if (index < sourceChunks.lastIndex) {
-                append(sourceChunks[index].takeLastWhile(Char::isWhitespace))
-                append(sourceChunks[index + 1].takeWhile(Char::isWhitespace))
-            }
+            append(plan.chunks[index].separatorAfter)
         }
     }
+
+    internal data class BatchPlan(
+        val leadingWhitespace: String,
+        val chunks: List<BatchChunk>
+    )
+
+    internal data class BatchChunk(
+        val text: String,
+        val separatorAfter: String = ""
+    )
 
     private suspend fun request(
         route: Route,
@@ -305,18 +381,18 @@ internal class GoogleEndpointRouter(
         internal const val BATCH_EXECUTE_ENDPOINT =
             "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
 
-        private const val MAX_CHROME_SINGLE_CHARACTERS = 1_500
         private const val MAX_FAST_TEXT_CHARACTERS = 800
         internal const val MAX_BATCH_CHUNK_CHARACTERS = 4_500
         private const val MAX_PARALLEL_BATCH_REQUESTS = 2
+        private const val TRANSIENT_FAILURES_TO_OPEN = 2
         private val SENTENCE_ENDINGS = setOf('.', '!', '?', '。', '！', '？')
         private const val DEFAULT_CIRCUIT_OPEN_MILLIS = 15 * 60 * 1_000L
         private const val DEFAULT_TRANSIENT_CIRCUIT_OPEN_MILLIS = 30_000L
-        private const val DEFAULT_SHORT_BUDGET_MILLIS = 1_500L
-        private const val DEFAULT_MEDIUM_BUDGET_MILLIS = 4_000L
-        private const val DEFAULT_LONG_BUDGET_MILLIS = 12_000L
-        private const val DEFAULT_SHORT_ROUTE_TIMEOUT_MILLIS = 500L
-        private const val DEFAULT_MEDIUM_ROUTE_TIMEOUT_MILLIS = 1_800L
-        private const val DEFAULT_LONG_ROUTE_TIMEOUT_MILLIS = 5_000L
+        private const val DEFAULT_SHORT_BUDGET_MILLIS = 4_000L
+        private const val DEFAULT_MEDIUM_BUDGET_MILLIS = 6_000L
+        private const val DEFAULT_LONG_BUDGET_MILLIS = 20_000L
+        private const val DEFAULT_SHORT_ROUTE_TIMEOUT_MILLIS = 1_800L
+        private const val DEFAULT_MEDIUM_ROUTE_TIMEOUT_MILLIS = 2_500L
+        private const val DEFAULT_LONG_ROUTE_TIMEOUT_MILLIS = 6_000L
     }
 }

@@ -64,6 +64,8 @@ class PluginManager(
     private val pluginKeyValueStore: PluginKeyValueStore,
     private val loggerFactory: LoggerFactory,
     private val notificationBus: NotificationBus,
+    /** SHA-256 штатных плагинов, встроенные в тот же host JAR и потому доверенные как единый релиз. */
+    trustedBundledPluginHashes: Map<String, String> = emptyMap(),
     /**
      * Resolves the [com.github.ahatem.qtranslate.api.plugin.DisplayText] plugins hand back.
      * Defaults to the fallback-only resolver so a host without localization still runs.
@@ -76,6 +78,7 @@ class PluginManager(
     }
 
     private val logger = loggerFactory.getLogger("PluginManager")
+    private val bundledPluginTrustPolicy = BundledPluginTrustPolicy(trustedBundledPluginHashes)
     private val pluginsDir = File(appDataDirectory, AppConstants.PLUGIN_DIRECTORY).also { it.mkdirs() }
 
     private val registry = PluginRegistry()
@@ -155,9 +158,24 @@ class PluginManager(
                 loadResult.successful.map { result ->
                     async {
                         val savedHash = knownFingerprints[result.manifest.id]
-                        if (savedHash != null && result.jarHash != savedHash) {
+                        if (bundledPluginTrustPolicy.requiresUserVerification(
+                                pluginId = result.manifest.id,
+                                savedHash = savedHash,
+                                currentHash = result.jarHash
+                            )
+                        ) {
                             handleReplacedPlugin(result)
                         } else {
+                            if (bundledPluginTrustPolicy.isTrustedBundledUpdate(
+                                    pluginId = result.manifest.id,
+                                    savedHash = savedHash,
+                                    currentHash = result.jarHash
+                                )
+                            ) {
+                                logger.info(
+                                    "Trusted bundled update accepted for plugin '${result.manifest.id}'."
+                                )
+                            }
                             initializePlugin(result, disabledPluginIds)
                         }
                     }
