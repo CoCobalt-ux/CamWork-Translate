@@ -36,13 +36,12 @@ class GoogleEndpointRouterTest {
     }
 
     @Test
-    fun `429 и ошибка парсинга немедленно открывают batchexecute`() = runBlocking {
+    fun `429 немедленно переключает на batchexecute без запроса single`() = runBlocking {
         val http = ScriptedHttpClient().apply {
             enqueue(
                 GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
                 Err(ServiceError.RateLimitError("429"))
             )
-            enqueue(GoogleEndpointRouter.CHROME_SINGLE_ENDPOINT, Ok("<html>changed</html>"))
             enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse()))
         }
         val router = router(http)
@@ -54,7 +53,6 @@ class GoogleEndpointRouterTest {
         assertEquals(
             listOf(
                 GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
-                GoogleEndpointRouter.CHROME_SINGLE_ENDPOINT,
                 GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT
             ),
             http.calls.map(Call::url)
@@ -68,13 +66,13 @@ class GoogleEndpointRouterTest {
     fun `отказавшие маршруты не вызываются до закрытия circuit breaker`() = runBlocking {
         var now = 1_000L
         val http = ScriptedHttpClient().apply {
-            repeat(3) { index ->
+            repeat(2) {
                 enqueue(
-                    when (index) {
-                        0 -> GoogleEndpointRouter.TRANSLATE_T_ENDPOINT
-                        1 -> GoogleEndpointRouter.CHROME_SINGLE_ENDPOINT
-                        else -> GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT
-                    },
+                    GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                    Err(ServiceError.ServiceUnavailableError("503"))
+                )
+                enqueue(
+                    GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT,
                     Err(ServiceError.ServiceUnavailableError("503"))
                 )
             }
@@ -82,17 +80,68 @@ class GoogleEndpointRouterTest {
         val router = router(http, clockMillis = { now }, circuitOpenMillis = 900_000L)
 
         assertIs<ServiceError.ServiceUnavailableError>(router.translate("Привет", "auto", "en").failure())
-        assertEquals(3, http.calls.size)
+        assertEquals(2, http.calls.size)
 
         assertIs<ServiceError.ServiceUnavailableError>(router.translate("Снова", "auto", "en").failure())
-        assertEquals(3, http.calls.size, "Открытый circuit не должен обращаться к сети")
+        assertEquals(4, http.calls.size)
 
-        now += 900_001L
+        assertIs<ServiceError.ServiceUnavailableError>(router.translate("Ещё раз", "auto", "en").failure())
+        assertEquals(4, http.calls.size, "Открытый circuit не должен обращаться к сети")
+
+        now += 30_001L
         http.enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Again", "ru"]]"""))
         val response = router.translate("Снова", "auto", "en").success()
 
         assertEquals("Again", response.translatedText)
-        assertEquals(4, http.calls.size)
+        assertEquals(5, http.calls.size)
+    }
+
+    @Test
+    fun `один transient отказ не блокирует восстановившийся маршрут`() = runBlocking {
+        val http = ScriptedHttpClient().apply {
+            enqueue(
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                Err(ServiceError.TimeoutError("slow"))
+            )
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse("Fallback")))
+            enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Recovered", "ru"]]"""))
+        }
+        val router = router(http)
+
+        assertEquals("Fallback", router.translate("Привет", "auto", "en").success().translatedText)
+        assertEquals("Recovered", router.translate("Снова", "auto", "en").success().translatedText)
+        assertEquals(
+            listOf(
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT,
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT
+            ),
+            http.calls.map(Call::url)
+        )
+    }
+
+    @Test
+    fun `rate limit сразу открывает долгий circuit только для отказавшего маршрута`() = runBlocking {
+        val http = ScriptedHttpClient().apply {
+            enqueue(
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                Err(ServiceError.RateLimitError("429"))
+            )
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse("First")))
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse("Second")))
+        }
+        val router = router(http)
+
+        assertEquals("First", router.translate("Привет", "auto", "en").success().translatedText)
+        assertEquals("Second", router.translate("Снова", "auto", "en").success().translatedText)
+        assertEquals(
+            listOf(
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT,
+                GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT
+            ),
+            http.calls.map(Call::url)
+        )
     }
 
     @Test
@@ -149,6 +198,20 @@ class GoogleEndpointRouterTest {
     }
 
     @Test
+    fun `короткий успешный запрос не отменяется на обычной сетевой задержке`() = runTest {
+        val http = ScriptedHttpClient().apply {
+            enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Fast", "ru"]]"""))
+            setDelay(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, 1_200L)
+        }
+        val router = router(http, clockMillis = { testScheduler.currentTime })
+
+        val response = router.translate("Привет", "auto", "en").success()
+
+        assertEquals("Fast", response.translatedText)
+        assertEquals(1_200L, testScheduler.currentTime)
+    }
+
+    @Test
     fun `длинные чанки переводятся по два параллельно и собираются в исходном порядке`() = runTest {
         val http = ParallelBatchHttpClient()
         val router = GoogleEndpointRouter(
@@ -176,11 +239,12 @@ class GoogleEndpointRouterTest {
         val firstSentence = "А".repeat(3_000) + ". "
         val text = firstSentence + "Б".repeat(3_000)
 
-        val chunks = router.splitForBatch(text)
+        val plan = router.splitForBatch(text)
 
-        assertEquals(text, chunks.joinToString(""))
-        assertEquals(firstSentence.trimEnd(), chunks.first())
-        assertTrue(chunks.all { it.length <= GoogleEndpointRouter.MAX_BATCH_CHUNK_CHARACTERS })
+        assertEquals(text, plan.reconstructedSource())
+        assertEquals(firstSentence.trimEnd(), plan.chunks.first().text)
+        assertEquals(" ", plan.chunks.first().separatorAfter)
+        assertTrue(plan.chunks.all { it.text.length <= GoogleEndpointRouter.MAX_BATCH_CHUNK_CHARACTERS })
     }
 
     @Test
@@ -197,6 +261,65 @@ class GoogleEndpointRouterTest {
         val response = router.translate(text, "auto", "en").success()
 
         assertEquals("FIRST SECOND", response.translatedText)
+    }
+
+    @Test
+    fun `boundary whitespace не отправляется в Google и добавляется ровно один раз`() = runTest {
+        val http = ParallelBatchHttpClient()
+        val router = GoogleEndpointRouter(
+            httpClient = http,
+            languageMapper = GoogleLanguageMapper,
+            apiConfig = ApiConfig(defaultUserAgents = listOf("test-agent")),
+            clockMillis = { testScheduler.currentTime }
+        )
+        val first = "A".repeat(3_000) + "."
+        val separator = " \n\n "
+        val text = "  " + first + separator + "B".repeat(3_000) + "  "
+
+        val response = router.translate(text, "auto", "en").success()
+
+        assertEquals("  FIRST${separator}SECOND  ", response.translatedText)
+        assertTrue(http.payloads.none { it.contains(first + " ") })
+    }
+
+    @Test
+    fun `длинный whitespace-only текст возвращается без сетевого запроса`() = runTest {
+        val http = ParallelBatchHttpClient()
+        val router = GoogleEndpointRouter(
+            httpClient = http,
+            languageMapper = GoogleLanguageMapper,
+            apiConfig = ApiConfig(defaultUserAgents = listOf("test-agent")),
+            clockMillis = { testScheduler.currentTime }
+        )
+        val text = " \n".repeat(3_000)
+
+        val response = router.translate(text, "auto", "en").success()
+
+        assertEquals(text, response.translatedText)
+        assertEquals(0, http.calls)
+    }
+
+    @Test
+    fun `route telemetry не содержит message ошибки провайдера`() = runBlocking {
+        val events = mutableListOf<String>()
+        val http = ScriptedHttpClient().apply {
+            enqueue(
+                GoogleEndpointRouter.TRANSLATE_T_ENDPOINT,
+                Err(ServiceError.NetworkError("model-text-secret"))
+            )
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse()))
+        }
+        val router = GoogleEndpointRouter(
+            httpClient = http,
+            languageMapper = GoogleLanguageMapper,
+            apiConfig = ApiConfig(defaultUserAgents = listOf("test-agent")),
+            onRouteEvent = events::add
+        )
+
+        router.translate("Привет", "auto", "en").success()
+
+        assertTrue(events.none { it.contains("model-text-secret") })
+        assertTrue(events.any { it.contains("type=NetworkError") })
     }
 
     private fun router(
@@ -278,6 +401,7 @@ private class ScriptedHttpClient : TextHttpClient() {
 private class ParallelBatchHttpClient : TextHttpClient() {
     var calls = 0
         private set
+    val payloads = mutableListOf<String>()
     var maxActiveCalls = 0
         private set
     private var activeCalls = 0
@@ -303,6 +427,7 @@ private class ParallelBatchHttpClient : TextHttpClient() {
         cookies: Map<String, String>
     ): Result<String, ServiceError> {
         calls++
+        payloads += formData.getValue("f.req")
         activeCalls++
         maxActiveCalls = maxOf(maxActiveCalls, activeCalls)
         val payload = formData.getValue("f.req")
@@ -314,6 +439,14 @@ private class ParallelBatchHttpClient : TextHttpClient() {
         delay(1_000L)
         activeCalls--
         return Ok(batchResponse(translated))
+    }
+}
+
+private fun GoogleEndpointRouter.BatchPlan.reconstructedSource(): String = buildString {
+    append(leadingWhitespace)
+    chunks.forEach { chunk ->
+        append(chunk.text)
+        append(chunk.separatorAfter)
     }
 }
 

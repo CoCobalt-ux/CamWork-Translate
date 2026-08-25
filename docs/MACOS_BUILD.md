@@ -72,6 +72,20 @@ export JAVA_HOME="/path/to/jdk-17/Contents/Home"
 Без Developer ID сценарий применяет ad-hoc подпись. Она подходит только для
 локального QA и не убирает предупреждения Gatekeeper у других пользователей.
 
+Тот же неподписанный для распространения контур доступен в GitHub Actions через
+ручной workflow **macOS QA (unsigned)** (`.github/workflows/macos-qa.yml`). Он:
+
+- запускается только вручную через `workflow_dispatch`;
+- независимо собирает `x64` и `arm64` с QA-версией вида
+  `APP_VERSION+qa.RUN_NUMBER.RUN_ATTEMPT`;
+- применяет только ad-hoc подпись, не использует Apple-секреты и не выполняет
+  notarization;
+- добавляет в каждый архив файл `QA-ONLY-ARCH.txt` с явным предупреждением;
+- хранит workflow artifacts 3 дня и никогда не создаёт GitHub Release.
+
+Эти файлы предназначены для внутреннего smoke/QA на тестовых Mac. Их нельзя
+выдавать моделям как production-сборку.
+
 Статические инварианты упаковки и синтаксис shell-сценария можно проверить на
 Windows до передачи исходников на Mac:
 
@@ -99,9 +113,10 @@ Windows до передачи исходников на Mac:
 репозиторий нельзя добавлять `.p12`, пароль, Apple ID app-specific password или
 ключ App Store Connect.
 
-Релизный GitHub Actions workflow намеренно не публикует неподписанный DMG. Для него
-нужно один раз создать секреты репозитория (ниже перечислены только имена секретов,
-без выдуманных значений):
+Релизный GitHub Actions workflow намеренно не публикует неподписанный DMG. Нативная
+macOS-часть стабильного релиза по умолчанию выключена. Для её включения нужно создать
+repository variable `MACOS_STABLE_ENABLED` со строго строковым значением `true` и
+задать все секреты ниже (перечислены только имена, без выдуманных значений):
 
 - `MACOS_CERTIFICATE_P12_BASE64` — Developer ID Application в P12, закодированный base64;
 - `MACOS_CERTIFICATE_PASSWORD` — пароль P12;
@@ -109,8 +124,20 @@ Windows до передачи исходников на Mac:
 - `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD` — Apple ID,
   Team ID и app-specific password для `notarytool`.
 
-Если хотя бы одного секрета нет, macOS job останавливается до публикации. Это защищает
-от случайной выдачи моделям ad-hoc сборки, заблокированной Gatekeeper.
+Поведение release workflow специально разделено:
+
+- при отсутствующей переменной или любом значении кроме `true` macOS jobs пропускаются;
+  Windows и переносимые артефакты публикуются штатно, а в Release нет ссылок и файлов
+  нативного macOS;
+- при `MACOS_STABLE_ENABLED=true` каждый macOS job первым шагом, ещё до checkout,
+  проверяет полный комплект из шести Apple-секретов;
+- отсутствие хотя бы одного секрета немедленно завершает macOS job ошибкой и блокирует
+  публикацию всего GitHub Release;
+- успешный production job всегда передаёт сборщику Developer ID, отдельный keychain,
+  профиль `notarytool` и обязательный `--notarize`. В нём нет fallback на ad-hoc.
+
+Так production-релиз не может незаметно получить неподписанный macOS-артефакт, а
+выключенный macOS-контур не мешает выпуску Windows.
 
 Пример переменных без секретных значений:
 
@@ -141,8 +168,26 @@ ticket одной командой:
 - проверку `codesign --verify --deep --strict`;
 - подпись DMG или PKG;
 - `xcrun notarytool submit --wait`;
-- `xcrun stapler staple` и `stapler validate`;
+- notarization ZIP с приложением, затем `stapler staple` и `stapler validate` для `.app`;
+- повторная упаковка `.app.zip` уже со встроенным ticket Apple;
+- `stapler staple` и `stapler validate` для DMG/PKG;
 - SHA-256 уже после notarization.
+
+## Packaged smoke в CI
+
+Оба macOS workflow до загрузки artifacts запускают именно launcher из собранного
+`CamWork Translate.app`, а не Gradle-класс из исходников. Для проверки создаётся
+отдельный временный `HOME`; следовательно, каталог
+`~/Library/Application Support/CamWork Translate` также изолирован от профиля runner.
+Режим включается одновременно через `CAMWORK_PACKAGED_SMOKE_TEST=1` и JVM-свойство
+`-Dcamwork.packagedSmokeTest=true`.
+
+Smoke обязан завершиться с кодом 0 и создать в изолированном appData файл
+`logs/packaged-smoke-ok.txt` с маркером `CAMWORK_PACKAGED_SMOKE_OK`. До этого upload
+не запускается. Проверка подтверждает запуск bundled runtime, bootstrap, копирование
+штатных данных и headless-инициализацию обязательных плагинов. Она не заменяет ручной
+тест hotkey, Accessibility, Input Monitoring, UI и сетевых переводчиков на реальном Mac.
+Диалоги разрешений пропускаются только в этом явно заданном packaged-smoke режиме.
 
 Entitlements находятся в `packaging/macos/entitlements.plist`. Исключения JIT,
 unsigned executable memory и library validation нужны текущему JVM/JNA-плагинному
@@ -152,12 +197,16 @@ unsigned executable memory и library validation нужны текущему JVM
 ## Установка и разрешения на тестовом Mac
 
 1. Открыть DMG и перетащить `CamWork Translate.app` в `Applications`.
-2. Запустить приложение.
-3. В **System Settings → Privacy & Security** разрешить приложению:
+2. Запустить приложение. Bootstrap проверяет Accessibility и Input Monitoring при
+   каждом обычном запуске. Если доступа нет, он инициирует штатный запрос macOS,
+   повторно проверяет состояние и показывает точный путь в настройках.
+3. В **System Settings → Privacy & Security** вручную разрешить приложению:
    - **Accessibility** — для вставки перевода в другое приложение;
    - **Input Monitoring** — для глобального hotkey;
    - **Screen & System Audio Recording** — только если используется OCR экрана.
-4. Перезапустить приложение после изменения разрешений.
+4. macOS не позволяет CamWork Translate выдать эти разрешения автоматически. После
+   любого изменения нужно **полностью завершить приложение через Cmd+Q**, а не только
+   закрыть окно, и запустить его снова. Bootstrap повторит проверку при новом запуске.
 5. Проверить основное окно, Google/Bing/DeepL, двунаправленную замену в Telegram и
    Chrome, поведение выделения в обычном тексте и в поле ввода, TTS и OCR.
 
@@ -169,3 +218,5 @@ unsigned executable memory и library validation нужны текущему JVM
 - [Apple: notarization macOS software](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)
 - [Apple: разрешение Accessibility](https://support.apple.com/guide/mac-help/allow-accessibility-apps-to-access-your-mac-mh43185/mac)
 - [Apple: Input Monitoring](https://support.apple.com/guide/mac-help/control-access-to-input-monitoring-on-mac-mchl4cedafb6/mac)
+- [Apple Developer: проверка Input Monitoring](https://developer.apple.com/documentation/coregraphics/cgpreflightlisteneventaccess%28%29)
+- [Apple Developer: запрос Input Monitoring](https://developer.apple.com/documentation/coregraphics/cgrequestlisteneventaccess%28%29)

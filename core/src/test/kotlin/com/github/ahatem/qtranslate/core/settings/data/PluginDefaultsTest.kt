@@ -8,6 +8,8 @@ import java.nio.file.Files
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class PluginDefaultsTest {
 
@@ -42,15 +44,59 @@ class PluginDefaultsTest {
         repository.updateConfiguration(Configuration.DEFAULT.copy(uiScale = 125))
 
         assertEquals(emptySet(), repository.loadDisabledPluginIds())
+        assertEquals(emptySet(), repository.loadDisabledPluginIds(), "решение должно быть одноразовым")
     }
 
     @Test
-    fun `явный выбор пользователя имеет приоритет над дефолтом`() = runBlocking {
+    fun `явный выбор пользователя сохраняется после применения схемы`() = runBlocking {
         val repository = repository("chosen")
         val chosen = setOf("google-services", "custom-plugin")
+        repository.updateConfiguration(Configuration.DEFAULT.copy(uiScale = 125))
         repository.saveDisabledPluginIds(chosen)
 
         assertEquals(chosen, repository.loadDisabledPluginIds())
+    }
+
+    @Test
+    fun `выбор после миграции больше не перезаписывается`() = runBlocking {
+        val repository = repository("after-migration")
+        repository.loadDisabledPluginIds()
+
+        repository.saveDisabledPluginIds(emptySet())
+
+        assertEquals(emptySet(), repository.loadDisabledPluginIds())
+    }
+
+    @Test
+    fun `дефолты разрешены только для полностью пустого состояния`() {
+        assertTrue(
+            shouldApplyFreshPluginDefaults(
+                hasStoredConfiguration = false,
+                hasStoredPluginState = false,
+                storedDefaultsVersion = 0
+            )
+        )
+        assertFalse(
+            shouldApplyFreshPluginDefaults(
+                hasStoredConfiguration = true,
+                hasStoredPluginState = false,
+                storedDefaultsVersion = 0
+            )
+        )
+        assertFalse(
+            shouldApplyFreshPluginDefaults(
+                hasStoredConfiguration = false,
+                hasStoredPluginState = true,
+                storedDefaultsVersion = 0
+            )
+        )
+        assertFalse(
+            shouldApplyFreshPluginDefaults(
+                hasStoredConfiguration = false,
+                hasStoredPluginState = false,
+                storedDefaultsVersion = PLUGIN_DEFAULTS_SCHEMA_VERSION
+            )
+        )
     }
 
     private fun repository(name: String): SettingsRepository {

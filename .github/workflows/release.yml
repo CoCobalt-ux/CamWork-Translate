@@ -6,7 +6,7 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows-package:
@@ -15,16 +15,18 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Set up Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
 
       - name: Set up Inno Setup 6
         shell: pwsh
@@ -81,7 +83,7 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Upload Windows package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: camwork-translate-windows-x64
           path: |
@@ -93,6 +95,7 @@ jobs:
 
   macos-package:
     name: Build macOS ${{ matrix.arch }} package
+    if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -106,15 +109,40 @@ jobs:
             java_architecture: x64
 
     steps:
+      - name: Require production Apple credentials
+        shell: bash
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          missing=()
+          for variable in CERTIFICATE_BASE64 CERTIFICATE_PASSWORD SIGNING_IDENTITY \
+            NOTARY_APPLE_ID NOTARY_TEAM_ID NOTARY_PASSWORD; do
+            if [[ -z "${!variable}" ]]; then
+              missing+=("$variable")
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Production macOS включён, но отсутствуют обязательные Apple-секреты:\n' >&2
+            printf '  - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # jpackage must run under JDK 17, so 17 is installed last: setup-java points
       # JAVA_HOME at whichever version it installed most recently. Kotlin compiles
       # against a 21 toolchain, which the foojay resolver in settings.gradle.kts
       # supplies on its own.
       - name: Set up Java toolchains
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           architecture: ${{ matrix.java_architecture }}
@@ -123,28 +151,15 @@ jobs:
             17
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
 
       - name: Extract version
         id: version
         shell: bash
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Check for macOS signing secret
-        id: has-signing
-        shell: bash
-        env:
-          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-        run: |
-          if [[ -n "$SIGNING_IDENTITY" ]]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Import Developer ID and notarization credentials
         id: mac-signing
-        if: steps.has-signing.outputs.present == 'true'
         shell: bash
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -196,29 +211,41 @@ jobs:
       - name: Build native app and DMG
         shell: bash
         run: |
-          BUILD_ARGUMENTS=(
-            --version "${{ steps.version.outputs.version }}"
-            --arch "${{ matrix.arch }}"
-            --format dmg
-            --java-home "$JAVA_HOME"
-          )
-          SIGNING_IDENTITY="${{ steps.mac-signing.outputs.signing-identity }}"
-          if [[ -n "$SIGNING_IDENTITY" ]]; then
-            BUILD_ARGUMENTS+=(
-              --signing-identity "$SIGNING_IDENTITY"
-              --signing-keychain "${{ steps.mac-signing.outputs.keychain }}"
-              --notary-profile "${{ steps.mac-signing.outputs.notary-profile }}"
-              --notarize
-            )
-          else
-            echo "::warning::Секреты Apple Developer ID не заданы — собирается неподписанный ad-hoc DMG (только для личного использования/QA, без нотаризации)."
-          fi
-          bash ./scripts/build-macos-release.sh "${BUILD_ARGUMENTS[@]}"
+          bash ./scripts/build-macos-release.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --arch "${{ matrix.arch }}" \
+            --format dmg \
+            --java-home "$JAVA_HOME" \
+            --signing-identity "${{ steps.mac-signing.outputs.signing-identity }}" \
+            --signing-keychain "${{ steps.mac-signing.outputs.keychain }}" \
+            --notary-profile "${{ steps.mac-signing.outputs.notary-profile }}" \
+            --notarize
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
 
+      - name: Smoke-test packaged macOS app
+        shell: bash
+        run: |
+          smoke_root="$RUNNER_TEMP/camwork-packaged-smoke-${{ matrix.arch }}"
+          smoke_home="$smoke_root/home"
+          app_data="$smoke_home/Library/Application Support/CamWork Translate"
+          app_launcher="$GITHUB_WORKSPACE/build/macos-package-work-${{ matrix.arch }}/app-output/CamWork Translate.app/Contents/MacOS/CamWork Translate"
+          mkdir -p "$smoke_home"
+
+          HOME="$smoke_home" \
+          CAMWORK_PACKAGED_SMOKE_TEST=1 \
+          JAVA_TOOL_OPTIONS='-Dcamwork.packagedSmokeTest=true' \
+            "$app_launcher"
+
+          marker="$app_data/logs/packaged-smoke-ok.txt"
+          [[ -f "$marker" ]] || {
+            echo "Packaged smoke не создал маркер: $marker" >&2
+            exit 1
+          }
+          grep -F 'CAMWORK_PACKAGED_SMOKE_OK' "$marker"
+
       - name: Upload macOS package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: camwork-translate-macos-${{ matrix.arch }}
           path: |
@@ -242,21 +269,25 @@ jobs:
     name: Build & Publish Release
     runs-on: ubuntu-latest
     needs: [windows-package, macos-package]
+    if: ${{ always() && needs.windows-package.result == 'success' && (needs.macos-package.result == 'success' || needs.macos-package.result == 'skipped') }}
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Java 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
 
       - name: Extract version
         id: version
@@ -268,23 +299,29 @@ jobs:
           APP_VERSION: ${{ steps.version.outputs.version }}
 
       - name: Download Windows package
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: camwork-translate-windows-x64
           path: build/release
 
       - name: Download macOS packages
-        uses: actions/download-artifact@v8
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: camwork-translate-macos-*
           path: build/release
           merge-multiple: true
 
-      - name: Add native package checksums
+      - name: Add Windows package checksums
         run: |
           cd build/release
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe" >> SHA256SUMS.txt
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip" >> SHA256SUMS.txt
+
+      - name: Add macOS package checksums
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
+        run: |
+          cd build/release
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip" >> SHA256SUMS.txt
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg" >> SHA256SUMS.txt
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip" >> SHA256SUMS.txt
@@ -323,44 +360,87 @@ jobs:
             LOG=$(git log --pretty=format:"- %s" $RANGE)
           fi
 
-          echo "log<<EOF" >> "$GITHUB_OUTPUT"
-          printf "%b" "$LOG" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          DELIMITER="CAMWORK_CHANGELOG_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          echo "log<<$DELIMITER" >> "$GITHUB_OUTPUT"
+          printf "%b\n" "$LOG" >> "$GITHUB_OUTPUT"
+          echo "$DELIMITER" >> "$GITHUB_OUTPUT"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+      - name: Generate release body
+        shell: bash
+        env:
+          CHANGELOG: ${{ steps.changelog.outputs.log }}
+          VERSION: ${{ steps.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          MACOS_STABLE_ENABLED: ${{ vars.MACOS_STABLE_ENABLED }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          repository = os.environ["REPOSITORY"]
+          ref_name = os.environ["REF_NAME"]
+          base_url = f"https://github.com/{repository}/releases/download/{ref_name}"
+          download_rows = [
+              f"| **[⬇ Установщик Windows x64]({base_url}/CamWork-Translate-{version}-Setup-windows-x64.exe)** | **Основной вариант для моделей.** Запустить EXE; права администратора не нужны. | Нет, runtime включён |",
+              f"| **[⬇ Переносимый Windows x64]({base_url}/CamWork-Translate-{version}-windows-x64.zip)** | Распаковать в доступную для записи папку и запустить `CamWork Translate.exe`. | Нет, runtime включён |",
+          ]
+          if os.environ.get("MACOS_STABLE_ENABLED") == "true":
+              download_rows.extend([
+                  f"| **[⬇ macOS Apple Silicon]({base_url}/CamWork-Translate-{version}-macos-arm64.dmg)** | Mac на M1/M2/M3/M4 и новее. | Нет, runtime включён |",
+                  f"| **[⬇ macOS Intel]({base_url}/CamWork-Translate-{version}-macos-x64.dmg)** | Mac с процессором Intel. | Нет, runtime включён |",
+              ])
+          download_rows.extend([
+              f"| **[⬇ Переносимый ZIP]({base_url}/CamWork-Translate-{version}.zip)** | Windows, macOS или Linux с установленной Java. | Java 17+ |",
+              f"| **[⬇ Только приложение]({base_url}/CamWork-Translate-App-{version}.jar)** | Разработка и собственный комплект плагинов. | Java 17+ |",
+          ])
+
+          changelog = os.environ.get("CHANGELOG", "").strip() or "- Технический релиз."
+          body = "\n\n".join([
+              "## Что изменилось",
+              changelog,
+              "---",
+              f"**Полная история:** https://github.com/{repository}/blob/main/CHANGELOG_CAMWORK.md",
+              "## Загрузки",
+              "\n".join([
+                  "| Файл | Для кого | Нужна Java |",
+                  "|---|---|---|",
+                  *download_rows,
+              ]),
+              "Windows- и переносимый архивы уже содержат все штатные плагины.",
+              "## Проверка файла",
+              f"Загрузите [SHA256SUMS.txt]({base_url}/SHA256SUMS.txt) в тот же каталог и выполните:",
+              "```\nsha256sum -c SHA256SUMS.txt\n```",
+          ]) + "\n"
+          Path("build/release/RELEASE_BODY.md").write_text(body, encoding="utf-8")
+          PY
+
+      - name: Create GitHub Release without native macOS artifacts
+        if: ${{ vars.MACOS_STABLE_ENABLED != 'true' }}
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
           name: CamWork Translate ${{ steps.version.outputs.version }}
-          body: |
-            ## Что изменилось
+          body_path: build/release/RELEASE_BODY.md
+          files: |
+            build/release/CamWork-Translate-App-${{ steps.version.outputs.version }}.jar
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/plugins/*.jar
+            build/release/release-metadata.json
+            build/release/SIZE_REPORT.md
+            build/release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
+          draft: false
 
-            ${{ steps.changelog.outputs.log }}
-
-            ---
-
-            **Полная история:** https://github.com/${{ github.repository }}/blob/main/CHANGELOG_CAMWORK.md
-
-            ## Загрузки
-
-            | Файл | Для кого | Нужна Java |
-            |---|---|---|
-            | **[⬇ Установщик Windows x64](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe)** | **Основной вариант для моделей.** Запустить EXE; права администратора не нужны. | Нет, runtime включён |
-            | **[⬇ Переносимый Windows x64](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip)** | Распаковать в доступную для записи папку и запустить `CamWork Translate.exe`. | Нет, runtime включён |
-            | **[⬇ macOS Apple Silicon](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg)** | Mac на M1/M2/M3/M4 и новее. | Нет, runtime включён |
-            | **[⬇ macOS Intel](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg)** | Mac с процессором Intel. | Нет, runtime включён |
-            | **[⬇ Переносимый ZIP](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-${{ steps.version.outputs.version }}.zip)** | Windows, macOS или Linux с установленной Java. | Java 11+ |
-            | **[⬇ Только приложение](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/CamWork-Translate-App-${{ steps.version.outputs.version }}.jar)** | Разработка и собственный комплект плагинов. | Java 11+ |
-
-            Windows- и переносимый архивы уже содержат все штатные плагины.
-
-            ## Проверка файла
-
-            Загрузите [SHA256SUMS.txt](https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/SHA256SUMS.txt)
-            в тот же каталог и выполните:
-            ```
-            sha256sum -c SHA256SUMS.txt
-            ```
-
+      - name: Create GitHub Release with signed macOS artifacts
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
+        with:
+          name: CamWork Translate ${{ steps.version.outputs.version }}
+          body_path: build/release/RELEASE_BODY.md
           files: |
             build/release/CamWork-Translate-App-${{ steps.version.outputs.version }}.jar
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}.zip
@@ -378,5 +458,6 @@ jobs:
             build/release/release-metadata.json
             build/release/SIZE_REPORT.md
             build/release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
           draft: false

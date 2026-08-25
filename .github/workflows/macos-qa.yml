@@ -1,0 +1,108 @@
+name: macOS QA (unsigned)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-qa-package:
+    name: Build unsigned macOS QA ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            java_architecture: aarch64
+          - arch: x64
+            runner: macos-15-intel
+            java_architecture: x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Java toolchains
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          architecture: ${{ matrix.java_architecture }}
+          java-version: |
+            21
+            17
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+
+      - name: Prepare QA version
+        id: version
+        shell: bash
+        run: |
+          constants="core/src/main/kotlin/com/github/ahatem/qtranslate/core/shared/AppConstants.kt"
+          base_version="$(sed -nE 's/.*const[[:space:]]+val[[:space:]]+APP_VERSION[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$constants" | head -n 1)"
+          [[ "$base_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Не удалось прочитать базовую версию из $constants" >&2
+            exit 1
+          }
+          qa_version="${base_version}+qa.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+          echo "base_version=$base_version" >> "$GITHUB_OUTPUT"
+          echo "qa_version=$qa_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build ad-hoc signed app and DMG for QA
+        shell: bash
+        run: |
+          bash ./scripts/build-macos-release.sh \
+            --version "${{ steps.version.outputs.qa_version }}" \
+            --arch "${{ matrix.arch }}" \
+            --format dmg \
+            --java-home "$JAVA_HOME"
+        env:
+          APP_VERSION: ${{ steps.version.outputs.qa_version }}
+
+      - name: Smoke-test packaged macOS QA app
+        shell: bash
+        run: |
+          smoke_root="$RUNNER_TEMP/camwork-packaged-smoke-qa-${{ matrix.arch }}"
+          smoke_home="$smoke_root/home"
+          app_data="$smoke_home/Library/Application Support/CamWork Translate"
+          app_launcher="$GITHUB_WORKSPACE/build/macos-package-work-${{ matrix.arch }}/app-output/CamWork Translate.app/Contents/MacOS/CamWork Translate"
+          mkdir -p "$smoke_home"
+
+          HOME="$smoke_home" \
+          CAMWORK_PACKAGED_SMOKE_TEST=1 \
+          JAVA_TOOL_OPTIONS='-Dcamwork.packagedSmokeTest=true' \
+            "$app_launcher"
+
+          marker="$app_data/logs/packaged-smoke-ok.txt"
+          [[ -f "$marker" ]] || {
+            echo "Packaged smoke не создал маркер: $marker" >&2
+            exit 1
+          }
+          grep -F 'CAMWORK_PACKAGED_SMOKE_OK' "$marker"
+
+      - name: Mark artifacts as QA only
+        shell: bash
+        run: |
+          printf '%s\n' \
+            'QA ONLY — НЕ ДЛЯ ПУБЛИЧНОГО РЕЛИЗА.' \
+            'Приложение подписано ad-hoc, не нотариализовано Apple и может быть заблокировано Gatekeeper.' \
+            'Production macOS выпускается только через release.yml с Developer ID и notarization.' \
+            > build/release/QA-ONLY-${{ matrix.arch }}.txt
+
+      - name: Upload short-lived macOS QA artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: camwork-translate-macos-QA-${{ matrix.arch }}-${{ github.run_number }}
+          path: |
+            build/release/QA-ONLY-${{ matrix.arch }}.txt
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg.sha256
+          if-no-files-found: error
+          retention-days: 3

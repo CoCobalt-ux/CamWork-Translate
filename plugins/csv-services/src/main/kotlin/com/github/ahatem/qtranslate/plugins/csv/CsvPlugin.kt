@@ -90,14 +90,14 @@ class CsvPlugin : Plugin<CsvSettings> {
             runCatching {
                 val file = File(path)
                 if (!file.isFile) {
-                    context.logger.warn("CSV file not found: $path")
+                    context.logger.warn("Configured CSV file was not found")
                     return@runCatching null
                 }
                 CsvIndex.read(file, settings).also {
-                    context.logger.info("Indexed ${it.size} term(s) from $path")
+                    context.logger.info("CSV dictionary indexed: terms=${it.size}")
                 }
             }.getOrElse { error ->
-                context.logger.error("Could not read CSV file '$path'", error)
+                context.logger.error("Could not read CSV dictionary: errorType=${error::class.simpleName}")
                 null
             }
         }

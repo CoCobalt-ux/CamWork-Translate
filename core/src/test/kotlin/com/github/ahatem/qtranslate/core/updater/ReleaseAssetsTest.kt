@@ -27,6 +27,7 @@ class ReleaseAssetsTest {
         "libretranslate-services-1.0.0.jar",
         "mozhi-services-1.0.0.jar",
         "mymemory-services-1.0.0.jar",
+        "CamWork-Translate-1.4.0-Setup-windows-x64.exe",
         "CamWork-Translate-1.4.0-windows-x64.zip",
         "CamWork-Translate-1.4.0.zip",
         "CamWork-Translate-App-1.4.0.jar",
@@ -58,8 +59,32 @@ class ReleaseAssetsTest {
     )
 
     @Test
-    fun `Windows is offered the packaged build`() {
-        assertEquals("CamWork-Translate-1.4.0-windows-x64.zip", ReleaseAssets.selectDownload(v140, onWindows = true))
+    fun `installed Windows copy is offered the installer`() {
+        assertEquals(
+            "CamWork-Translate-1.4.0-Setup-windows-x64.exe",
+            ReleaseAssets.selectDownload(
+                v140,
+                ReleaseAssets.Platform.WINDOWS,
+                windowsDistribution = ReleaseAssets.WindowsDistribution.INSTALLED
+            )
+        )
+    }
+
+    @Test
+    fun `portable Windows copy is offered the Windows ZIP`() {
+        assertEquals(
+            "CamWork-Translate-1.4.0-windows-x64.zip",
+            ReleaseAssets.selectDownload(
+                v140,
+                ReleaseAssets.Platform.WINDOWS,
+                windowsDistribution = ReleaseAssets.WindowsDistribution.PORTABLE
+            )
+        )
+        // Перегрузка без сведений об установке использует безопасный portable-вариант.
+        assertEquals(
+            "CamWork-Translate-1.4.0-windows-x64.zip",
+            ReleaseAssets.selectDownload(v140, onWindows = true)
+        )
     }
 
     @Test
@@ -131,6 +156,36 @@ class ReleaseAssetsTest {
         assertNull(
             ReleaseAssets.selectDownload(windowsOnly, onWindows = false),
             "A non-Windows user must not be handed the Windows package with its bundled runtime"
+        )
+    }
+
+    @Test
+    fun `Windows ZIP remains a fallback when installer is absent`() {
+        val withoutInstaller = v140.filterNot { it.endsWith("Setup-windows-x64.exe") }
+
+        assertEquals(
+            "CamWork-Translate-1.4.0-windows-x64.zip",
+            ReleaseAssets.selectDownload(
+                withoutInstaller,
+                ReleaseAssets.Platform.WINDOWS,
+                windowsDistribution = ReleaseAssets.WindowsDistribution.INSTALLED
+            )
+        )
+    }
+
+    @Test
+    fun `portable Windows copy never falls back to EXE`() {
+        val installerOnly = listOf(
+            "ai-plugin-2.0.0.jar",
+            "CamWork-Translate-1.4.0-Setup-windows-x64.exe"
+        )
+
+        assertNull(
+            ReleaseAssets.selectDownload(
+                installerOnly,
+                ReleaseAssets.Platform.WINDOWS,
+                windowsDistribution = ReleaseAssets.WindowsDistribution.PORTABLE
+            )
         )
     }
 

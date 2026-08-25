@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
-    [string]$Version = '1.2.0',
+    [string]$Version = '1.2.5',
 
     [Parameter()]
     [string]$JavaHome = $env:JAVA_HOME,
@@ -28,6 +28,7 @@ $releaseDirectory = Join-Path $buildRoot 'release'
 $archivePath = Join-Path $releaseDirectory "CamWork-Translate-$Version-windows-x64.zip"
 $installerPath = Join-Path $releaseDirectory "CamWork-Translate-$Version-Setup-windows-x64.exe"
 $installerScriptPath = Join-Path $repoRoot 'packaging\windows\CamWorkTranslate.iss'
+$packagedSmokeScriptPath = Join-Path $repoRoot 'scripts\test-windows-package.ps1'
 $appConstantsPath = Join-Path $repoRoot 'core\src\main\kotlin\com\github\ahatem\qtranslate\core\shared\AppConstants.kt'
 
 $appConstantsSource = Get-Content -LiteralPath $appConstantsPath -Raw
@@ -104,6 +105,7 @@ Assert-Executable -Path $gradleWrapper -Name 'Gradle Wrapper'
 Assert-Executable -Path $jlink -Name 'jlink из JDK 17'
 Assert-Executable -Path $jpackage -Name 'jpackage из JDK 17'
 Assert-Executable -Path $installerScriptPath -Name 'Сценарий Inno Setup'
+Assert-Executable -Path $packagedSmokeScriptPath -Name 'Packaged smoke-test Windows'
 
 if ([string]::IsNullOrWhiteSpace($InnoSetupCompiler)) {
     $innoCandidates = @(
@@ -228,6 +230,7 @@ Get-ChildItem -LiteralPath $portableRoot | Where-Object { $_.Name -ne 'CamWork-T
 }
 
 Compress-Archive -LiteralPath $appImageDirectory -DestinationPath $archivePath -CompressionLevel Optimal
+& $packagedSmokeScriptPath -ArchivePath $archivePath
 $hash = Get-FileHash -LiteralPath $archivePath -Algorithm SHA256
 [System.IO.File]::WriteAllText($checksumPath, "$($hash.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($archivePath))`r`n")
 

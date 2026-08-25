@@ -19,19 +19,16 @@ sealed interface MainEvent : UiEvent {
         /** После этого момента вставка небезопасна: пользователь мог сменить поле или выделение. */
         val expiresAtMillis: Long = Long.MAX_VALUE,
         /** Только Shift-сценарий показывает подтверждение после фактической вставки. */
-        val showShiftFeedback: Boolean = false
+        val showShiftFeedback: Boolean = false,
+        /** Связывает захват, сетевой запрос и вставку, не записывая сам текст в журнал. */
+        val requestId: Long = 0L
     ) : MainEvent
 
-    /** Причина, по которой фоновый Shift-перевод не смог завершиться. */
-    enum class ShiftTranslationFailure {
-        DISABLED,
-        UNSUPPORTED_DIRECTION,
-        NO_TARGET_LANGUAGE,
-        TRANSLATION_FAILED
-    }
-
     /** Просит пассивный UI заменить индикатор загрузки понятным сообщением об ошибке. */
-    data class ShiftTranslationFailed(val reason: ShiftTranslationFailure) : MainEvent
+    data class ShiftTranslationFailed(
+        val reason: SelectionTranslationFailureReason,
+        val requestId: Long = 0L
+    ) : MainEvent
 
     /** Последний автоматический перевод завершён: индикатор возле курсора можно скрыть. */
     data object AutoSelectionTranslationFinished : MainEvent

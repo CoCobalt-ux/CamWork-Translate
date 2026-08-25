@@ -121,7 +121,7 @@ class DocumentTranslationUseCase(
         val temporary = Files.createTempFile(parent.toPath(), ".qtranslate-", ".tmp").toFile()
 
         try {
-            logger.info("Translating ${request.inputFile.name} with '${translator.name}'")
+            logger.info("Document translation started: format=$format, service='${translator.name}'")
             when (format) {
                 DocumentFormat.DOCX -> translateDocx(request, temporary, translator, onProgress)
                 DocumentFormat.PDF -> translatePdf(request, temporary, translator, onProgress)
@@ -130,7 +130,7 @@ class DocumentTranslationUseCase(
                 DocumentFormat.VTT -> translateSubtitle(request, temporary, translator, vttTimestamp, onProgress)
             }
             moveAtomically(temporary, request.outputFile)
-            logger.info("Document translation saved to ${request.outputFile.absolutePath}")
+            logger.info("Document translation completed: format=$format")
             request.outputFile
         } catch (error: Exception) {
             temporary.delete()

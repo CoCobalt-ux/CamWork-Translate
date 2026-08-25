@@ -19,7 +19,7 @@ usage() {
   --installer-identity NAME      Developer ID Installer для PKG; либо MACOS_INSTALLER_IDENTITY.
   --signing-keychain PATH        Необязательный keychain; либо MACOS_SIGNING_KEYCHAIN.
   --notary-profile NAME          Профиль notarytool в Keychain; либо MACOS_NOTARY_PROFILE.
-  --notarize                     Отправить созданные DMG/PKG на notarization и прикрепить ticket.
+  --notarize                     Нотариализовать .app ZIP и DMG/PKG, затем прикрепить ticket.
   --help                         Показать справку.
 
 Пример локальной сборки без Developer ID:
@@ -414,6 +414,25 @@ DMG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.dmg"
 PKG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.pkg"
 rm -f -- "$APP_ZIP" "$APP_ZIP.sha256" "$DMG_PATH" "$DMG_PATH.sha256" "$PKG_PATH" "$PKG_PATH.sha256"
 ditto -c -k --sequesterRsrc --keepParent "$APP_IMAGE" "$APP_ZIP"
+
+if [[ "$NOTARIZE" == true ]]; then
+    printf 'Notarization: %s\n' "$(basename "$APP_ZIP")"
+    APP_NOTARY_ARGUMENTS=(
+        submit "$APP_ZIP"
+        --keychain-profile "$NOTARY_PROFILE"
+        --wait
+    )
+    if [[ -n "$SIGNING_KEYCHAIN" ]]; then
+        APP_NOTARY_ARGUMENTS+=(--keychain "$SIGNING_KEYCHAIN")
+    fi
+    xcrun notarytool "${APP_NOTARY_ARGUMENTS[@]}"
+    xcrun stapler staple "$APP_IMAGE"
+    xcrun stapler validate "$APP_IMAGE"
+
+    # Итоговый ZIP создаётся заново уже из приложения со встроенным ticket Apple.
+    rm -f -- "$APP_ZIP"
+    ditto -c -k --sequesterRsrc --keepParent "$APP_IMAGE" "$APP_ZIP"
+fi
 
 ARTIFACTS=("$APP_ZIP")
 NOTARY_TARGETS=()

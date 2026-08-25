@@ -19,6 +19,11 @@ import javax.swing.SwingUtilities
 
 fun main() = runBlocking {
 
+    if (System.getProperty("camwork.packagedSmokeTest").toBoolean()) {
+        runPackagedSmokeTest()
+        return@runBlocking
+    }
+
     var frame: MainAppFrame? = null
 
     // Журнал здесь ещё не настроен — он требует каталога данных, — поэтому причина ухода пишется

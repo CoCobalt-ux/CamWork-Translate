@@ -33,6 +33,22 @@ internal val FRESH_INSTALL_DISABLED_PLUGIN_IDS: Set<String> = setOf(
     "yandex-web-services"
 )
 
+internal const val PLUGIN_DEFAULTS_SCHEMA_VERSION = 1
+
+/**
+ * Продуктовые значения относятся к первому запуску, а не к миграции выбора существующего
+ * пользователя. Ключ конфигурации подтверждает, что приложение уже настраивалось; отдельный ключ
+ * состояния плагинов подтверждает сделанный выбор даже при отсутствии конфигурации.
+ */
+internal fun shouldApplyFreshPluginDefaults(
+    hasStoredConfiguration: Boolean,
+    hasStoredPluginState: Boolean,
+    storedDefaultsVersion: Int
+): Boolean =
+    storedDefaultsVersion < PLUGIN_DEFAULTS_SCHEMA_VERSION &&
+        !hasStoredConfiguration &&
+        !hasStoredPluginState
+
 /**
  * What happened when a stored configuration could not be read.
  *
@@ -64,6 +80,7 @@ class SettingsRepository(
     private object Keys {
         val CONFIG_JSON = stringPreferencesKey("configuration_json")
         val DISABLED_PLUGIN_IDS = stringSetPreferencesKey("disabled_plugin_ids")
+        val PLUGIN_DEFAULTS_VERSION = intPreferencesKey("plugin_defaults_version")
     }
 
     private val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(
@@ -245,22 +262,33 @@ class SettingsRepository(
     /**
      * Возвращает сохранённый набор отключённых плагинов.
      *
-     * Если ни конфигурация, ни состояние плагинов ещё не записывались, это первый запуск:
-     * сохраняются безопасные продуктовые значения по умолчанию. Если конфигурация уже есть,
-     * отсутствие отдельного ключа означает старую установку — для неё сохраняется прежнее
-     * поведение «все плагины включены». Так обновление не меняет выбор существующего пользователя.
+     * Безопасные продуктовые значения применяются только к действительно пустому DataStore.
+     * Существующая конфигурация или даже отдельный сохранённый выбор плагинов считаются
+     * пользовательским состоянием и никогда не дополняются новыми отключениями.
      * Возвращает пустой набор при ошибке чтения, не перезаписывая повреждённое хранилище.
      */
     suspend fun loadDisabledPluginIds(): Set<String> =
         try {
             dataStore.edit { preferences ->
-                if (preferences[Keys.DISABLED_PLUGIN_IDS] == null) {
-                    preferences[Keys.DISABLED_PLUGIN_IDS] =
-                        if (preferences[Keys.CONFIG_JSON] == null) {
+                val defaultsVersion = preferences[Keys.PLUGIN_DEFAULTS_VERSION] ?: 0
+                if (defaultsVersion < PLUGIN_DEFAULTS_SCHEMA_VERSION) {
+                    val hasStoredConfiguration =
+                        preferences.asMap().containsKey(Keys.CONFIG_JSON)
+                    val hasStoredPluginState =
+                        preferences.asMap().containsKey(Keys.DISABLED_PLUGIN_IDS)
+                    if (shouldApplyFreshPluginDefaults(
+                            hasStoredConfiguration = hasStoredConfiguration,
+                            hasStoredPluginState = hasStoredPluginState,
+                            storedDefaultsVersion = defaultsVersion
+                        )
+                    ) {
+                        preferences[Keys.DISABLED_PLUGIN_IDS] =
                             FRESH_INSTALL_DISABLED_PLUGIN_IDS
-                        } else {
-                            emptySet()
-                        }
+                    }
+                    // Существующие установки тоже получают отметку версии: решение принимается
+                    // один раз, и пустой выбор пользователя нельзя позже принять за новый профиль.
+                    preferences[Keys.PLUGIN_DEFAULTS_VERSION] =
+                        PLUGIN_DEFAULTS_SCHEMA_VERSION
                 }
             }[Keys.DISABLED_PLUGIN_IDS] ?: emptySet()
         } catch (e: Exception) {
@@ -274,7 +302,10 @@ class SettingsRepository(
      */
     suspend fun saveDisabledPluginIds(ids: Set<String>) {
         try {
-            dataStore.edit { it[Keys.DISABLED_PLUGIN_IDS] = ids }
+            dataStore.edit {
+                it[Keys.DISABLED_PLUGIN_IDS] = ids
+                it[Keys.PLUGIN_DEFAULTS_VERSION] = PLUGIN_DEFAULTS_SCHEMA_VERSION
+            }
             logger.debug("Saved ${ids.size} disabled plugin ID(s)")
         } catch (e: Exception) {
             logger.error("Failed to save disabled plugin IDs", e)

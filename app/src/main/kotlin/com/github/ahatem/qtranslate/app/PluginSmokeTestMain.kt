@@ -33,8 +33,11 @@ fun main(args: Array<String>) = runBlocking {
     )
     val configuration = Configuration.DEFAULT.copy(autoCheckForUpdates = false)
     settingsRepository.updateConfiguration(configuration)
+    // Этот тест намеренно упражняет каждый bundled plugin, включая отключённые в продукте.
+    settingsRepository.saveDisabledPluginIds(emptySet())
     val dependencies = buildDependencies(appData, loggerFactory, settingsRepository, configuration)
     val results = mutableListOf<SmokeResult>()
+    val successfulManagedTranslations = linkedSetOf<String>()
 
     try {
         dependencies.pluginManager.loadAndProcessPlugins()
@@ -105,6 +108,10 @@ fun main(args: Array<String>) = runBlocking {
                         ).fold(
                             success = { response ->
                                 check(response.translatedText.isNotBlank()) { "empty successful response" }
+                                val pluginId = serviceId.substringBefore(':')
+                                if (pluginId in MANAGED_TRANSLATION_PLUGIN_IDS) {
+                                    successfulManagedTranslations += pluginId
+                                }
                                 "translated successfully"
                             },
                             failure = { error ->
@@ -121,6 +128,17 @@ fun main(args: Array<String>) = runBlocking {
                     translationCheck.fold({ it }, { "threw ${it::class.java.simpleName}: ${it.message}" })
                 )
             }
+
+        results += SmokeResult(
+            pluginId = "runtime",
+            check = "managed-primary-translation",
+            passed = hasSuccessfulManagedTranslation(successfulManagedTranslations),
+            detail = if (successfulManagedTranslations.isEmpty()) {
+                "ни один из Google/Bing/DeepL не вернул успешный перевод"
+            } else {
+                "успешно: ${successfulManagedTranslations.sorted().joinToString(", ")}"
+            }
+        )
     } catch (error: Throwable) {
         results += SmokeResult("runtime", "uncaught", false, "${error::class.java.simpleName}: ${error.message}")
     } finally {

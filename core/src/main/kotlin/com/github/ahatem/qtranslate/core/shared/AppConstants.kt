@@ -19,7 +19,7 @@ object AppConstants {
      * from and tells every new user an update is waiting.
      */
     const val APP_NAME = "CamWork Translate"
-    const val APP_VERSION = "1.2.4"
+    const val APP_VERSION = "1.2.5"
     const val DATA_DIRECTORY_NAME = "CamWork Translate"
     const val WEBSITE_URL = "https://camwork.club"
     const val HELP_URL = "https://wiki.camwork.club"
@@ -35,8 +35,8 @@ object AppConstants {
     const val GITHUB_OWNER = "CoCobalt-ux"
     const val GITHUB_REPO = "CamWork-Translate"
 
-    /** Собственный канал обновлений будет включён после публикации первого релиза CamWork. */
-    const val APP_UPDATES_AVAILABLE = false
+    /** Проверка обновлений использует только опубликованные релизы CamWork. */
+    const val APP_UPDATES_AVAILABLE = true
 
     // ============================================================
     // Timing

@@ -10,14 +10,20 @@ package com.github.ahatem.qtranslate.core.updater
 internal object ReleaseAssets {
 
     internal enum class Platform { WINDOWS, MACOS, OTHER }
+    internal enum class WindowsDistribution { INSTALLED, PORTABLE }
 
     /**
      * Возвращает подходящий файл или `null`, если ни один вариант не распознан.
-     * В Windows приоритет имеет пакет со встроенной Java, на остальных системах — переносимый ZIP.
+     * Без сведений о способе установки Windows считается portable: это не запускает установщик
+     * поверх переносимой папки и не меняет место хранения пользовательских данных.
      */
     fun selectDownload(assetNames: List<String>, onWindows: Boolean): String? {
         val platform = if (onWindows) Platform.WINDOWS else Platform.OTHER
-        return selectDownload(assetNames, platform)
+        return selectDownload(
+            assetNames = assetNames,
+            platform = platform,
+            windowsDistribution = WindowsDistribution.PORTABLE
+        )
     }
 
     /**
@@ -27,10 +33,18 @@ internal object ReleaseAssets {
     fun selectDownload(
         assetNames: List<String>,
         platform: Platform,
-        architecture: String = ""
+        architecture: String = "",
+        windowsDistribution: WindowsDistribution = WindowsDistribution.PORTABLE
     ): String? {
         val preference = when (platform) {
-            Platform.WINDOWS -> listOf(WINDOWS_PACKAGE, PORTABLE, APP_ONLY)
+            Platform.WINDOWS -> when (windowsDistribution) {
+                WindowsDistribution.INSTALLED ->
+                    listOf(WINDOWS_INSTALLER, WINDOWS_PACKAGE, PORTABLE, APP_ONLY)
+                // EXE намеренно не является fallback: portable-пользователь должен получить
+                // архив либо страницу релиза, но не сменить тип установки случайным кликом.
+                WindowsDistribution.PORTABLE ->
+                    listOf(WINDOWS_PACKAGE, PORTABLE, APP_ONLY)
+            }
             Platform.MACOS -> when (architecture.lowercase()) {
                 "aarch64", "arm64" -> listOf(MACOS_ARM64_DMG, MACOS_ARM64_APP, PORTABLE, APP_ONLY)
                 "amd64", "x86_64", "x64" -> listOf(MACOS_X64_DMG, MACOS_X64_APP, PORTABLE, APP_ONLY)
@@ -45,7 +59,13 @@ internal object ReleaseAssets {
 
     private const val VERSION = "\\d+\\.\\d+\\.\\d+(?:[-+][0-9A-Za-z.-]+)?"
 
-    /** `CamWork-Translate-1.2.0-windows-x64.zip` — Windows-пакет со встроенной Java. */
+    /** `CamWork-Translate-1.2.5-Setup-windows-x64.exe` — основной Windows-установщик. */
+    private val WINDOWS_INSTALLER = Regex(
+        "CamWork-Translate-$VERSION-Setup-windows-x64\\.exe",
+        RegexOption.IGNORE_CASE
+    )
+
+    /** `CamWork-Translate-1.2.5-windows-x64.zip` — переносимый Windows-пакет. */
     private val WINDOWS_PACKAGE = Regex(
         "CamWork-Translate-$VERSION-windows-x64\\.zip",
         RegexOption.IGNORE_CASE

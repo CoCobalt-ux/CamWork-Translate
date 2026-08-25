@@ -18,10 +18,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * MVI store for the main translation screen.
@@ -64,8 +65,14 @@ class MainStore(
 
     private var documentTranslationJob: Job? = null
     private var documentTranslationGeneration = 0L
-    /** Только последний Shift-запрос имеет право вставить результат или открыть overlay. */
-    private val shiftTranslationGeneration = AtomicLong(0)
+    private val instantTranslationCoordinator = InstantTranslationCoordinator()
+    private val userInputChanges = MutableSharedFlow<UserInputRevision>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    private val selectionTranslationCoordinator = SelectionTranslationCoordinator()
+    private val selectionRequestLock = Any()
+    private val selectionTranslationJobs = mutableMapOf<SelectionTranslationTicket, Job>()
     private val shiftTranslationMemory = ShiftTranslationMemory()
 
     private val _state = MutableStateFlow(
@@ -137,13 +144,14 @@ class MainStore(
 
     @OptIn(FlowPreview::class)
     private fun observeInstantTranslation() {
-        // Immediately clear output when the user erases all input — no debounce.
+        // Только пользовательский ввод попадает в поток. История, Shift-overlay и quick popup
+        // меняют MainState программно и больше не порождают скрытый второй сетевой запрос.
         scope.launch {
-            state.map { it.inputText }
-                .distinctUntilChanged()
-                .collect { text ->
+            userInputChanges.collect { revision ->
+                val text = revision.text
+                if (!instantTranslationCoordinator.shouldAutoTranslate(revision)) return@collect
                     if (settingsState.value.isInstantTranslationEnabled && text.isBlank()) {
-                        translateTextUseCase.cancel()
+                        translateTextUseCase.cancel(TranslationLane.MAIN)
                         _state.update {
                             it.copy(
                                 translatedText = "",
@@ -153,22 +161,26 @@ class MainStore(
                             )
                         }
                     }
-                }
+            }
         }
 
         // Debounced translation — only fires when there is enough text to translate.
         scope.launch {
-            state.map { it.inputText }
+            userInputChanges
                 .debounce(AppConstants.INSTANT_TRANSLATION_DEBOUNCE_MS)
-                .distinctUntilChanged()
-                .collect { text ->
+                .collect { revision ->
+                    if (!instantTranslationCoordinator.shouldAutoTranslate(revision)) return@collect
+                    val text = revision.text
                     if (settingsState.value.isInstantTranslationEnabled
                         && text.length >= AppConstants.INSTANT_TRANSLATE_MIN_CHARS
                     ) {
                         val modelLanguage = runCatching {
                             LanguageCode(settingsState.value.modelLanguage)
                         }.getOrDefault(LanguageCode.RUSSIAN)
-                        translateText(sameLanguageFallbackTarget = modelLanguage)
+                        translateText(
+                            textOverride = text,
+                            sameLanguageFallbackTarget = modelLanguage
+                        )
                     }
                 }
         }
@@ -218,6 +230,7 @@ class MainStore(
                     intent.text.replace("\n", " ").replace("\r", "").replace("  ", " ").trim()
                 else intent.text
                 _state.update { it.copy(inputText = cleaned, detectedSourceLanguage = null) }
+                userInputChanges.tryEmit(instantTranslationCoordinator.recordUserInput(cleaned))
                 // With instant translate enabled, cancel any in-flight translation immediately
                 // so the loading indicator clears and the debounce can queue the next request.
                 // Without this, the collect coroutine in observeInstantTranslation stays
@@ -225,7 +238,7 @@ class MainStore(
                 // text effectively waits in line behind the old result.
                 // Capture state once to avoid reading _state.value twice (TOCTOU race).
                 if (settingsState.value.isInstantTranslationEnabled && _state.value.isLoading) {
-                    translateTextUseCase.cancel()
+                    translateTextUseCase.cancel(TranslationLane.MAIN)
                     _state.update { s -> s.copy(isLoading = false) }
                 }
             }
@@ -236,8 +249,11 @@ class MainStore(
             is MainIntent.SelectTargetLanguage ->
                 _state.update { it.copy(targetLanguage = intent.language) }
 
-            is MainIntent.ApplyCorrection ->
-                _state.update { it.copy(inputText = it.inputText.replaceFirst(intent.original, intent.suggestion)) }
+            is MainIntent.ApplyCorrection -> {
+                val corrected = _state.value.inputText.replaceFirst(intent.original, intent.suggestion)
+                _state.update { it.copy(inputText = corrected) }
+                userInputChanges.tryEmit(instantTranslationCoordinator.recordUserInput(corrected))
+            }
 
             // Closing clears the pin. A pin says "keep this one around", not "and every one
             // after it" — leaving it set meant the next popup opened wearing the pinned border
@@ -275,12 +291,15 @@ class MainStore(
                 handleSpellCheck(_state.value.inputText, isEnabled = true)
             }
 
-            is MainIntent.Translate -> scope.launch { translateText(intent.text) }
+            is MainIntent.Translate -> {
+                instantTranslationCoordinator.markCurrentAsExplicit()
+                scope.launch { translateText(intent.text) }
+            }
 
             MainIntent.RefreshExtraOutput -> scope.launch { refreshExtraOutput() }
 
             MainIntent.CancelTranslation -> {
-                translateTextUseCase.cancel()
+                translateTextUseCase.cancel(TranslationLane.MAIN)
                 // Both flags, because cancelling can land while the extra panel is still waiting
                 // on its own request and only the main one was ever cleared here.
                 _state.update { it.copy(isLoading = false, isExtraOutputLoading = false) }
@@ -300,55 +319,42 @@ class MainStore(
             }
 
             is MainIntent.TranslateShiftSelection -> {
-                val generation = shiftTranslationGeneration.incrementAndGet()
-                scope.launch {
-                    handleSelectionTranslation(
-                        selectedTextRaw = intent.selectedText,
-                        capturedAtMillis = intent.capturedAtMillis,
-                        generation = generation,
-                        trigger = SelectionTranslationTrigger.SHIFT
-                    )
-                }
+                startSelectionTranslation(
+                    selectedText = intent.selectedText,
+                    capturedAtMillis = intent.capturedAtMillis,
+                    requestId = intent.requestId,
+                    trigger = SelectionTranslationTrigger.SHIFT
+                )
             }
 
             is MainIntent.AutoTranslateSelection -> {
-                val generation = shiftTranslationGeneration.incrementAndGet()
-                scope.launch {
-                    try {
-                        handleSelectionTranslation(
-                            selectedTextRaw = intent.selectedText,
-                            capturedAtMillis = intent.capturedAtMillis,
-                            generation = generation,
-                            trigger = SelectionTranslationTrigger.AUTO_SELECTION
-                        )
-                    } finally {
-                        // Старый запрос не должен скрыть анимацию более нового выделения.
-                        if (shouldDismissAutomaticSelectionProgress(
-                                requestGeneration = generation,
-                                currentGeneration = shiftTranslationGeneration.get()
-                            )
-                        ) {
-                            _eventChannel.send(MainEvent.AutoSelectionTranslationFinished)
-                        }
-                    }
-                }
+                startSelectionTranslation(
+                    selectedText = intent.selectedText,
+                    capturedAtMillis = intent.capturedAtMillis,
+                    requestId = intent.requestId,
+                    trigger = SelectionTranslationTrigger.AUTO_SELECTION
+                )
             }
 
             is MainIntent.TranslateSelectionFromButton -> {
-                val generation = shiftTranslationGeneration.incrementAndGet()
-                scope.launch {
-                    handleSelectionTranslation(
-                        selectedTextRaw = intent.selectedText,
-                        capturedAtMillis = intent.capturedAtMillis,
-                        generation = generation,
-                        trigger = SelectionTranslationTrigger.MANUAL_BUTTON
-                    )
-                }
+                startSelectionTranslation(
+                    selectedText = intent.selectedText,
+                    capturedAtMillis = intent.capturedAtMillis,
+                    requestId = intent.requestId,
+                    trigger = SelectionTranslationTrigger.MANUAL_BUTTON
+                )
             }
 
-            MainIntent.CancelSelectionTranslations -> {
-                shiftTranslationGeneration.incrementAndGet()
+            is MainIntent.ReportShiftCaptureFailure -> scope.launch {
+                _eventChannel.send(
+                    MainEvent.ShiftTranslationFailed(
+                        reason = SelectionTranslationFailureReason.CAPTURE,
+                        requestId = intent.requestId
+                    )
+                )
             }
+
+            MainIntent.CancelSelectionTranslations -> cancelSelectionTranslations()
 
             is MainIntent.ListenToText -> scope.launch {
                 handleListen(intent.textSource, intent.text, intent.language)
@@ -744,6 +750,73 @@ class MainStore(
         _state.update { it.copy(history = emptyList(), historyIndex = 0) }
     }
 
+    /**
+     * Регистрирует фоновый запрос атомарно до запуска coroutine. AUTO не принимается, пока
+     * выполняется явный Shift, а вытесненный запрос теряет и Job, и право публикации результата.
+     */
+    private fun startSelectionTranslation(
+        selectedText: String,
+        capturedAtMillis: Long,
+        requestId: Long,
+        trigger: SelectionTranslationTrigger
+    ) {
+        var supersededJob: Job? = null
+        var supersededLane: TranslationLane? = null
+        var newJob: Job? = null
+
+        synchronized(selectionRequestLock) {
+            when (val admission = selectionTranslationCoordinator.begin(trigger, requestId)) {
+                is SelectionTranslationAdmission.Rejected -> return
+                is SelectionTranslationAdmission.Accepted -> {
+                    admission.superseded?.let { superseded ->
+                        supersededJob = selectionTranslationJobs.remove(superseded)
+                        supersededLane = superseded.trigger.translationLane
+                    }
+                    val ticket = admission.ticket
+                    val job = scope.launch(start = CoroutineStart.LAZY) {
+                        try {
+                            handleSelectionTranslation(
+                                selectedTextRaw = selectedText,
+                                capturedAtMillis = capturedAtMillis,
+                                ticket = ticket
+                            )
+                        } finally {
+                            val completedCurrent = synchronized(selectionRequestLock) {
+                                selectionTranslationJobs.remove(ticket)
+                                selectionTranslationCoordinator.complete(ticket)
+                            }
+                            if (ticket.trigger == SelectionTranslationTrigger.AUTO_SELECTION &&
+                                completedCurrent
+                            ) {
+                                _eventChannel.send(MainEvent.AutoSelectionTranslationFinished)
+                            }
+                        }
+                    }
+                    selectionTranslationJobs[ticket] = job
+                    newJob = job
+                }
+            }
+        }
+
+        supersededJob?.cancel(CancellationException("Selection request superseded"))
+        supersededLane
+            ?.takeIf { it != trigger.translationLane }
+            ?.let { lane ->
+                translateTextUseCase.cancel(lane)
+        }
+        newJob?.start()
+    }
+
+    private fun cancelSelectionTranslations() {
+        val jobs = synchronized(selectionRequestLock) {
+            selectionTranslationCoordinator.cancelAll()
+            translateTextUseCase.cancel(TranslationLane.SELECTION_EXPLICIT)
+            translateTextUseCase.cancel(TranslationLane.SELECTION_AUTO)
+            selectionTranslationJobs.values.toList().also { selectionTranslationJobs.clear() }
+        }
+        jobs.forEach { it.cancel(CancellationException("Selection translations cancelled")) }
+    }
+
     private suspend fun handleReplaceWithTranslation(selectedText: String) {
         if (selectedText.isBlank()) return
         // isReplacingSelection=true tells the LoadingIndicator observer to show
@@ -754,7 +827,8 @@ class MainStore(
             getState       = { _state.value },
             updateState    = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar,
-            textOverride   = selectedText
+            textOverride   = selectedText,
+            lane = TranslationLane.SELECTION_EXPLICIT
         )
         val result = _state.value.translatedText
         _state.update { it.copy(isReplacingSelection = false) }
@@ -772,12 +846,16 @@ class MainStore(
     private suspend fun handleSelectionTranslation(
         selectedTextRaw: String,
         capturedAtMillis: Long,
-        generation: Long,
-        trigger: SelectionTranslationTrigger
+        ticket: SelectionTranslationTicket
     ) {
+        val trigger = ticket.trigger
         val selectedText = selectedTextRaw.trim()
         if (selectedText.isBlank()) {
-            reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED)
+            reportSelectionTranslationFailure(
+                trigger,
+                SelectionTranslationFailureReason.CAPTURE,
+                ticket.requestId
+            )
             return
         }
 
@@ -790,7 +868,11 @@ class MainStore(
             SelectionTranslationTrigger.MANUAL_BUTTON -> true
         }
         if (!triggerEnabled) {
-            reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.DISABLED)
+            reportSelectionTranslationFailure(
+                trigger,
+                SelectionTranslationFailureReason.DISABLED,
+                ticket.requestId
+            )
             return
         }
 
@@ -802,7 +884,8 @@ class MainStore(
             if (trigger == SelectionTranslationTrigger.SHIFT) {
                 reportSelectionTranslationFailure(
                     trigger,
-                    MainEvent.ShiftTranslationFailure.UNSUPPORTED_DIRECTION
+                    SelectionTranslationFailureReason.UNSUPPORTED_DIRECTION,
+                    ticket.requestId
                 )
             }
             return
@@ -822,7 +905,11 @@ class MainStore(
         val sourceLanguage = LanguageCode.AUTO
         val targetLanguage = if (direction == ShiftSelectionDirection.MODEL_LANGUAGE) {
             resolveShiftOutboundTarget(baseState, config, modelLanguage) ?: run {
-                reportSelectionTranslationFailure(trigger, MainEvent.ShiftTranslationFailure.NO_TARGET_LANGUAGE)
+                reportSelectionTranslationFailure(
+                    trigger,
+                    SelectionTranslationFailureReason.NO_TARGET_LANGUAGE,
+                    ticket.requestId
+                )
                 return
             }
         } else {
@@ -854,12 +941,12 @@ class MainStore(
         )
 
         val expiresAt = capturedAtMillis + SHIFT_REPLACE_VALIDITY_MS
-        var rejectionReason: MainEvent.ShiftTranslationFailure? = null
+        var rejectionReason: SelectionTranslationFailureReason? = null
         val execution = executeSelectionTranslation(
             translationInput = translationInput,
             action = action,
             translate = { input ->
-                translateTextUseCase(
+                when (val result = translateTextUseCase(
                     getState = { backgroundState },
                     updateState = { transform -> backgroundState = backgroundState.transform() },
                     // Фоновый Shift не должен менять статус скрытого главного окна.
@@ -868,12 +955,24 @@ class MainStore(
                     // Summary/rewrite относятся к главному окну и не должны задерживать замену.
                     includeExtraOutput = false,
                     // Входящий Shift обязан переводить в язык модели независимо от правил окна.
-                    applyTranslationRules = false
-                )
-                backgroundState.translatedText
+                    applyTranslationRules = false,
+                    lane = trigger.translationLane,
+                    requestContext = TranslationRequestContext(
+                        requestId = ticket.requestId,
+                        origin = trigger.telemetryOrigin
+                    )
+                )) {
+                    is TranslationRunResult.Success ->
+                        SelectionTranslationAttempt.Translated(result.translatedText)
+                    is TranslationRunResult.Failure ->
+                        SelectionTranslationAttempt.Failed(result.kind.toSelectionFailureReason())
+                }
             },
             canDeliver = {
-                if (generation != shiftTranslationGeneration.get()) return@executeSelectionTranslation false
+                if (!selectionTranslationCoordinator.isCurrent(ticket)) {
+                    rejectionReason = SelectionTranslationFailureReason.CANCELLED
+                    return@executeSelectionTranslation false
+                }
                 val currentConfig = settingsState.value
                 val stillEnabled = when (trigger) {
                     SelectionTranslationTrigger.SHIFT ->
@@ -888,11 +987,11 @@ class MainStore(
                     SelectionTranslationTrigger.MANUAL_BUTTON -> true
                 }
                 if (!stillEnabled) {
-                    rejectionReason = MainEvent.ShiftTranslationFailure.DISABLED
+                    rejectionReason = SelectionTranslationFailureReason.DISABLED
                     return@executeSelectionTranslation false
                 }
                 if (shouldReplace && System.currentTimeMillis() > expiresAt) {
-                    rejectionReason = MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED
+                    rejectionReason = SelectionTranslationFailureReason.CANCELLED
                     return@executeSelectionTranslation false
                 }
                 true
@@ -915,7 +1014,8 @@ class MainStore(
                             translatedText = translatedText
                         ),
                         expiresAtMillis = expiresAt,
-                        showShiftFeedback = true
+                        showShiftFeedback = true,
+                        requestId = ticket.requestId
                     )
                 )
             },
@@ -948,13 +1048,14 @@ class MainStore(
         when (execution) {
             SelectionTranslationExecution.DELIVERED,
             SelectionTranslationExecution.IGNORED -> Unit
-            SelectionTranslationExecution.INVALID_TRANSLATION ->
+            is SelectionTranslationExecution.FAILED ->
                 reportSelectionTranslationFailure(
                     trigger,
-                    MainEvent.ShiftTranslationFailure.TRANSLATION_FAILED
+                    execution.reason,
+                    ticket.requestId
                 )
             SelectionTranslationExecution.REJECTED -> rejectionReason?.let { reason ->
-                reportSelectionTranslationFailure(trigger, reason)
+                reportSelectionTranslationFailure(trigger, reason, ticket.requestId)
             }
         }
     }
@@ -971,10 +1072,13 @@ class MainStore(
 
     private suspend fun reportSelectionTranslationFailure(
         trigger: SelectionTranslationTrigger,
-        reason: MainEvent.ShiftTranslationFailure
+        reason: SelectionTranslationFailureReason,
+        requestId: Long
     ) {
-        if (trigger != SelectionTranslationTrigger.AUTO_SELECTION) {
-            _eventChannel.send(MainEvent.ShiftTranslationFailed(reason))
+        if (trigger != SelectionTranslationTrigger.AUTO_SELECTION &&
+            reason != SelectionTranslationFailureReason.CANCELLED
+        ) {
+            _eventChannel.send(MainEvent.ShiftTranslationFailed(reason, requestId))
         }
     }
 
@@ -1029,6 +1133,33 @@ internal enum class SelectionTranslationTrigger {
     AUTO_SELECTION,
     MANUAL_BUTTON
 }
+
+private val SelectionTranslationTrigger.translationLane: TranslationLane
+    get() = when (this) {
+        SelectionTranslationTrigger.SHIFT,
+        SelectionTranslationTrigger.MANUAL_BUTTON -> TranslationLane.SELECTION_EXPLICIT
+        SelectionTranslationTrigger.AUTO_SELECTION -> TranslationLane.SELECTION_AUTO
+    }
+
+private val SelectionTranslationTrigger.telemetryOrigin: String
+    get() = when (this) {
+        SelectionTranslationTrigger.SHIFT -> "shift"
+        SelectionTranslationTrigger.AUTO_SELECTION -> "auto_selection"
+        SelectionTranslationTrigger.MANUAL_BUTTON -> "selection_button"
+    }
+
+internal fun TranslationFailureKind.toSelectionFailureReason(): SelectionTranslationFailureReason =
+    when (this) {
+        TranslationFailureKind.NETWORK -> SelectionTranslationFailureReason.NETWORK
+        TranslationFailureKind.RATE_LIMIT -> SelectionTranslationFailureReason.RATE_LIMIT
+        TranslationFailureKind.TIMEOUT -> SelectionTranslationFailureReason.TIMEOUT
+        TranslationFailureKind.AUTHENTICATION -> SelectionTranslationFailureReason.AUTHENTICATION
+        TranslationFailureKind.INVALID -> SelectionTranslationFailureReason.INVALID
+        TranslationFailureKind.SERVICE_UNAVAILABLE ->
+            SelectionTranslationFailureReason.SERVICE_UNAVAILABLE
+        TranslationFailureKind.CANCELLED -> SelectionTranslationFailureReason.CANCELLED
+        TranslationFailureKind.UNKNOWN -> SelectionTranslationFailureReason.UNKNOWN
+    }
 
 /** Явная команда Shift никогда не подавляется автоматическим результатом того же выделения. */
 internal fun shouldSuppressRecentPassiveOverlay(

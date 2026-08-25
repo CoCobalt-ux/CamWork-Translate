@@ -72,7 +72,10 @@ class PerformSpellCheckUseCase(
                 response.corrections
             },
             failure = { error ->
-                logger.error("Spell check failed: ${error.message}", error.cause)
+                logger.error(
+                    "Spell check failed: errorType=${error::class.simpleName}, " +
+                        "causeType=${error.cause?.javaClass?.simpleName ?: "none"}"
+                )
                 val summary = error.shortSummary()
                 onStatusUpdate(StatusCode.SpellCheckFailed(summary), NotificationType.WARNING, true)
                 emptyList()

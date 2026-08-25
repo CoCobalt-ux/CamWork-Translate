@@ -148,15 +148,16 @@ static bool append_java_tool_option(const char *option) {
     return success;
 }
 
-/*
- * Показывает штатное окно macOS с кнопкой «Открыть настройки», если «Универсальный доступ» ещё
- * не выдан. Без этого разрешения не работает ни перехват Shift, ни чтение выделенного текста, а
- * найти нужный переключатель самостоятельно — задача не для всякого пользователя.
- *
- * Выдать разрешение из программы нельзя; система показывает окно сама и только когда разрешения
- * действительно нет, поэтому вызов безвреден при каждом запуске.
- */
-static void request_accessibility_permission(void) {
+static bool is_packaged_smoke_test(void) {
+    const char *value = getenv("CAMWORK_PACKAGED_SMOKE_TEST");
+    return value != NULL && (strcmp(value, "1") == 0 || strcmp(value, "true") == 0);
+}
+
+static bool request_accessibility_permission(void) {
+    if (AXIsProcessTrusted()) {
+        return true;
+    }
+
     const void *keys[] = { kAXTrustedCheckOptionPrompt };
     const void *values[] = { kCFBooleanTrue };
     CFDictionaryRef options = CFDictionaryCreate(
@@ -168,17 +169,128 @@ static void request_accessibility_permission(void) {
         &kCFTypeDictionaryValueCallBacks
     );
     if (options == NULL) {
+        return false;
+    }
+
+    (void)AXIsProcessTrustedWithOptions(options);
+    CFRelease(options);
+    return AXIsProcessTrusted();
+}
+
+static bool is_input_monitoring_permission_granted(void) {
+    if (__builtin_available(macOS 10.15, *)) {
+        return CGPreflightListenEventAccess();
+    }
+    return true;
+}
+
+static bool request_input_monitoring_permission(void) {
+    if (__builtin_available(macOS 10.15, *)) {
+        if (CGPreflightListenEventAccess()) {
+            return true;
+        }
+        (void)CGRequestListenEventAccess();
+        return CGPreflightListenEventAccess();
+    }
+    return true;
+}
+
+static void show_permission_guidance(
+    bool accessibility_was_missing,
+    bool input_monitoring_was_missing,
+    bool permissions_granted
+) {
+    const char *permission_names = NULL;
+    const char *settings_url = NULL;
+    if (accessibility_was_missing && input_monitoring_was_missing) {
+        permission_names = "Универсальный доступ и Мониторинг ввода";
+        settings_url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+    }
+    else if (accessibility_was_missing) {
+        permission_names = "Универсальный доступ";
+        settings_url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
+    }
+    else {
+        permission_names = "Мониторинг ввода";
+        settings_url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
+    }
+
+    const char *guidance = permissions_granted
+        ? "Разрешения изменены. Чтобы macOS применила их ко всем функциям,"
+        : "macOS не позволяет приложению выдать разрешения автоматически. "
+          "Убедитесь, что указанные разрешения включены для CamWork Translate.";
+    char script[4096];
+    const int written = snprintf(
+        script,
+        sizeof(script),
+        "set answer to display alert \"CamWork Translate: нужны разрешения\" "
+        "message \"%s Проверьте «%s» в разделе «Конфиденциальность и безопасность». "
+        "Полностью закройте приложение через Cmd+Q и запустите его снова — разрешения "
+        "будут проверены повторно.\" buttons {\"Позже\", \"Открыть настройки\"} "
+        "default button \"Открыть настройки\" cancel button \"Позже\"\n"
+        "if button returned of answer is \"Открыть настройки\" then open location \"%s\"",
+        guidance,
+        permission_names,
+        settings_url
+    );
+    if (written < 0 || (size_t)written >= sizeof(script)) {
+        report_error("не удалось подготовить подсказку о разрешениях");
         return;
     }
 
-    AXIsProcessTrustedWithOptions(options);
-    CFRelease(options);
+    pid_t child = 0;
+    char *const arguments[] = {
+        "/usr/bin/osascript",
+        "-e",
+        script,
+        NULL
+    };
+    const int spawn_result = posix_spawn(
+        &child,
+        arguments[0],
+        NULL,
+        NULL,
+        arguments,
+        environ
+    );
+    if (spawn_result != 0) {
+        report_error("откройте настройки конфиденциальности macOS и перезапустите приложение");
+        return;
+    }
+
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        report_error("разрешения нужно включить вручную, затем полностью перезапустить приложение");
+    }
+}
+
+/*
+ * TCC не разрешает приложению самостоятельно выдать Accessibility/Input Monitoring. При каждом
+ * обычном запуске bootstrap проверяет оба разрешения, инициирует штатные запросы, проверяет ещё
+ * раз и явно просит полностью перезапустить приложение. В packaged smoke диалоги запрещены.
+ */
+static void check_and_request_permissions(void) {
+    if (is_packaged_smoke_test()) {
+        return;
+    }
+
+    const bool accessibility_was_missing = !AXIsProcessTrusted();
+    const bool input_monitoring_was_missing = !is_input_monitoring_permission_granted();
+    const bool accessibility_granted = request_accessibility_permission();
+    const bool input_monitoring_granted = request_input_monitoring_permission();
+    if (accessibility_was_missing || input_monitoring_was_missing) {
+        show_permission_guidance(
+            accessibility_was_missing,
+            input_monitoring_was_missing,
+            accessibility_granted && input_monitoring_granted
+        );
+    }
 }
 
 int main(int argc, char **argv) {
     (void)argc;
 
-    request_accessibility_permission();
+    check_and_request_permissions();
 
     char raw_executable[PATH_MAX];
     uint32_t raw_size = (uint32_t)sizeof(raw_executable);
