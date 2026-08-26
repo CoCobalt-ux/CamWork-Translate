@@ -32,6 +32,7 @@ clear_all = "Очистить все"
 auto_detect = "Автоопределение"
 
 [shift_overlay]
+replace_selection = "Перевести и заменить выделенный текст"
 translating = "Перевод…"
 replaced = "Перевод вставлен"
 capture_failed = "Не удалось прочитать выделенный текст"

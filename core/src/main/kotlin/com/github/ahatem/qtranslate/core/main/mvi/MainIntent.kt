@@ -26,6 +26,8 @@ sealed interface MainIntent : UiIntent {
 
     /** User clicked the swap button to exchange source and target languages. */
     data object SwapLanguages : MainIntent
+    /** Обмен пары внутри быстрого окна с учётом его временных языков. */
+    data object SwapQuickTranslateLanguages : MainIntent
 
     // ---- Translation & processing ----
 
@@ -167,6 +169,14 @@ sealed interface MainIntent : UiIntent {
     data class TranslateSelectionFromButton(
         val selectedText: String,
         val capturedAtMillis: Long = System.currentTimeMillis(),
+        val requestId: Long = 0L
+    ) : MainIntent
+
+    /** Явная кнопка возле выделения: всегда переводит и заменяет, независимо от режима Shift. */
+    data class TranslateSelectionAndReplaceFromButton(
+        val selectedText: String,
+        val capturedAtMillis: Long,
+        val interactionGeneration: Long,
         val requestId: Long = 0L
     ) : MainIntent
 

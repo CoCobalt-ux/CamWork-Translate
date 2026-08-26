@@ -38,6 +38,7 @@ internal fun resolveSelectionTranslationAction(
         }
 
     SelectionTranslationTrigger.MANUAL_BUTTON -> SelectionTranslationAction.PASSIVE_OVERLAY
+    SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> SelectionTranslationAction.REPLACE
 }
 
 /** Переводит содержимое выделения, не съедая намеренно захваченные пробелы и переводы строк. */

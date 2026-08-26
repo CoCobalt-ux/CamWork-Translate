@@ -48,22 +48,31 @@ import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
  */
 internal class SelectionTranslateButton internal constructor(
     owner: Window,
-    private val icon: FlatSVGIcon,
-    tooltip: String,
-    private val onTranslate: (String) -> Unit
+    private val translateIcon: FlatSVGIcon,
+    private val replaceIcon: FlatSVGIcon,
+    private val translateTooltip: String,
+    private val replaceTooltip: String,
+    private val onTranslate: (String) -> Unit,
+    private val onTranslateAndReplace: (String, Long) -> Unit
 ) : JWindow(owner) {
 
     constructor(
         owner: Window,
         iconManager: IconManager,
-        tooltip: String,
-        onTranslate: (String) -> Unit
+        translateTooltip: String,
+        replaceTooltip: String,
+        onTranslate: (String) -> Unit,
+        onTranslateAndReplace: (String, Long) -> Unit
     ) : this(
         owner = owner,
-        icon = (iconManager.getIcon(ICON_PATH, ICON_SIZE, ICON_SIZE) as FlatSVGIcon)
+        translateIcon = (iconManager.getIcon(Icons.TRANSLATE, ICON_SIZE, ICON_SIZE) as FlatSVGIcon)
             .applyForegroundColorFilter(),
-        tooltip = tooltip,
-        onTranslate = onTranslate
+        replaceIcon = (iconManager.getIcon(Icons.SWAP, ICON_SIZE, ICON_SIZE) as FlatSVGIcon)
+            .applyForegroundColorFilter(),
+        translateTooltip = translateTooltip,
+        replaceTooltip = replaceTooltip,
+        onTranslate = onTranslate,
+        onTranslateAndReplace = onTranslateAndReplace
     )
 
     private val payload = SelectionButtonPayload()
@@ -86,16 +95,20 @@ internal class SelectionTranslateButton internal constructor(
         if (translucent) background = TRANSPARENT
 
         contentPane = face
-        val edge = FACE_SIZE + PADDING * 2
-        size = Dimension(edge, edge)
-        face.toolTipText = tooltip
+        size = Dimension(CONTENT_WIDTH + PADDING * 2, FACE_SIZE + PADDING * 2)
+        // Регистрирует компонент в ToolTipManager; конкретный текст выбирается по кнопке.
+        face.toolTipText = translateTooltip
     }
 
     /** Shows the button near [pointer] for [text], choosing a corner that stays on screen. */
-    fun showAt(pointer: Point, text: String) {
+    fun showAt(
+        pointer: Point,
+        text: String,
+        capturedAtMillis: Long = System.currentTimeMillis()
+    ) {
         if (text.isBlank()) return
-        payload.remember(text)
-        face.hovered = false
+        payload.remember(text, capturedAtMillis)
+        face.hoveredAction = null
         location = placeNear(pointer)
 
         if (!isVisible) {
@@ -139,7 +152,7 @@ internal class SelectionTranslateButton internal constructor(
             pointer = pointer,
             windowSize = size,
             screenWorkArea = screenWorkAreaFor(pointer),
-            faceSize = FACE_SIZE,
+            faceSize = Dimension(CONTENT_WIDTH, FACE_SIZE),
             padding = PADDING,
             gap = GAP
         )
@@ -197,7 +210,7 @@ internal class SelectionTranslateButton internal constructor(
     // ── Painting ─────────────────────────────────────────────────────────────
 
     private inner class ButtonFace : JComponent() {
-        var hovered = false
+        var hoveredAction: ButtonAction? = null
             set(value) {
                 if (field != value) { field = value; repaint() }
             }
@@ -205,9 +218,9 @@ internal class SelectionTranslateButton internal constructor(
         init {
             isOpaque = !translucent
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            addMouseListener(object : MouseAdapter() {
+            val mouseHandler = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
-                    hovered = true
+                    hoveredAction = actionAt(e.point)
                     // Hold the button open while the pointer is on it — nothing is more
                     // annoying than a target that vanishes as you reach for it.
                     hideTimer.stop()
@@ -216,22 +229,40 @@ internal class SelectionTranslateButton internal constructor(
                 }
 
                 override fun mouseExited(e: MouseEvent) {
-                    hovered = false
+                    hoveredAction = null
                     if (isVisible) hideTimer.restart()
                 }
 
                 override fun mousePressed(e: MouseEvent) {
-                    hovered = true
+                    hoveredAction = actionAt(e.point)
                     repaint()
+                }
+
+                override fun mouseMoved(e: MouseEvent) {
+                    hoveredAction = actionAt(e.point)
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e)) return
-                    val text = payload.consume()
+                    val action = actionAt(e.point) ?: return
+                    val request = payload.consume() ?: return
                     dismiss()
-                    if (text.isNotBlank()) onTranslate(text)
+                    deliverSelectionButtonAction(
+                        action = action,
+                        request = request,
+                        onTranslate = onTranslate,
+                        onTranslateAndReplace = onTranslateAndReplace
+                    )
                 }
-            })
+            }
+            addMouseListener(mouseHandler)
+            addMouseMotionListener(mouseHandler)
+        }
+
+        override fun getToolTipText(event: MouseEvent): String = when (actionAt(event.point)) {
+            ButtonAction.TRANSLATE -> translateTooltip
+            ButtonAction.TRANSLATE_AND_REPLACE -> replaceTooltip
+            null -> ""
         }
 
         override fun paintComponent(g: Graphics) {
@@ -240,24 +271,46 @@ internal class SelectionTranslateButton internal constructor(
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
                 g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE)
 
-                val faceRect = Rectangle(PADDING, PADDING, FACE_SIZE, FACE_SIZE)
-
-                if (translucent) paintShadow(g2, faceRect)
-
-                g2.color = if (hovered) hoverBackground() else background()
-                g2.fillRoundRect(faceRect.x, faceRect.y, faceRect.width, faceRect.height, ARC, ARC)
-
-                g2.color = borderColor()
-                g2.drawRoundRect(faceRect.x, faceRect.y, faceRect.width - 1, faceRect.height - 1, ARC, ARC)
-
-                icon.paintIcon(
-                    this, g2,
-                    faceRect.x + (faceRect.width - icon.iconWidth) / 2,
-                    faceRect.y + (faceRect.height - icon.iconHeight) / 2
-                )
+                paintButton(g2, ButtonAction.TRANSLATE, translateRect(), translateIcon)
+                paintButton(g2, ButtonAction.TRANSLATE_AND_REPLACE, replaceRect(), replaceIcon)
             } finally {
                 g2.dispose()
             }
+        }
+
+        private fun paintButton(
+            g2: Graphics2D,
+            action: ButtonAction,
+            faceRect: Rectangle,
+            icon: FlatSVGIcon
+        ) {
+            if (translucent) paintShadow(g2, faceRect)
+            val hovered = hoveredAction == action
+            g2.color = if (hovered) hoverBackground() else background()
+            g2.fillRoundRect(faceRect.x, faceRect.y, faceRect.width, faceRect.height, ARC, ARC)
+            g2.color = borderColor(hovered)
+            g2.drawRoundRect(faceRect.x, faceRect.y, faceRect.width - 1, faceRect.height - 1, ARC, ARC)
+            icon.paintIcon(
+                this,
+                g2,
+                faceRect.x + (faceRect.width - icon.iconWidth) / 2,
+                faceRect.y + (faceRect.height - icon.iconHeight) / 2
+            )
+        }
+
+        private fun translateRect() = Rectangle(PADDING, PADDING, FACE_SIZE, FACE_SIZE)
+
+        private fun replaceRect() = Rectangle(
+            PADDING + FACE_SIZE + BUTTON_GAP,
+            PADDING,
+            FACE_SIZE,
+            FACE_SIZE
+        )
+
+        private fun actionAt(point: Point): ButtonAction? = when {
+            translateRect().contains(point) -> ButtonAction.TRANSLATE
+            replaceRect().contains(point) -> ButtonAction.TRANSLATE_AND_REPLACE
+            else -> null
         }
 
         /** Layered translucent rounded rects — cheap approximation of a soft drop shadow. */
@@ -293,7 +346,7 @@ internal class SelectionTranslateButton internal constructor(
          */
         private fun hoverBackground(): Color = background().blend(accent(), 0.20f)
 
-        private fun borderColor(): Color =
+        private fun borderColor(hovered: Boolean): Color =
             if (hovered) accent()
             else UIManager.getColor("Component.borderColor")
                 ?: UIManager.getColor("Separator.foreground")
@@ -319,13 +372,14 @@ internal class SelectionTranslateButton internal constructor(
     }
 
     private companion object {
-        val ICON_PATH = Icons.TRANSLATE
-        const val ICON_SIZE = 16
+        const val ICON_SIZE = 14
 
         /** Visible button body; the window is larger to leave room for the shadow. */
-        const val FACE_SIZE = 30
-        const val PADDING = 6
-        const val ARC = 10
+        const val FACE_SIZE = 26
+        const val BUTTON_GAP = 3
+        const val CONTENT_WIDTH = FACE_SIZE * 2 + BUTTON_GAP
+        const val PADDING = 5
+        const val ARC = 9
 
         /** Distance from the cursor to the nearest edge of the button body. */
         const val GAP = 8
@@ -339,20 +393,42 @@ internal class SelectionTranslateButton internal constructor(
 
         val TRANSPARENT = Color(0, 0, 0, 0)
     }
+
+}
+
+internal enum class ButtonAction {
+    TRANSLATE,
+    TRANSLATE_AND_REPLACE
 }
 
 /** Одноразовое состояние кнопки: старое выделение нельзя повторно отправить после dismiss. */
 internal class SelectionButtonPayload {
-    private var text: String = ""
+    data class Value(val text: String, val capturedAtMillis: Long)
 
-    fun remember(value: String) {
-        text = value
+    private var value: Value? = null
+
+    fun remember(text: String, capturedAtMillis: Long) {
+        value = Value(text, capturedAtMillis)
     }
 
-    fun consume(): String = text.also { text = "" }
+    fun consume(): Value? = value.also { value = null }
 
     fun clear() {
-        text = ""
+        value = null
+    }
+}
+
+internal fun deliverSelectionButtonAction(
+    action: ButtonAction,
+    request: SelectionButtonPayload.Value,
+    onTranslate: (String) -> Unit,
+    onTranslateAndReplace: (String, Long) -> Unit
+) {
+    if (request.text.isBlank()) return
+    when (action) {
+        ButtonAction.TRANSLATE -> onTranslate(request.text)
+        ButtonAction.TRANSLATE_AND_REPLACE ->
+            onTranslateAndReplace(request.text, request.capturedAtMillis)
     }
 }
 
@@ -364,7 +440,7 @@ internal fun calculateSelectionButtonLocation(
     pointer: Point,
     windowSize: Dimension,
     screenWorkArea: Rectangle,
-    faceSize: Int,
+    faceSize: Dimension,
     padding: Int,
     gap: Int
 ): Point {
@@ -376,10 +452,10 @@ internal fun calculateSelectionButtonLocation(
     var x = pointer.x + gap - padding
     var y = pointer.y + gap - padding
     if (x + width > screenWorkArea.x + screenWorkArea.width) {
-        x = pointer.x - gap - faceSize - padding
+        x = pointer.x - gap - faceSize.width - padding
     }
     if (y + height > screenWorkArea.y + screenWorkArea.height) {
-        y = pointer.y - gap - faceSize - padding
+        y = pointer.y - gap - faceSize.height - padding
     }
 
     return Point(

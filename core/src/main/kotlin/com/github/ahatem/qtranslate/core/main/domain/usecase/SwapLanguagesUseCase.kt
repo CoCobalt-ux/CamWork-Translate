@@ -4,8 +4,9 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 
 /**
- * Swaps source and target languages, moves the current translation back into the
- * input field, and triggers a new translation.
+ * Меняет исходный и целевой языки местами и при необходимости запускает перевод.
+ * Готовый результат становится новым вводом; если результата ещё нет, сохраняется
+ * исходный текст, поэтому стрелки работают до первого перевода и после него.
  *
  * This is stateless — no dependencies, pure logic applied to the current [MainState].
  *
@@ -13,8 +14,8 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainState
  * - Cannot swap if [MainState.sourceLanguage] is [LanguageCode.AUTO] AND no language
  *   has been detected yet — there is no concrete language to swap to.
  *   If a [MainState.detectedSourceLanguage] is available it is used as the new target.
- * - Cannot swap if [MainState.translatedText] is blank — there is nothing to put in
- *   the input field.
+ * - Пустое поле не вызывает бессмысленный сетевой запрос, но выбранная пара языков
+ *   всё равно меняется.
  *
  * ### State update ordering
  * [onStateUpdate] is called with the new state before [onTranslateNeeded] is invoked.
@@ -29,29 +30,87 @@ class SwapLanguagesUseCase {
     operator fun invoke(
         currentState: MainState,
         onStateUpdate: (MainState) -> Unit,
-        onTranslateNeeded: () -> Unit
+        onTranslateNeeded: () -> Unit,
+        context: SwapLanguagesContext = SwapLanguagesContext.MAIN
     ) {
-        // When source is AUTO, use the detected language as the new target (if known).
-        val effectiveSource = when {
-            currentState.sourceLanguage != LanguageCode.AUTO -> currentState.sourceLanguage
-            currentState.detectedSourceLanguage != null      -> currentState.detectedSourceLanguage
-            else                                             -> return
+        if (
+            context == SwapLanguagesContext.MAIN &&
+            (
+                currentState.quickTranslateSourceLanguageOverride != null ||
+                    currentState.quickTranslateTargetLanguageOverride != null
+            )
+        ) return
+        val effectiveTarget = when (context) {
+            SwapLanguagesContext.MAIN -> currentState.targetLanguage
+            SwapLanguagesContext.QUICK_TRANSLATE ->
+                currentState.quickTranslateTargetLanguageOverride ?: currentState.targetLanguage
         }
+        val effectiveSource = when (context) {
+            SwapLanguagesContext.MAIN -> currentState.sourceLanguage
+                .takeIf { it != LanguageCode.AUTO }
+                ?: currentState.detectedSourceLanguage
+            SwapLanguagesContext.QUICK_TRANSLATE -> {
+                val quickSource = currentState.quickTranslateSourceLanguageOverride
+                    ?: currentState.sourceLanguage
+                quickSource.takeIf { it != LanguageCode.AUTO }
+                    ?: currentState.quickTranslateDetectedLanguageOverride
+                    ?: currentState.detectedSourceLanguage.takeIf {
+                        currentState.quickTranslateSourceLanguageOverride == null
+                    }
+            }
+        } ?: return
+        if (effectiveTarget == LanguageCode.AUTO) return
 
-        if (currentState.translatedText.isBlank()) return
+        val nextInputText = currentState.translatedText.ifBlank { currentState.inputText }
 
         onStateUpdate(
             currentState.copy(
-                sourceLanguage         = currentState.targetLanguage,
+                sourceLanguage         = effectiveTarget,
                 targetLanguage         = effectiveSource,
-                inputText              = currentState.translatedText,
+                inputText              = nextInputText,
                 translatedText         = "",
                 extraOutputText        = "",
                 detectedSourceLanguage = null,
+                quickTranslateSourceLanguageOverride = if (
+                    context == SwapLanguagesContext.QUICK_TRANSLATE
+                ) null else currentState.quickTranslateSourceLanguageOverride,
+                quickTranslateTargetLanguageOverride = if (
+                    context == SwapLanguagesContext.QUICK_TRANSLATE
+                ) null else currentState.quickTranslateTargetLanguageOverride,
+                quickTranslateDetectedLanguageOverride = if (
+                    context == SwapLanguagesContext.QUICK_TRANSLATE
+                ) null else currentState.quickTranslateDetectedLanguageOverride,
                 spellCheckCorrections  = emptyList()
             )
         )
 
-        onTranslateNeeded()
+        if (nextInputText.isNotBlank()) onTranslateNeeded()
     }
+}
+
+/** Единое условие доступности обмена для главного и быстрого окон. */
+fun MainState.canSwapLanguages(context: SwapLanguagesContext = SwapLanguagesContext.MAIN): Boolean {
+    if (
+        context == SwapLanguagesContext.MAIN &&
+        (quickTranslateSourceLanguageOverride != null || quickTranslateTargetLanguageOverride != null)
+    ) return false
+    val target = if (context == SwapLanguagesContext.QUICK_TRANSLATE) {
+        quickTranslateTargetLanguageOverride ?: targetLanguage
+    } else {
+        targetLanguage
+    }
+    val source = if (context == SwapLanguagesContext.QUICK_TRANSLATE) {
+        val quickSource = quickTranslateSourceLanguageOverride ?: sourceLanguage
+        quickSource.takeIf { it != LanguageCode.AUTO }
+            ?: quickTranslateDetectedLanguageOverride
+            ?: detectedSourceLanguage.takeIf { quickTranslateSourceLanguageOverride == null }
+    } else {
+        sourceLanguage.takeIf { it != LanguageCode.AUTO } ?: detectedSourceLanguage
+    }
+    return target != LanguageCode.AUTO && source != null
+}
+
+enum class SwapLanguagesContext {
+    MAIN,
+    QUICK_TRANSLATE
 }

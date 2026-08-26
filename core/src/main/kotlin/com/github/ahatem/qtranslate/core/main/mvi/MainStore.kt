@@ -283,7 +283,9 @@ class MainStore(
 
             // ---- Async operations — launched on scope ----
 
-            MainIntent.SwapLanguages -> scope.launch { swapLanguages() }
+            MainIntent.SwapLanguages -> scope.launch { swapLanguages(SwapLanguagesContext.MAIN) }
+            MainIntent.SwapQuickTranslateLanguages ->
+                scope.launch { swapLanguages(SwapLanguagesContext.QUICK_TRANSLATE) }
             MainIntent.CheckForUpdates -> checkForUpdates()
             is MainIntent.TranslateDocument -> startDocumentTranslation(intent)
             MainIntent.CancelDocumentTranslation -> cancelDocumentTranslation()
@@ -342,6 +344,16 @@ class MainStore(
                     capturedAtMillis = intent.capturedAtMillis,
                     requestId = intent.requestId,
                     trigger = SelectionTranslationTrigger.MANUAL_BUTTON
+                )
+            }
+
+            is MainIntent.TranslateSelectionAndReplaceFromButton -> {
+                startSelectionTranslation(
+                    selectedText = intent.selectedText,
+                    capturedAtMillis = intent.capturedAtMillis,
+                    requestId = intent.requestId,
+                    trigger = SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON,
+                    interactionGeneration = intent.interactionGeneration
                 )
             }
 
@@ -656,9 +668,10 @@ class MainStore(
     // Synchronous handlers
     // -------------------------------------------------------------------------
 
-    private fun swapLanguages() {
+    private fun swapLanguages(context: SwapLanguagesContext) {
         swapLanguagesUseCase(
             currentState     = _state.value,
+            context          = context,
             onStateUpdate    = { newState -> _state.value = newState },
             onTranslateNeeded = { dispatch(MainIntent.Translate()) }
         )
@@ -758,7 +771,8 @@ class MainStore(
         selectedText: String,
         capturedAtMillis: Long,
         requestId: Long,
-        trigger: SelectionTranslationTrigger
+        trigger: SelectionTranslationTrigger,
+        interactionGeneration: Long? = null
     ) {
         var supersededJob: Job? = null
         var supersededLane: TranslationLane? = null
@@ -778,7 +792,8 @@ class MainStore(
                             handleSelectionTranslation(
                                 selectedTextRaw = selectedText,
                                 capturedAtMillis = capturedAtMillis,
-                                ticket = ticket
+                                ticket = ticket,
+                                interactionGeneration = interactionGeneration
                             )
                         } finally {
                             val completedCurrent = synchronized(selectionRequestLock) {
@@ -846,7 +861,8 @@ class MainStore(
     private suspend fun handleSelectionTranslation(
         selectedTextRaw: String,
         capturedAtMillis: Long,
-        ticket: SelectionTranslationTicket
+        ticket: SelectionTranslationTicket,
+        interactionGeneration: Long?
     ) {
         val trigger = ticket.trigger
         val selectedText = selectedTextRaw.trim()
@@ -865,7 +881,8 @@ class MainStore(
             SelectionTranslationTrigger.SHIFT ->
                 config.isShiftTapTranslateEnabled && mode != ShiftTapTranslationMode.DISABLED
             SelectionTranslationTrigger.AUTO_SELECTION -> config.isAutoSelectionTranslateEnabled
-            SelectionTranslationTrigger.MANUAL_BUTTON -> true
+            SelectionTranslationTrigger.MANUAL_BUTTON,
+            SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> true
         }
         if (!triggerEnabled) {
             reportSelectionTranslationFailure(
@@ -893,7 +910,10 @@ class MainStore(
         val shouldReplace = action == SelectionTranslationAction.REPLACE
         // Только явный исходящий Shift получает локальную best-effort коррекцию. Auto-selection,
         // mini-button, иностранный текст, имена и неизвестные слова остаются без изменений.
-        val translationInput = if (trigger == SelectionTranslationTrigger.SHIFT) {
+        val translationInput = if (
+            trigger == SelectionTranslationTrigger.SHIFT ||
+            trigger == SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON
+        ) {
             prepareShiftTranslationInput(selectedText, modelLanguage, direction)
         } else {
             selectedText
@@ -985,6 +1005,7 @@ class MainStore(
                     SelectionTranslationTrigger.AUTO_SELECTION ->
                         currentConfig.isAutoSelectionTranslateEnabled
                     SelectionTranslationTrigger.MANUAL_BUTTON -> true
+                    SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> true
                 }
                 if (!stillEnabled) {
                     rejectionReason = SelectionTranslationFailureReason.DISABLED
@@ -1015,7 +1036,8 @@ class MainStore(
                         ),
                         expiresAtMillis = expiresAt,
                         showShiftFeedback = true,
-                        requestId = ticket.requestId
+                        requestId = ticket.requestId,
+                        interactionGeneration = interactionGeneration
                     )
                 )
             },
@@ -1131,13 +1153,15 @@ class MainStore(
 internal enum class SelectionTranslationTrigger {
     SHIFT,
     AUTO_SELECTION,
-    MANUAL_BUTTON
+    MANUAL_BUTTON,
+    MANUAL_REPLACE_BUTTON
 }
 
 private val SelectionTranslationTrigger.translationLane: TranslationLane
     get() = when (this) {
         SelectionTranslationTrigger.SHIFT,
-        SelectionTranslationTrigger.MANUAL_BUTTON -> TranslationLane.SELECTION_EXPLICIT
+        SelectionTranslationTrigger.MANUAL_BUTTON,
+        SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> TranslationLane.SELECTION_EXPLICIT
         SelectionTranslationTrigger.AUTO_SELECTION -> TranslationLane.SELECTION_AUTO
     }
 
@@ -1146,6 +1170,7 @@ private val SelectionTranslationTrigger.telemetryOrigin: String
         SelectionTranslationTrigger.SHIFT -> "shift"
         SelectionTranslationTrigger.AUTO_SELECTION -> "auto_selection"
         SelectionTranslationTrigger.MANUAL_BUTTON -> "selection_button"
+        SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> "selection_replace_button"
     }
 
 internal fun TranslationFailureKind.toSelectionFailureReason(): SelectionTranslationFailureReason =

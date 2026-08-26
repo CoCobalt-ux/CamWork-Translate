@@ -81,6 +81,7 @@ internal class SelectionTranslationCoordinator {
         get() = when (this) {
             SelectionTranslationTrigger.AUTO_SELECTION -> 0
             SelectionTranslationTrigger.MANUAL_BUTTON -> 1
-            SelectionTranslationTrigger.SHIFT -> 2
+            SelectionTranslationTrigger.SHIFT,
+            SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON -> 2
         }
 }

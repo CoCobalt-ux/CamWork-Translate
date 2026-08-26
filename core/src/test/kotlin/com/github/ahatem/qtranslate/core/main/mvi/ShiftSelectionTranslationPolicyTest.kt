@@ -138,6 +138,22 @@ class ShiftSelectionTranslationPolicyTest {
     }
 
     @Test
+    fun `кнопка замены всегда заменяет независимо от настройки Shift`() {
+        ShiftTapTranslationMode.entries.forEach { mode ->
+            ShiftSelectionDirection.entries.forEach { direction ->
+                assertEquals(
+                    SelectionTranslationAction.REPLACE,
+                    resolveSelectionTranslationAction(
+                        SelectionTranslationTrigger.MANUAL_REPLACE_BUTTON,
+                        mode,
+                        direction
+                    )
+                )
+            }
+        }
+    }
+
+    @Test
     fun `неизменённый ответ имеет отдельную причину NO CHANGE`() =
         kotlinx.coroutines.test.runTest {
             val result = executeSelectionTranslation(
