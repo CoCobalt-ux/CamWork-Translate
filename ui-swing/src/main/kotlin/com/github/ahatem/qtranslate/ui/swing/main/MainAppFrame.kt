@@ -1159,26 +1159,35 @@ class MainAppFrame(
                 return@launch
             }
 
+            // Не посылаем синтетический Ctrl/Cmd+V поверх физически удерживаемого Ctrl/Cmd.
+            // Иначе keyRelease от Robot меняет состояние пользовательского модификатора и
+            // следующая обычная комбинация Ctrl+C/Ctrl+V выглядит «съеденной».
+            if (!globalKeyListener.awaitSafeSyntheticShortcutWindow()) {
+                onFailure(IllegalStateException("Physical modifier is held before paste"))
+                return@launch
+            }
+
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
             val originalClipboard = runCatching { clipboard.getContents(null) }.getOrNull()
             var clipboardOverridden = false
+            var translationClipboardGeneration: Long? = null
             var pasteSent = false
             try {
                 if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
                 clipboard.setContents(StringSelection(text), null)
                 clipboardOverridden = true
-                yield()
+                translationClipboardGeneration = currentSystemClipboardGeneration()
                 if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
+                if (globalKeyListener.hasPressedSyntheticShortcutModifier()) {
+                    throw IllegalStateException("Physical modifier was pressed during paste")
+                }
 
                 val robot = Robot()
                 robot.autoDelay = 20
                 val pasteModifier = if (
                     System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
                 ) KeyEvent.VK_META else KeyEvent.VK_CONTROL
-                robot.keyPress(pasteModifier)
-                robot.keyPress(KeyEvent.VK_V)
-                robot.keyRelease(KeyEvent.VK_V)
-                robot.keyRelease(pasteModifier)
+                robot.sendShortcutSafely(pasteModifier, KeyEvent.VK_V)
                 robot.waitForIdle()
                 pasteSent = true
                 // Большинство Windows-приложений считывают clipboard асинхронно после WM_PASTE.
@@ -1191,10 +1200,18 @@ class MainAppFrame(
                 return@launch
             } finally {
                 if (clipboardOverridden) {
-                    val translationIsStillInClipboard = runCatching {
-                        clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor) &&
-                            clipboard.getData(DataFlavor.stringFlavor).toString() == text
-                    }.getOrDefault(false)
+                    val translationIsStillInClipboard = ownsTemporaryClipboard(
+                        expectedText = text,
+                        currentText = runCatching {
+                            if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
+                                clipboard.getData(DataFlavor.stringFlavor).toString()
+                            } else {
+                                null
+                            }
+                        }.getOrNull(),
+                        expectedGeneration = translationClipboardGeneration,
+                        currentGeneration = currentSystemClipboardGeneration()
+                    )
                     if (shouldRestorePasteClipboard(
                             ownsTranslationClipboard = translationIsStillInClipboard,
                             isScreenCaptureSuppressed =

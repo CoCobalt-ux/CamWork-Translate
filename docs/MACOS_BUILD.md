@@ -81,7 +81,13 @@ export JAVA_HOME="/path/to/jdk-17/Contents/Home"
 - применяет только ad-hoc подпись, не использует Apple-секреты и не выполняет
   notarization;
 - добавляет в каждый архив файл `QA-ONLY-ARCH.txt` с явным предупреждением;
-- хранит workflow artifacts 3 дня и никогда не создаёт GitHub Release.
+- хранит workflow artifacts 14 дней и никогда не создаёт GitHub Release.
+
+Новые тестовые сборки находятся на странице
+[macOS QA (unsigned)](https://github.com/CoCobalt-ux/CamWork-Translate/actions/workflows/macos-qa.yml):
+откройте последний зелёный запуск и скачайте внизу страницы artifact `arm64` для Mac на Apple
+Silicon (M1/M2/M3/M4/M5) либо `x64` для Intel Mac. В summary запуска также печатаются точные
+имена файлов. GitHub требует войти в аккаунт для скачивания Actions artifacts.
 
 Эти файлы предназначены для внутреннего smoke/QA на тестовых Mac. Их нельзя
 выдавать моделям как production-сборку.

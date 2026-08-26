@@ -1,7 +1,9 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
 import com.sun.jna.platform.win32.User32
+import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent
 import java.awt.event.KeyEvent
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Не даёт синтетическому Ctrl+C объединиться с физически зажатым модификатором.
@@ -12,7 +14,22 @@ import java.awt.event.KeyEvent
 internal class SyntheticCopyModifierGate(
     private val isKeyDown: (Int) -> Boolean = ::isWindowsVirtualKeyDown
 ) {
-    fun hasPressedModifier(): Boolean = COPY_CONFLICTING_MODIFIERS.any(isKeyDown)
+    private val pressedNativeModifiers = ConcurrentHashMap.newKeySet<Int>()
+
+    fun onNativeKeyPressed(keyCode: Int) {
+        if (keyCode in NATIVE_CONFLICTING_MODIFIERS) pressedNativeModifiers += keyCode
+    }
+
+    fun onNativeKeyReleased(keyCode: Int) {
+        pressedNativeModifiers -= keyCode
+    }
+
+    fun reset() {
+        pressedNativeModifiers.clear()
+    }
+
+    fun hasPressedModifier(): Boolean =
+        pressedNativeModifiers.isNotEmpty() || COPY_CONFLICTING_MODIFIERS.any(isKeyDown)
 
     private companion object {
         val COPY_CONFLICTING_MODIFIERS = intArrayOf(
@@ -21,6 +38,12 @@ internal class SyntheticCopyModifierGate(
             KeyEvent.VK_ALT,
             WINDOWS_VK_LWIN,
             WINDOWS_VK_RWIN
+        )
+        val NATIVE_CONFLICTING_MODIFIERS = setOf(
+            NativeKeyEvent.VC_SHIFT,
+            NativeKeyEvent.VC_CONTROL,
+            NativeKeyEvent.VC_ALT,
+            NativeKeyEvent.VC_META
         )
 
         // java.awt.event.KeyEvent.VK_META не совпадает с Win32 VK_LWIN/VK_RWIN.
