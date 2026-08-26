@@ -250,9 +250,9 @@ Assert-Condition -Condition (
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('QA-ONLY-${{ matrix.arch }}.txt') -and
     $macQaWorkflow.Contains('camwork-translate-macos-QA-') -and
-    $macQaWorkflow.Contains('retention-days: 3')
+    $macQaWorkflow.Contains('retention-days: 14')
 ) `
-    -Message 'macOS QA artifacts должны быть явно маркированы и храниться только 3 дня.'
+    -Message 'macOS QA artifacts должны быть явно маркированы и храниться 14 дней.'
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('CAMWORK_PACKAGED_SMOKE_TEST=1') -and
     $macQaWorkflow.Contains('-Dcamwork.packagedSmokeTest=true') -and

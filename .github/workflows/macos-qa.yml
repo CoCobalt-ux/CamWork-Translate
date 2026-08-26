@@ -94,7 +94,7 @@ jobs:
             'Production macOS выпускается только через release.yml с Developer ID и notarization.' \
             > build/release/QA-ONLY-${{ matrix.arch }}.txt
 
-      - name: Upload short-lived macOS QA artifacts
+      - name: Upload macOS QA artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: camwork-translate-macos-QA-${{ matrix.arch }}-${{ github.run_number }}
@@ -105,4 +105,17 @@ jobs:
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg.sha256
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 14
+
+      - name: Add download instructions to workflow summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "## macOS QA ${{ matrix.arch }}"
+            echo
+            echo "Artifact: \`camwork-translate-macos-QA-${{ matrix.arch }}-${{ github.run_number }}\`"
+            echo
+            echo "Download it from the **Artifacts** section of this workflow run."
+            echo "The unsigned QA build is retained for 14 days and is not a public release."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -25,6 +25,7 @@ import java.awt.MouseInfo
 import java.awt.datatransfer.Clipboard
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.awt.datatransfer.Transferable
 import java.awt.event.KeyEvent
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -226,6 +227,7 @@ class MainGlobalKeyListener(
         } catch (e: Exception) {
             logger.error("Hotkey manager shutdown error", e)
         } finally {
+            syntheticCopyModifierGate.reset()
             initialized.set(false)
         }
     }
@@ -351,6 +353,7 @@ class MainGlobalKeyListener(
         private var ctrlIsDown = false
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
+            syntheticCopyModifierGate.onNativeKeyPressed(e.keyCode)
             val wasScreenCaptureSuppressed = systemScreenCaptureGuard.isSuppressed()
             if (systemScreenCaptureGuard.onKeyPressed(e.keyCode)) {
                 if (!wasScreenCaptureSuppressed) onSystemScreenCaptureStarted()
@@ -377,6 +380,7 @@ class MainGlobalKeyListener(
         }
 
         override fun nativeKeyReleased(e: NativeKeyEvent) {
+            syntheticCopyModifierGate.onNativeKeyReleased(e.keyCode)
             if (systemScreenCaptureGuard.onKeyReleased(e.keyCode)) {
                 shiftTapGesture.reset()
                 resetCtrlSequence()
@@ -618,15 +622,16 @@ class MainGlobalKeyListener(
                 }
 
                 val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-                val original = runCatching { clipboard.getContents(null) }.getOrNull()
+                var original: Transferable? = null
                 var ownedClipboardText: String? = null
+                var ownedClipboardGeneration: Long? = null
 
                 try {
                     // Global hotkey callbacks can arrive while Ctrl/Cmd is still physically held.
                     // Give the originating key sequence time to finish before synthesizing Copy.
                     if (preCopyDelayMs > 0) delay(preCopyDelayMs)
 
-                    if (!awaitSafeSyntheticCopyWindow()) {
+                    if (!awaitSafeSyntheticShortcutWindow()) {
                         logger.warn(
                             "Selection capture failed: requestId=$requestId, origin=$origin, " +
                                 "reason=modifier_held"
@@ -634,6 +639,11 @@ class MainGlobalKeyListener(
                         callback("")
                         return@withLock
                     }
+
+                    // Снимок берётся после ожидания физического Ctrl/Cmd. Если пользователь
+                    // успел выполнить Ctrl+C, именно новый результат будет восстановлен, а не
+                    // старое содержимое, прочитанное до отпускания клавиш.
+                    original = runCatching { clipboard.getContents(null) }.getOrNull()
 
                     var text: String? = null
                     var clipboardEvidence: ClipboardSelectionEvidence? = null
@@ -643,7 +653,7 @@ class MainGlobalKeyListener(
                             systemScreenCaptureGuard.isSuppressed()
                         ) break
 
-                        if (!awaitSafeSyntheticCopyWindow()) {
+                        if (!awaitSafeSyntheticShortcutWindow()) {
                             logger.warn(
                                 "Selection capture attempt failed: requestId=$requestId, " +
                                     "origin=$origin, attempt=${attemptIndex + 1}, " +
@@ -666,6 +676,7 @@ class MainGlobalKeyListener(
                             continue
                         }
                         ownedClipboardText = sentinel.takeIf { sentinelWritten }
+                        ownedClipboardGeneration = currentSystemClipboardGeneration()
 
                         if (!simulateCopy()) {
                             logger.warn(
@@ -680,6 +691,7 @@ class MainGlobalKeyListener(
                         val candidate = readClipboardText(clipboard)
                         if (!candidate.isNullOrEmpty() && candidate != sentinel) {
                             ownedClipboardText = candidate
+                            ownedClipboardGeneration = currentSystemClipboardGeneration()
                             text = candidate.trim()
                             clipboardEvidence = inspectClipboardSelectionEvidence(
                                 runCatching { clipboard.getContents(null) }.getOrNull()
@@ -714,11 +726,19 @@ class MainGlobalKeyListener(
                     }
                 } finally {
                     val expected = ownedClipboardText
-                    if (original != null && expected != null) {
+                    val originalSnapshot = original
+                    if (originalSnapshot != null && expected != null) {
                         clipboardInterceptionGuard.restoreIfAllowed(
                             lease = lease,
-                            ownsCurrentClipboard = { readClipboardText(clipboard) == expected },
-                            restore = { runCatching { clipboard.setContents(original, null) } }
+                            ownsCurrentClipboard = {
+                                ownsTemporaryClipboard(
+                                    expectedText = expected,
+                                    currentText = readClipboardText(clipboard),
+                                    expectedGeneration = ownedClipboardGeneration,
+                                    currentGeneration = currentSystemClipboardGeneration()
+                                )
+                            },
+                            restore = { runCatching { clipboard.setContents(originalSnapshot, null) } }
                         )
                     }
                 }
@@ -744,7 +764,7 @@ class MainGlobalKeyListener(
      * Ожидает отпускания физических модификаторов и короткого стабильного окна после них.
      * При долгом удержании безопаснее пропустить чтение, чем открыть системное/браузерное меню.
      */
-    private suspend fun awaitSafeSyntheticCopyWindow(): Boolean {
+    internal suspend fun awaitSafeSyntheticShortcutWindow(): Boolean {
         val deadlineNanos = System.nanoTime() + COPY_MODIFIER_RELEASE_TIMEOUT_MS * NANOS_PER_MILLISECOND
         while (syntheticCopyModifierGate.hasPressedModifier()) {
             if (System.nanoTime() >= deadlineNanos) return false
@@ -754,6 +774,9 @@ class MainGlobalKeyListener(
         delay(COPY_MODIFIER_QUIET_PERIOD_MS)
         return !syntheticCopyModifierGate.hasPressedModifier()
     }
+
+    internal fun hasPressedSyntheticShortcutModifier(): Boolean =
+        syntheticCopyModifierGate.hasPressedModifier()
 
     private fun simulateCopy(): Boolean {
         if (syntheticCopyModifierGate.hasPressedModifier()) return false
@@ -768,10 +791,7 @@ class MainGlobalKeyListener(
             } else {
                 KeyEvent.VK_CONTROL
             }
-            robot.keyPress(copyModifier)
-            robot.keyPress(KeyEvent.VK_C)
-            robot.keyRelease(KeyEvent.VK_C)
-            robot.keyRelease(copyModifier)
+            robot.sendShortcutSafely(copyModifier, KeyEvent.VK_C)
             robot.waitForIdle()
             true
         }.onFailure {

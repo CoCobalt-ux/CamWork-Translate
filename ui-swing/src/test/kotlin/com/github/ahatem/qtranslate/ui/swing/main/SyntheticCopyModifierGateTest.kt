@@ -1,6 +1,7 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
 import java.awt.event.KeyEvent
+import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -33,5 +34,22 @@ class SyntheticCopyModifierGateTest {
             val gate = SyntheticCopyModifierGate { it == pressed }
             assertTrue(gate.hasPressedModifier(), "Модификатор $pressed должен блокировать Ctrl+C")
         }
+    }
+
+    @Test
+    fun `нативные события защищают Cmd и Ctrl на macOS без Win32`() {
+        val gate = SyntheticCopyModifierGate { false }
+
+        gate.onNativeKeyPressed(NativeKeyEvent.VC_META)
+        assertTrue(gate.hasPressedModifier())
+
+        gate.onNativeKeyReleased(NativeKeyEvent.VC_META)
+        assertFalse(gate.hasPressedModifier())
+
+        gate.onNativeKeyPressed(NativeKeyEvent.VC_CONTROL)
+        assertTrue(gate.hasPressedModifier())
+
+        gate.reset()
+        assertFalse(gate.hasPressedModifier())
     }
 }
