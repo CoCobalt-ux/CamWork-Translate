@@ -2,7 +2,7 @@
 param(
     [Parameter()]
     [ValidatePattern('^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$')]
-    [string]$Version = '1.2.6',
+    [string]$Version = '1.2.7',
 
     [Parameter()]
     [string]$JavaHome = $env:JAVA_HOME,

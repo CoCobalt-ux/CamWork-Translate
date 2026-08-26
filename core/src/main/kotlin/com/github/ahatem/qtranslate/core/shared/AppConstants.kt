@@ -19,7 +19,7 @@ object AppConstants {
      * from and tells every new user an update is waiting.
      */
     const val APP_NAME = "CamWork Translate"
-    const val APP_VERSION = "1.2.6"
+    const val APP_VERSION = "1.2.7"
     const val DATA_DIRECTORY_NAME = "CamWork Translate"
     const val WEBSITE_URL = "https://camwork.club"
     const val HELP_URL = "https://wiki.camwork.club"
