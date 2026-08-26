@@ -1,4 +1,4 @@
-# CamWork Translate 1.2.5
+# CamWork Translate 1.2.6
 
 Быстрый настольный переводчик для моделей CamWork на Windows 10/11.
 
@@ -83,11 +83,11 @@
 
 ## Установка
 
-Запустите `CamWork-Translate-1.2.5-Setup-windows-x64.exe`. Установщик не требует прав
+Запустите `CamWork-Translate-1.2.6-Setup-windows-x64.exe`. Установщик не требует прав
 администратора, создаёт ярлык в меню «Пуск» и по желанию — на рабочем столе. Обновление поверх
 предыдущей версии сохраняет настройки, историю, журналы и дополнительные плагины.
 
-Переносимый архив `CamWork-Translate-1.2.5-windows-x64.zip` остаётся доступен как запасной
+Переносимый архив `CamWork-Translate-1.2.6-windows-x64.zip` остаётся доступен как запасной
 вариант: распакуйте его в отдельную доступную для записи папку и запустите
 `CamWork Translate.exe`.
 
@@ -105,7 +105,7 @@
 Windows-архив и SHA-256 суммы. Java входит в оба варианта:
 
 ```powershell
-.\scripts\build-windows-release.ps1 -Version 1.2.5 -JavaHome $env:JAVA_HOME -Jdk21Home 'C:\path\to\jdk-21'
+.\scripts\build-windows-release.ps1 -Version 1.2.6 -JavaHome $env:JAVA_HOME -Jdk21Home 'C:\path\to\jdk-21'
 ```
 
 ## Сборка macOS x64/arm64
