@@ -412,6 +412,7 @@ class QuickTranslateDialog(
 
         listenButton.isEnabled = playing || (state.actionsState.canListen && !state.isLoading)
         copyButton.isEnabled = state.actionsState.canCopy && !state.isLoading
+        swapButton.isEnabled = state.actionsState.canSwap && !state.isLoading
 
         val textToRender = if (state.isLoading) state.strings.loadingText else state.translatedText
         if (lastRenderedText != textToRender) {

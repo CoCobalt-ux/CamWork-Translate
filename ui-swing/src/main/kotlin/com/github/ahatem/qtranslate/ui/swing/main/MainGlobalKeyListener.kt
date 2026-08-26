@@ -107,6 +107,8 @@ class MainGlobalKeyListener(
     /** Автоматический пассивный перевод после подтверждённого выделения мышью. */
     private val onAutoTranslateSelection: (String, Long) -> Unit = { _, _ -> },
     private val onPointerPressed: (Point) -> Unit = {},
+    /** Любая клавиша инвалидирует мини-кнопку: выделение или каретка могли измениться. */
+    private val onKeyPressed: () -> Unit = {},
     /** Вызывается сразу при отпускании короткого Shift, ещё до чтения clipboard. */
     private val onShiftTapStarted: (Long) -> Unit = {},
     /** Инвалидирует ожидающий перевод/вставку до открытия системного screenshot UI. */
@@ -353,6 +355,7 @@ class MainGlobalKeyListener(
         private var ctrlIsDown = false
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
+            onKeyPressed()
             syntheticCopyModifierGate.onNativeKeyPressed(e.keyCode)
             val wasScreenCaptureSuppressed = systemScreenCaptureGuard.isSuppressed()
             if (systemScreenCaptureGuard.onKeyPressed(e.keyCode)) {

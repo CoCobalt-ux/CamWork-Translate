@@ -7,6 +7,8 @@ import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.localization.getDisplayName
 import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
+import com.github.ahatem.qtranslate.core.main.domain.usecase.canSwapLanguages
+import com.github.ahatem.qtranslate.core.main.domain.model.ServiceInfo
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType
 import com.github.ahatem.qtranslate.api.plugin.StandardOptions
@@ -38,6 +40,7 @@ import com.github.ahatem.qtranslate.ui.swing.main.statusbar.StatusBar
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.Action
 import com.github.ahatem.qtranslate.ui.swing.main.widgets.TextActionsState
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
+import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
 import com.github.ahatem.qtranslate.ui.swing.shared.util.copyToClipboard
 import com.github.ahatem.qtranslate.ui.swing.shared.util.installContentDropHandler
 import com.github.ahatem.qtranslate.ui.swing.shared.util.scaledEditorFallbackFont
@@ -55,7 +58,21 @@ import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.UIManager
-import com.github.ahatem.qtranslate.ui.swing.shared.icon.Icons
+
+internal const val MAIN_MENU_AI_TRANSLATOR_ID = "ai-plugin:default:ai-translator"
+
+internal fun List<ServiceInfo>.forMainTranslatorMenu(): List<ServiceInfo> =
+    filterNot { it.id == MAIN_MENU_AI_TRANSLATOR_ID }
+
+internal fun List<ServiceInfo>.preferredMainTranslatorId(): String? =
+    minByOrNull { service ->
+        when {
+            service.id.startsWith("google-services:") -> 0
+            service.id.startsWith("bing-services:") -> 1
+            service.id.startsWith("deepl-services:") -> 2
+            else -> 3
+        }
+    }?.id
 
 class MainContentView(
     private val iconManager: IconManager,
@@ -473,14 +490,17 @@ class MainContentView(
             )
         )
 
+        val primaryTranslators = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR)
+            .forMainTranslatorMenu()
+
         translatorSelector.render(
             TranslatorSelectorState(
-                availableTranslators = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
+                availableTranslators = primaryTranslators,
                 selectedTranslatorId = selectedTranslatorId,
                 isLoading = mainState.isLoading,
                 // Главное окно показывает только переводчики. Словари и озвучивание остаются
                 // доступны через свои диалоги, меню и настройки, но больше не занимают нижнюю панель.
-                availableServices = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
+                availableServices = primaryTranslators,
                 selectedServices = mapOf(ServiceRole.TRANSLATOR to selectedTranslatorId),
                 style = config.serviceSelectorStyle,
                 appearance = config.serviceSelectorAppearance
@@ -491,7 +511,7 @@ class MainContentView(
             LanguageSelectionBarState(
                 isLoading = mainState.isLoading,
                 canClear = mainState.inputText.isNotBlank(),
-                canSwap = mainState.translatedText.isNotBlank(),
+                canSwap = mainState.canSwapLanguages(),
                 allSourceLanguages = allLanguages,
                 allTargetLanguages = allLanguages - setOf(LanguageCode.AUTO),
                 selectedSourceLanguage = mainState.sourceLanguage,

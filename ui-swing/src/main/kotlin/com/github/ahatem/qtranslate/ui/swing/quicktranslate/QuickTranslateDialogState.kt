@@ -73,7 +73,8 @@ data class QuickTranslateSelectorState(
 /** State for the action buttons in the dialog's title bar. */
 data class QuickTranslateActionsState(
     val canCopy: Boolean,
-    val canListen: Boolean
+    val canListen: Boolean,
+    val canSwap: Boolean
 )
 
 /** All user-facing strings for the dialog. */

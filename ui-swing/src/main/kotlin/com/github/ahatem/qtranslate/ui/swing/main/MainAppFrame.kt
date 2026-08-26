@@ -14,6 +14,8 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.main.mvi.SelectionTranslationFailureReason
+import com.github.ahatem.qtranslate.core.main.domain.usecase.canSwapLanguages
+import com.github.ahatem.qtranslate.core.main.domain.usecase.SwapLanguagesContext
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
 import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
 import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
@@ -70,6 +72,7 @@ import java.awt.datatransfer.StringSelection
 import java.awt.event.*
 import java.net.URI
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 import javax.imageio.ImageIO
 import javax.swing.*
 import kotlin.system.exitProcess
@@ -79,6 +82,18 @@ import com.github.ahatem.qtranslate.ui.swing.shared.util.isPositionReachable
 
 /** Время, за которое приложение-источник успевает прочитать текст после Ctrl+V. */
 private const val CLIPBOARD_PASTE_SETTLE_MS = 1_200L
+
+internal class SelectionInteractionGuard {
+    private val generation = AtomicLong(0L)
+
+    fun snapshot(): Long = generation.get()
+
+    fun invalidate() {
+        generation.incrementAndGet()
+    }
+
+    fun isCurrent(snapshot: Long): Boolean = generation.get() == snapshot
+}
 
 class MainAppFrame(
     private val mainStore: MainStore,
@@ -104,6 +119,7 @@ class MainAppFrame(
     private var trayIconImages: TrayIconImages? = null
     private var pendingTraySingleClick: javax.swing.Timer? = null
     private var pasteTranslationJob: Job? = null
+    private val selectionInteractionGuard = SelectionInteractionGuard()
 
     private val aboutDialog by lazy { InfoDialog(this) }
     private val updateDialog by lazy { UpdateDialog(this) }
@@ -231,8 +247,7 @@ class MainAppFrame(
                 mainStore.dispatch(MainIntent.Translate())
             },
             onSwapLanguages = {
-                mainStore.dispatch(MainIntent.SwapLanguages)
-                mainStore.dispatch(MainIntent.Translate())
+                mainStore.dispatch(MainIntent.SwapQuickTranslateLanguages)
             }
         )
     }
@@ -279,15 +294,31 @@ class MainAppFrame(
     private val selectionTranslateButton = SelectionTranslateButton(
         this,
         iconManager,
-        localizer.getString("main_window_language_bar.translate_button")
-    ) { text ->
+        translateTooltip = localizer.getString("main_window_language_bar.translate_button"),
+        replaceTooltip = localizer.getString("shift_overlay.replace_selection"),
+        onTranslate = { text ->
+            showSelectionTranslationProgress()
+            mainStore.dispatch(MainIntent.TranslateSelectionFromButton(text))
+        },
+        onTranslateAndReplace = { text, capturedAtMillis ->
+            showSelectionTranslationProgress()
+            mainStore.dispatch(
+                MainIntent.TranslateSelectionAndReplaceFromButton(
+                    selectedText = text,
+                    capturedAtMillis = capturedAtMillis,
+                    interactionGeneration = selectionInteractionGuard.snapshot()
+                )
+            )
+        }
+    )
+
+    private fun showSelectionTranslationProgress() {
         runOnUi {
             loadingIndicator.showTranslating(
                 message = localizer.getString("shift_overlay.translating"),
                 timeoutMessage = localizer.getString("shift_overlay.too_slow")
             )
         }
-        mainStore.dispatch(MainIntent.TranslateSelectionFromButton(text))
     }
 
     private fun openPluginConfiguration(serviceId: String) {
@@ -403,10 +434,15 @@ class MainAppFrame(
             }
         },
         onPointerPressed = { location ->
+            invalidatePendingSelectionReplacement()
             runOnUi {
                 selectionTranslateButton.dismissIfOutside(location)
                 dismissPopupsPressedOutside(location)
             }
+        },
+        onKeyPressed = {
+            invalidatePendingSelectionReplacement()
+            runOnUi { selectionTranslateButton.dismiss() }
         },
         onShiftTapStarted = { _ ->
             runOnUi {
@@ -457,6 +493,12 @@ class MainAppFrame(
         ) {
             mainStore.dispatch(MainIntent.HideImageSearch)
         }
+    }
+
+    /** Новая пользовательская активность делает прежнее место вставки недостоверным. */
+    private fun invalidatePendingSelectionReplacement() {
+        selectionInteractionGuard.invalidate()
+        mainStore.dispatch(MainIntent.CancelSelectionTranslations)
     }
 
     private val statusBarController = StatusBarController(
@@ -613,6 +655,25 @@ class MainAppFrame(
             mainStore.state.combine(settingsStore.state) { m, s -> m to s }
                 .distinctUntilChanged()
                 .collect { (mainState, settingsState) ->
+                    val configuredTranslatorId = settingsState.workingConfiguration
+                        .getActivePreset()
+                        ?.selectedServices
+                        ?.get(ServiceRole.TRANSLATOR)
+                    if (configuredTranslatorId == MAIN_MENU_AI_TRANSLATOR_ID) {
+                        val replacementId = mainState
+                            .getAvailableServicesFor(ServiceRole.TRANSLATOR)
+                            .forMainTranslatorMenu()
+                            .preferredMainTranslatorId()
+                        if (replacementId != null) {
+                            settingsStore.dispatch(
+                                SettingsIntent.UpdateServiceInActivePreset(
+                                    ServiceRole.TRANSLATOR,
+                                    replacementId
+                                )
+                            )
+                            return@collect
+                        }
+                    }
                     withContext(Dispatchers.Swing) {
                         try {
                             // Filter available languages by pinned list (Yan's request).
@@ -770,6 +831,7 @@ class MainAppFrame(
                         pasteTextToActiveApp(
                             text = event.translatedText,
                             expiresAtMillis = event.expiresAtMillis,
+                            interactionGeneration = event.interactionGeneration,
                             onSuccess = {
                                 logger.info(
                                     "Selection paste completed: requestId=${event.requestId}, " +
@@ -1140,11 +1202,14 @@ class MainAppFrame(
     private fun pasteTextToActiveApp(
         text: String,
         expiresAtMillis: Long = Long.MAX_VALUE,
+        interactionGeneration: Long? = null,
         onSuccess: () -> Unit = {},
         onFailure: (Throwable) -> Unit = {}
     ) {
         val previousPasteJob = pasteTranslationJob
         previousPasteJob?.cancel(CancellationException("New translation paste requested"))
+        val expectedInteractionGeneration =
+            interactionGeneration ?: selectionInteractionGuard.snapshot()
         pasteTranslationJob = appScope.launch {
             previousPasteJob?.join()
             if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
@@ -1153,6 +1218,7 @@ class MainAppFrame(
                 return@launch
             }
             delay(150) // let any in-flight UI work settle
+            if (!selectionInteractionGuard.isCurrent(expectedInteractionGeneration)) return@launch
             if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
             if (System.currentTimeMillis() > expiresAtMillis) {
                 onFailure(IllegalStateException("Selection expired before paste"))
@@ -1166,6 +1232,7 @@ class MainAppFrame(
                 onFailure(IllegalStateException("Physical modifier is held before paste"))
                 return@launch
             }
+            if (!selectionInteractionGuard.isCurrent(expectedInteractionGeneration)) return@launch
 
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
             val originalClipboard = runCatching { clipboard.getContents(null) }.getOrNull()
@@ -1793,7 +1860,8 @@ class MainAppFrame(
             ),
             actionsState = QuickTranslateActionsState(
                 canCopy = mainState.translatedText.isNotBlank(),
-                canListen = mainState.translatedText.isNotBlank()
+                canListen = mainState.translatedText.isNotBlank(),
+                canSwap = mainState.canSwapLanguages(SwapLanguagesContext.QUICK_TRANSLATE)
             ),
             config = DialogConfig(
                 font = config.scaledEditorFont,

@@ -31,6 +31,7 @@ clear_all = "Clear All"
 auto_detect = "Auto-Detect"
 
 [shift_overlay]
+replace_selection = "Translate and replace selected text"
 translating = "Translating…"
 replaced = "Translation inserted"
 capture_failed = "No selected text found"

@@ -21,7 +21,9 @@ sealed interface MainEvent : UiEvent {
         /** Только Shift-сценарий показывает подтверждение после фактической вставки. */
         val showShiftFeedback: Boolean = false,
         /** Связывает захват, сетевой запрос и вставку, не записывая сам текст в журнал. */
-        val requestId: Long = 0L
+        val requestId: Long = 0L,
+        /** Поколение пользовательского ввода, зафиксированное до сетевого запроса. */
+        val interactionGeneration: Long? = null
     ) : MainEvent
 
     /** Просит пассивный UI заменить индикатор загрузки понятным сообщением об ошибке. */
