@@ -250,6 +250,8 @@ Assert-Condition -Condition (
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('QA-ONLY-${{ matrix.arch }}.txt') -and
     $macQaWorkflow.Contains('READ-ME-FIRST.txt') -and
+    $macQaWorkflow.Contains('hdiutil attach "$dmg" -readonly -nobrowse') -and
+    $macQaWorkflow.Contains("grep -F 'Open Anyway'") -and
     $macQaWorkflow.Contains('camwork-translate-macos-QA-') -and
     $macQaWorkflow.Contains('retention-days: 14')
 ) `

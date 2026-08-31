@@ -99,10 +99,28 @@ jobs:
         shell: bash
         run: |
           guide="build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt"
+          dmg="build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg"
           [[ -f "$guide" ]] || {
             echo "Инструкция установки не включена в QA-пакет: $guide" >&2
             exit 1
           }
+          [[ -f "$dmg" ]] || {
+            echo "QA-DMG не найден: $dmg" >&2
+            exit 1
+          }
+
+          mount_point="$RUNNER_TEMP/camwork-qa-dmg-${{ matrix.arch }}"
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point" >/dev/null 2>&1 || true' EXIT
+          [[ -f "$mount_point/READ-ME-FIRST.txt" ]] || {
+            echo "READ-ME-FIRST отсутствует внутри QA-DMG" >&2
+            exit 1
+          }
+          grep -F 'Open Anyway' "$mount_point/READ-ME-FIRST.txt"
+          hdiutil detach "$mount_point"
+          trap - EXIT
+
           printf '%s\n' \
             'QA ONLY — НЕ ДЛЯ ПУБЛИЧНОГО РЕЛИЗА.' \
             'Приложение подписано ad-hoc, не нотариализовано Apple и может быть заблокировано Gatekeeper.' \
