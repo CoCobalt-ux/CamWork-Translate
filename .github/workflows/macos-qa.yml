@@ -64,6 +64,16 @@ jobs:
         env:
           APP_VERSION: ${{ steps.version.outputs.qa_version }}
 
+      - name: Self-test the local Vision OCR helper
+        shell: bash
+        run: |
+          helper="$GITHUB_WORKSPACE/build/macos-package-work-${{ matrix.arch }}/app-output/CamWork Translate.app/Contents/MacOS/camwork-vision-ocr"
+          [[ -x "$helper" ]] || {
+            echo "Помощник Vision OCR не найден или не исполняем: $helper" >&2
+            exit 1
+          }
+          "$helper" selftest
+
       - name: Smoke-test packaged macOS QA app
         shell: bash
         run: |

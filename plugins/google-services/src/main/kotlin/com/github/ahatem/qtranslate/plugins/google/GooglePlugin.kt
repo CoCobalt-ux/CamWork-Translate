@@ -30,7 +30,7 @@ class GooglePlugin : Plugin<GoogleSettings> {
         this.settings = GoogleSettings(
             visionApiKey = context.secrets.get("visionApiKey") ?: "",
             translateApiKey = context.secrets.get("translateApiKey") ?: ""
-        )
+        )
         pluginContext.logger.info("Google Plugin initialized")
         return Ok(Unit)
     }
@@ -54,11 +54,14 @@ class GooglePlugin : Plugin<GoogleSettings> {
 
     private fun buildServices() {
         activeServices = buildList {
-            // Облачный Vision используется только с ключом; на Windows его заменяет локальный OCR.
+            // Облачный Vision используется только с ключом; на Windows и macOS его заменяет
+            // локальный OCR системы.
             if (settings.visionApiKey.isNotBlank()) {
                 add(GoogleOCRService(pluginContext, settings, httpClient, languageMapper, apiConfig))
             } else if (WindowsOcrService.isSupported()) {
                 add(WindowsOcrService())
+            } else {
+                MacVisionOcrService.createIfSupported()?.let(::add)
             }
             add(GoogleTranslatorService(pluginContext, settings, httpClient, languageMapper, apiConfig))
             add(GoogleTTSService(pluginContext, httpClient, languageMapper, apiConfig))
@@ -74,7 +77,7 @@ class GooglePlugin : Plugin<GoogleSettings> {
     }
 
     override suspend fun shutdown() {
-        pluginContext.logger.info("Google Plugin shutting down")
+        pluginContext.logger.info("Google Plugin shutting down")
     }
 
     override fun getServices(): List<Service> = activeServices

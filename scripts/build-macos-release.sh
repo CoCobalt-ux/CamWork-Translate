@@ -202,6 +202,7 @@ require_command hdiutil
 require_command iconutil
 require_command otool
 require_command plutil
+require_command swiftc
 require_command shasum
 require_command sips
 require_command xcode-select
@@ -225,9 +226,10 @@ fi
 GRADLE_WRAPPER="$REPO_ROOT/gradlew"
 [[ -x "$GRADLE_WRAPPER" ]] || fail "Gradle Wrapper не найден или не исполняемый: $GRADLE_WRAPPER"
 BOOTSTRAP_SOURCE="$REPO_ROOT/packaging/macos/CamWorkBootstrap.c"
+VISION_OCR_SOURCE="$REPO_ROOT/packaging/macos/CamWorkVisionOcr.swift"
 ENTITLEMENTS="$REPO_ROOT/packaging/macos/entitlements.plist"
 ICON_SOURCE="$REPO_ROOT/ui-swing/src/main/resources/icons/app/icon-1024.png"
-for required_file in "$BOOTSTRAP_SOURCE" "$ENTITLEMENTS" "$ICON_SOURCE" \
+for required_file in "$BOOTSTRAP_SOURCE" "$VISION_OCR_SOURCE" "$ENTITLEMENTS" "$ICON_SOURCE" \
     "$REPO_ROOT/LICENSE" "$REPO_ROOT/NOTICE" "$REPO_ROOT/docs/LEGAL_ATTRIBUTION.md"; do
     [[ -f "$required_file" ]] || fail "не найден обязательный файл: $required_file"
 done
@@ -345,6 +347,24 @@ clang \
     -framework ApplicationServices \
     -o "$JPACKAGE_LAUNCHER"
 chmod 0755 "$JPACKAGE_LAUNCHER" "$ORIGINAL_LAUNCHER"
+
+# Локальный OCR: Vision framework не имеет C-совместимых точек входа, поэтому вместо JNA — общий
+# для мультиплатформенного JAR ProcessBuilder к маленькому Swift-бинарнику рядом с launcher'ом.
+# Тот же деплоймент-таргет, что и у самого приложения: если Vision недоступна на минимальной ОС
+# (Catalina нужна для VNRecognizeTextRequest, а планка ниже — до High Sierra на Intel), помощник
+# всё равно запускается и сообщает об этом сам, а не отказывается стартовать.
+case "$ARCHITECTURE" in
+    arm64) SWIFT_TARGET_ARCH="arm64" ;;
+    x64) SWIFT_TARGET_ARCH="x86_64" ;;
+    *) fail "неизвестная архитектура для сборки Swift-помощника: $ARCHITECTURE" ;;
+esac
+VISION_OCR_HELPER="$MACOS_DIRECTORY/camwork-vision-ocr"
+swiftc \
+    -O \
+    -target "$SWIFT_TARGET_ARCH-apple-macosx$MACOS_MINIMUM_VERSION" \
+    "$VISION_OCR_SOURCE" \
+    -o "$VISION_OCR_HELPER"
+chmod 0755 "$VISION_OCR_HELPER"
 
 # Уже после того, как jpackage составил app.classpath, — поэтому плагины в него не попадают.
 BUNDLED_DEFAULTS="$APP_IMAGE/Contents/Resources/default-data"

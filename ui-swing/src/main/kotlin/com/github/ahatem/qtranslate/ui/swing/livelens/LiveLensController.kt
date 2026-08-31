@@ -93,7 +93,7 @@ internal class LiveLensController(
     private val dispatch: (MainIntent) -> Unit,
     private val saveBounds: (Rectangle) -> Unit,
     private val logger: Logger,
-    private val reader: LiveLensTextReader = WindowsAccessibilityLiveLensTextReader()
+    private val reader: LiveLensTextReader = defaultLiveLensTextReader()
 ) {
     private val sequence = AtomicLong(0L)
     private val detector = LiveLensChangeDetector()

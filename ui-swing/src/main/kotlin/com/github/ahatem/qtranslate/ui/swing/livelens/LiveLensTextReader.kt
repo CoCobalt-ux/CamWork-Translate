@@ -37,6 +37,20 @@ internal fun interface LiveLensTextReader {
 }
 
 /**
+ * Выбирает читателя по текущей ОС. На платформах без реализации (Linux) окно откроется и покажет
+ * «текст не найден» вместо падения — то же безопасное поведение, которое [LiveLensTextReader]
+ * уже имеет на любой платформе, если `read` возвращает пустой список.
+ */
+internal fun defaultLiveLensTextReader(): LiveLensTextReader {
+    val os = System.getProperty("os.name").orEmpty()
+    return when {
+        os.startsWith("Windows", ignoreCase = true) -> WindowsAccessibilityLiveLensTextReader()
+        os.startsWith("Mac", ignoreCase = true) -> MacAccessibilityLiveLensTextReader()
+        else -> LiveLensTextReader { emptyList() }
+    }
+}
+
+/**
  * Читает только текстовые accessibility-элементы под LIVE-рамкой.
  *
  * Координата сохраняется вместе с текстом, чтобы перевод можно было показать возле
