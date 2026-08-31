@@ -368,6 +368,13 @@ class MainStore(
 
             MainIntent.CancelSelectionTranslations -> cancelSelectionTranslations()
 
+            is MainIntent.TranslateLiveLensText -> scope.launch {
+                handleLiveLensTranslation(intent)
+            }
+
+            MainIntent.CancelLiveLensTranslation ->
+                translateTextUseCase.cancel(TranslationLane.LIVE_LENS)
+
             is MainIntent.ListenToText -> scope.launch {
                 handleListen(intent.textSource, intent.text, intent.language)
             }
@@ -525,9 +532,18 @@ class MainStore(
 
         if (extractedText.isBlank()) return
 
+        // Область снимка часто уже показывает ответ собеседника на языке, в который окно
+        // настроено переводить (например, RU auto → EN, а в кадре — английский текст
+        // собеседника). Без этой подсказки перевод определяет исходный EN, видит, что цель
+        // тоже EN, и молча возвращает тот же текст. sameLanguageFallbackTarget — тот же приём,
+        // что уже используется для перевода при наборе текста: тогда самостоятельно
+        // возвращается язык модели.
+        val modelLanguage = runCatching { LanguageCode(settingsState.value.modelLanguage) }
+            .getOrDefault(LanguageCode.RUSSIAN)
+
         // Write extracted text into input then translate — same path as manual typing.
         _state.update { it.copy(inputText = extractedText) }
-        translateText()
+        translateText(sameLanguageFallbackTarget = modelLanguage)
     }
 
     /**
@@ -849,6 +865,75 @@ class MainStore(
         _state.update { it.copy(isReplacingSelection = false) }
         if (result.isNotBlank()) {
             _eventChannel.send(MainEvent.PasteTranslation(result))
+        }
+    }
+
+    /**
+     * Переводит текст LIVE-рамки в язык модели на изолированном снимке состояния.
+     * Главное окно, его история и индикаторы не меняются.
+     */
+    private suspend fun handleLiveLensTranslation(intent: MainIntent.TranslateLiveLensText) {
+        val sourceText = intent.text.trim()
+        if (sourceText.isBlank()) {
+            _eventChannel.send(MainEvent.LiveLensTranslationFinished(intent.requestId))
+            return
+        }
+
+        val modelLanguage = runCatching { LanguageCode(settingsState.value.modelLanguage) }
+            .getOrDefault(LanguageCode.RUSSIAN)
+        // LIVE-рамка ничего не заменяет, поэтому здесь достаточно отсечь текст, уже написанный
+        // на языке модели. AMBIGUOUS (латиница у модели, смешанный текст) обязан переводиться:
+        // иначе рамка молчит на всём, что не отличается по письменности.
+        if (ShiftSelectionDirectionDetector.detect(sourceText, modelLanguage) ==
+            ShiftSelectionDirection.MODEL_LANGUAGE
+        ) {
+            _eventChannel.send(MainEvent.LiveLensTranslationFinished(intent.requestId))
+            return
+        }
+
+        var backgroundState = _state.value.copy(
+            inputText = sourceText,
+            translatedText = "",
+            extraOutputText = "",
+            sourceLanguage = LanguageCode.AUTO,
+            detectedSourceLanguage = null,
+            targetLanguage = modelLanguage,
+            isLoading = false,
+            isExtraOutputLoading = false
+        )
+        when (val result = translateTextUseCase(
+            getState = { backgroundState },
+            updateState = { transform -> backgroundState = backgroundState.transform() },
+            onStatusUpdate = { _, _, _ -> },
+            textOverride = sourceText,
+            includeExtraOutput = false,
+            applyTranslationRules = false,
+            lane = TranslationLane.LIVE_LENS,
+            requestContext = TranslationRequestContext(
+                requestId = intent.requestId,
+                origin = "live_lens"
+            )
+        )) {
+            is TranslationRunResult.Success -> {
+                if (result.translatedText.isBlank() ||
+                    result.translatedText.trim().equals(sourceText, ignoreCase = true)
+                ) {
+                    _eventChannel.send(MainEvent.LiveLensTranslationFinished(intent.requestId))
+                } else {
+                    _eventChannel.send(
+                        MainEvent.LiveLensTranslationCompleted(
+                            requestId = intent.requestId,
+                            sourceText = sourceText,
+                            translatedText = result.translatedText,
+                            translatorName = result.translatorName
+                        )
+                    )
+                }
+            }
+            is TranslationRunResult.Failure ->
+                _eventChannel.send(
+                    MainEvent.LiveLensTranslationFinished(intent.requestId, result.kind)
+                )
         }
     }
 

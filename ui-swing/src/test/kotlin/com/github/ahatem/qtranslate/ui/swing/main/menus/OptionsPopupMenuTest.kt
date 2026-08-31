@@ -2,6 +2,7 @@ package com.github.ahatem.qtranslate.ui.swing.main.menus
 
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import javax.swing.JCheckBoxMenuItem
+import javax.swing.JMenuItem
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -38,6 +39,22 @@ class OptionsPopupMenuTest {
         assertFalse(selectionItem(menu).isSelected)
     }
 
+    @Test
+    fun `пункт OCR присутствует в главном меню и запускает выделение области`() {
+        var clicked = false
+        val menu = createMenu(
+            config = Configuration.DEFAULT,
+            onRecognizeText = { clicked = true }
+        )
+
+        menu.components
+            .filterIsInstance<JMenuItem>()
+            .first { it.text == OCR_LABEL }
+            .doClick()
+
+        assertTrue(clicked)
+    }
+
     private fun selectionItem(menu: MainMenuPopup): JCheckBoxMenuItem =
         menu.components
             .filterIsInstance<JCheckBoxMenuItem>()
@@ -45,7 +62,8 @@ class OptionsPopupMenuTest {
 
     private fun createMenu(
         config: Configuration,
-        onSelectionTranslation: (Boolean) -> Unit = {}
+        onSelectionTranslation: (Boolean) -> Unit = {},
+        onRecognizeText: () -> Unit = {}
     ): MainMenuPopup = MainMenuPopup(
         config = config,
         actions = MenuActions(
@@ -55,6 +73,8 @@ class OptionsPopupMenuTest {
             onShowDictionary = {},
             onShowImageSearch = {},
             onShowHistory = {},
+            onRecognizeText = onRecognizeText,
+            onShowLiveLens = {},
             onTranslateDocument = {},
             onShowSettings = {},
             onShowHowToUse = {},
@@ -78,6 +98,8 @@ class OptionsPopupMenuTest {
             isDictionaryPanelOpen = false,
             imageSearch = "images",
             history = "history",
+            textRecognition = OCR_LABEL,
+            liveLens = "live",
             translateDocument = "document",
             settings = "settings",
             help = "help",
@@ -98,5 +120,6 @@ class OptionsPopupMenuTest {
 
     private companion object {
         const val SELECTION_LABEL = "Перевод выделенного текста"
+        const val OCR_LABEL = "OCR с экрана"
     }
 }

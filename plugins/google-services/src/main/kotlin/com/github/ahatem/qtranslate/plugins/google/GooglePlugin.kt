@@ -54,9 +54,11 @@ class GooglePlugin : Plugin<GoogleSettings> {
 
     private fun buildServices() {
         activeServices = buildList {
-            // OCR requires a Vision API key — only register the service when one is configured.
+            // Облачный Vision используется только с ключом; на Windows его заменяет локальный OCR.
             if (settings.visionApiKey.isNotBlank()) {
                 add(GoogleOCRService(pluginContext, settings, httpClient, languageMapper, apiConfig))
+            } else if (WindowsOcrService.isSupported()) {
+                add(WindowsOcrService())
             }
             add(GoogleTranslatorService(pluginContext, settings, httpClient, languageMapper, apiConfig))
             add(GoogleTTSService(pluginContext, httpClient, languageMapper, apiConfig))

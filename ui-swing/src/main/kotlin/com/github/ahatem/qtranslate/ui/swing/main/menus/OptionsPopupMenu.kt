@@ -19,6 +19,8 @@ data class MenuStrings(
     val isDictionaryPanelOpen: Boolean,
     val imageSearch: String,
     val history: String,
+    val textRecognition: String,
+    val liveLens: String,
     val translateDocument: String,
     val settings: String,
     val help: String,
@@ -42,6 +44,8 @@ data class MenuActions(
     val onShowDictionary: () -> Unit,
     val onShowImageSearch: () -> Unit,
     val onShowHistory: () -> Unit,
+    val onRecognizeText: () -> Unit,
+    val onShowLiveLens: () -> Unit,
     val onTranslateDocument: () -> Unit,
     val onShowSettings: () -> Unit,
 
@@ -142,6 +146,12 @@ class MainMenuPopup(
         })
         add(JMenuItem(strings.history).apply {
             addActionListener { actions.onShowHistory() }
+        })
+        add(JMenuItem(strings.textRecognition).apply {
+            addActionListener { actions.onRecognizeText() }
+        })
+        add(JMenuItem(strings.liveLens).apply {
+            addActionListener { actions.onShowLiveLens() }
         })
         add(JMenuItem(strings.translateDocument).apply {
             addActionListener { actions.onTranslateDocument() }

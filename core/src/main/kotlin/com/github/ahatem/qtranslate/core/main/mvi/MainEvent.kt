@@ -35,6 +35,20 @@ sealed interface MainEvent : UiEvent {
     /** Последний автоматический перевод завершён: индикатор возле курсора можно скрыть. */
     data object AutoSelectionTranslationFinished : MainEvent
 
+    /** Ответ для LIVE-рамки; исходный текст нужен только для локальной дедупликации. */
+    data class LiveLensTranslationCompleted(
+        val requestId: Long,
+        val sourceText: String,
+        val translatedText: String,
+        val translatorName: String
+    ) : MainEvent
+
+    /** LIVE-запрос завершился без вывода: текст уже на языке модели либо запрос не удался. */
+    data class LiveLensTranslationFinished(
+        val requestId: Long,
+        val failure: com.github.ahatem.qtranslate.core.main.domain.usecase.TranslationFailureKind? = null
+    ) : MainEvent
+
     data class ShowUpdateDialog(
         val newVersion: String,
         val currentVersion: String,

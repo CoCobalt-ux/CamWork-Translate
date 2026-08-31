@@ -99,7 +99,11 @@ private fun classifyClipboard(
 
 private fun isChromiumContainer(snapshot: Win32SelectionSnapshot?): Boolean {
     val className = snapshot?.className?.lowercase().orEmpty()
-    return CHROMIUM_WIN32_CLASS_MARKERS.any(className::contains)
+    if (CHROMIUM_WIN32_CLASS_MARKERS.any(className::contains)) return true
+    // Форки Chromium вставляют в класс окна собственное имя: Yandex даёт
+    // Chrome_Yandex_WidgetWin_1. Без этого их опубликованный чат выглядел как UNKNOWN,
+    // и вместо автоматического перевода появлялась только мини-кнопка.
+    return className.startsWith("chrome") && className.contains("widgetwin")
 }
 
 private fun classifyAccessibility(snapshot: AccessibilitySelectionSnapshot?): SelectionSurface? {

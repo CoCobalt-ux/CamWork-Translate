@@ -186,6 +186,15 @@ sealed interface MainIntent : UiIntent {
     /** Инвалидирует фоновый результат выделения, например при открытии системного скриншота. */
     data object CancelSelectionTranslations : MainIntent
 
+    /** Новый доступный текст из LIVE-рамки: перевести в язык модели без изменения главного окна. */
+    data class TranslateLiveLensText(
+        val text: String,
+        val requestId: Long
+    ) : MainIntent
+
+    /** Останавливает только LIVE-запрос, не затрагивая Shift и главный перевод. */
+    data object CancelLiveLensTranslation : MainIntent
+
     /** User dismissed the quick translate popup. */
     data object HideQuickTranslate : MainIntent
 
