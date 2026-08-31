@@ -98,9 +98,15 @@ jobs:
       - name: Mark artifacts as QA only
         shell: bash
         run: |
+          guide="build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt"
+          [[ -f "$guide" ]] || {
+            echo "Инструкция установки не включена в QA-пакет: $guide" >&2
+            exit 1
+          }
           printf '%s\n' \
             'QA ONLY — НЕ ДЛЯ ПУБЛИЧНОГО РЕЛИЗА.' \
             'Приложение подписано ad-hoc, не нотариализовано Apple и может быть заблокировано Gatekeeper.' \
+            'Сначала прочитайте файл READ-ME-FIRST, лежащий рядом с DMG и внутри него.' \
             'Production macOS выпускается только через release.yml с Developer ID и notarization.' \
             > build/release/QA-ONLY-${{ matrix.arch }}.txt
 
@@ -114,6 +120,7 @@ jobs:
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.app.zip.sha256
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -127,5 +134,6 @@ jobs:
             echo "Artifact: \`camwork-translate-macos-QA-${{ matrix.arch }}-${{ github.run_number }}\`"
             echo
             echo "Download it from the **Artifacts** section of this workflow run."
+            echo "Before installation, open the included **READ-ME-FIRST** file and follow the **Open Anyway** steps."
             echo "The unsigned QA build is retained for 14 days and is not a public release."
           } >> "$GITHUB_STEP_SUMMARY"

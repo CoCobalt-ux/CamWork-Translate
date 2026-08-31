@@ -228,8 +228,10 @@ GRADLE_WRAPPER="$REPO_ROOT/gradlew"
 BOOTSTRAP_SOURCE="$REPO_ROOT/packaging/macos/CamWorkBootstrap.c"
 VISION_OCR_SOURCE="$REPO_ROOT/packaging/macos/CamWorkVisionOcr.swift"
 ENTITLEMENTS="$REPO_ROOT/packaging/macos/entitlements.plist"
+QA_INSTALL_GUIDE_SOURCE="$REPO_ROOT/packaging/macos/QA_INSTALL_RU.txt"
 ICON_SOURCE="$REPO_ROOT/ui-swing/src/main/resources/icons/app/icon-1024.png"
-for required_file in "$BOOTSTRAP_SOURCE" "$VISION_OCR_SOURCE" "$ENTITLEMENTS" "$ICON_SOURCE" \
+for required_file in "$BOOTSTRAP_SOURCE" "$VISION_OCR_SOURCE" "$ENTITLEMENTS" \
+    "$QA_INSTALL_GUIDE_SOURCE" "$ICON_SOURCE" \
     "$REPO_ROOT/LICENSE" "$REPO_ROOT/NOTICE" "$REPO_ROOT/docs/LEGAL_ATTRIBUTION.md"; do
     [[ -f "$required_file" ]] || fail "не найден обязательный файл: $required_file"
 done
@@ -432,7 +434,12 @@ codesign --verify --deep --strict --verbose=2 "$APP_IMAGE"
 APP_ZIP="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.app.zip"
 DMG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.dmg"
 PKG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.pkg"
-rm -f -- "$APP_ZIP" "$APP_ZIP.sha256" "$DMG_PATH" "$DMG_PATH.sha256" "$PKG_PATH" "$PKG_PATH.sha256"
+QA_INSTALL_GUIDE="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE-READ-ME-FIRST.txt"
+rm -f -- "$APP_ZIP" "$APP_ZIP.sha256" "$DMG_PATH" "$DMG_PATH.sha256" \
+    "$PKG_PATH" "$PKG_PATH.sha256" "$QA_INSTALL_GUIDE"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    ditto "$QA_INSTALL_GUIDE_SOURCE" "$QA_INSTALL_GUIDE"
+fi
 ditto -c -k --sequesterRsrc --keepParent "$APP_IMAGE" "$APP_ZIP"
 
 if [[ "$NOTARIZE" == true ]]; then
@@ -461,6 +468,9 @@ if [[ "$PACKAGE_FORMAT" == "dmg" || "$PACKAGE_FORMAT" == "all" ]]; then
     mkdir -p "$DMG_STAGE_DIRECTORY"
     ditto "$APP_IMAGE" "$DMG_STAGE_DIRECTORY/CamWork Translate.app"
     ln -s /Applications "$DMG_STAGE_DIRECTORY/Applications"
+    if [[ -z "$SIGNING_IDENTITY" ]]; then
+        ditto "$QA_INSTALL_GUIDE_SOURCE" "$DMG_STAGE_DIRECTORY/READ-ME-FIRST.txt"
+    fi
     hdiutil create \
         -volname "CamWork Translate $VERSION" \
         -srcfolder "$DMG_STAGE_DIRECTORY" \

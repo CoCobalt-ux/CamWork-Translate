@@ -80,7 +80,9 @@ export JAVA_HOME="/path/to/jdk-17/Contents/Home"
   `APP_VERSION+qa.RUN_NUMBER.RUN_ATTEMPT`;
 - применяет только ad-hoc подпись, не использует Apple-секреты и не выполняет
   notarization;
-- добавляет в каждый архив файл `QA-ONLY-ARCH.txt` с явным предупреждением;
+- добавляет в artifact файл `QA-ONLY-ARCH.txt` с явным предупреждением;
+- кладёт рядом с DMG и внутрь него `READ-ME-FIRST` с инструкцией `Open Anyway`,
+  выдачей системных разрешений и безопасным перезапуском приложения;
 - хранит workflow artifacts 14 дней и никогда не создаёт GitHub Release.
 
 Новые тестовые сборки находятся на странице
@@ -203,17 +205,20 @@ unsigned executable memory и library validation нужны текущему JVM
 ## Установка и разрешения на тестовом Mac
 
 1. Открыть DMG и перетащить `CamWork Translate.app` в `Applications`.
-2. Запустить приложение. Bootstrap проверяет Accessibility и Input Monitoring при
+2. Запустить приложение один раз. Для ad-hoc QA-сборки закрыть предупреждение macOS,
+   затем открыть **System Settings → Privacy & Security → Security → Open Anyway**
+   и подтвердить запуск. Не отключать Gatekeeper целиком.
+3. Bootstrap проверяет Accessibility и Input Monitoring при
    каждом обычном запуске. Если доступа нет, он инициирует штатный запрос macOS,
    повторно проверяет состояние и показывает точный путь в настройках.
-3. В **System Settings → Privacy & Security** вручную разрешить приложению:
+4. В **System Settings → Privacy & Security** вручную разрешить приложению:
    - **Accessibility** — для вставки перевода в другое приложение;
    - **Input Monitoring** — для глобального hotkey;
    - **Screen & System Audio Recording** — только если используется OCR экрана.
-4. macOS не позволяет CamWork Translate выдать эти разрешения автоматически. После
+5. macOS не позволяет CamWork Translate выдать эти разрешения автоматически. После
    любого изменения нужно **полностью завершить приложение через Cmd+Q**, а не только
    закрыть окно, и запустить его снова. Bootstrap повторит проверку при новом запуске.
-5. Проверить основное окно, Google/Bing/DeepL, двунаправленную замену в Telegram и
+6. Проверить основное окно, Google/Bing/DeepL, двунаправленную замену в Telegram и
    Chrome, поведение выделения в обычном тексте и в поле ввода, TTS и OCR.
 
 ## Официальные справочные материалы

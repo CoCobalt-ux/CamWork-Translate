@@ -249,10 +249,17 @@ Assert-Condition -Condition (
     -Message 'macOS QA workflow должен собирать arm64 и x64.'
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('QA-ONLY-${{ matrix.arch }}.txt') -and
+    $macQaWorkflow.Contains('READ-ME-FIRST.txt') -and
     $macQaWorkflow.Contains('camwork-translate-macos-QA-') -and
     $macQaWorkflow.Contains('retention-days: 14')
 ) `
     -Message 'macOS QA artifacts должны быть явно маркированы и храниться 14 дней.'
+Assert-Condition -Condition (
+    $macScript.Contains('QA_INSTALL_RU.txt') -and
+    $macScript.Contains('$DMG_STAGE_DIRECTORY/READ-ME-FIRST.txt') -and
+    $macScript.Contains('macos-$ARCHITECTURE-READ-ME-FIRST.txt')
+) `
+    -Message 'Инструкция Open Anyway должна попадать рядом с QA-DMG и внутрь него.'
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('CAMWORK_PACKAGED_SMOKE_TEST=1') -and
     $macQaWorkflow.Contains('-Dcamwork.packagedSmokeTest=true') -and
