@@ -25,6 +25,13 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
     exit(code)
 }
 
+/// `Result`'s `Failure` обязан соответствовать протоколу `Error` — голый `String` для этого не
+/// годится.
+struct RecognitionFailure: Error, CustomStringConvertible {
+    let message: String
+    var description: String { message }
+}
+
 @available(macOS 10.15, *)
 func loadImage(path: String) -> CGImage? {
     let url = URL(fileURLWithPath: path)
@@ -33,7 +40,7 @@ func loadImage(path: String) -> CGImage? {
 }
 
 @available(macOS 10.15, *)
-func recognizeText(cgImage: CGImage, languageTag: String?) -> Result<[String], String> {
+func recognizeText(cgImage: CGImage, languageTag: String?) -> Result<[String], RecognitionFailure> {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
@@ -48,7 +55,7 @@ func recognizeText(cgImage: CGImage, languageTag: String?) -> Result<[String], S
     } catch {
         // Помимо настоящих сбоев Vision сюда попадает и неподдержанный языковой тег — Kotlin-
         // сторона превращает это в обычную ServiceError, а не в падение процесса.
-        return .failure("Vision request failed: \(error.localizedDescription)")
+        return .failure(RecognitionFailure(message: "Vision request failed: \(error.localizedDescription)"))
     }
 
     let lines = (request.results ?? []).compactMap { observation -> String? in
@@ -62,12 +69,17 @@ func recognizeText(cgImage: CGImage, languageTag: String?) -> Result<[String], S
 /// (Intel и Apple Silicon), а не только факт компиляции.
 @available(macOS 10.15, *)
 func renderSelfTestImage() -> CGImage? {
-    let width = 520
-    let height = 140
+    // Отдельные Int- и CGFloat-версии размера: CGContext хочет Int (пиксели битмапа), CGRect —
+    // CGFloat, и Swift не приводит типизированную константу между ними неявно, в отличие от
+    // литерала на месте вызова.
+    let widthPixels = 520
+    let heightPixels = 140
+    let width = CGFloat(widthPixels)
+    let height = CGFloat(heightPixels)
     guard let context = CGContext(
         data: nil,
-        width: width,
-        height: height,
+        width: widthPixels,
+        height: heightPixels,
         bitsPerComponent: 8,
         bytesPerRow: 0,
         space: CGColorSpaceCreateDeviceRGB(),
@@ -106,8 +118,8 @@ func runSelfTest() {
         } else {
             fail("selftest: распознанный текст не содержит ожидаемого слова: '\(combined)'")
         }
-    case .failure(let message):
-        fail("selftest: \(message)")
+    case .failure(let error):
+        fail("selftest: \(error.message)")
     }
 }
 
@@ -120,8 +132,8 @@ func runRecognize(imagePath: String, languageTag: String?) {
     case .success(let lines):
         lines.forEach { print($0) }
         exit(0)
-    case .failure(let message):
-        fail(message)
+    case .failure(let error):
+        fail(error.message)
     }
 }
 
