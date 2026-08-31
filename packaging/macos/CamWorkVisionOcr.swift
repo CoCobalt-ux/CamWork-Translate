@@ -137,22 +137,27 @@ func runRecognize(imagePath: String, languageTag: String?) {
     }
 }
 
-guard #available(macOS 10.15, *) else {
+// `if #available { } else { }`, а не `guard ... else` на верхнем уровне файла: минимальная
+// версия x64-сборки — 10.13 (High Sierra, см. build-macos-release.sh), поэтому здесь ниже 10.15
+// и компилятору нужна одна связная ветка, а не связывание отдельных top-level statement'ов
+// через guard — на 10.13-таргете `swiftc` отказывался компилировать вызовы ниже именно в форме
+// с `guard`, хотя тот же файл на 11.0-таргете (arm64) собирался без единой жалобы.
+if #available(macOS 10.15, *) {
+    let arguments = CommandLine.arguments
+    guard arguments.count >= 2 else {
+        fail("Использование: camwork-vision-ocr recognize <изображение> [язык] | camwork-vision-ocr selftest")
+    }
+
+    switch arguments[1] {
+    case "selftest":
+        runSelfTest()
+    case "recognize":
+        guard arguments.count >= 3 else { fail("recognize требует путь к изображению") }
+        let languageTag = arguments.count >= 4 ? arguments[3] : nil
+        runRecognize(imagePath: arguments[2], languageTag: languageTag)
+    default:
+        fail("Неизвестный режим: \(arguments[1])")
+    }
+} else {
     fail("Локальный OCR требует macOS 10.15 (Catalina) или новее.", code: 2)
-}
-
-let arguments = CommandLine.arguments
-guard arguments.count >= 2 else {
-    fail("Использование: camwork-vision-ocr recognize <изображение> [язык] | camwork-vision-ocr selftest")
-}
-
-switch arguments[1] {
-case "selftest":
-    runSelfTest()
-case "recognize":
-    guard arguments.count >= 3 else { fail("recognize требует путь к изображению") }
-    let languageTag = arguments.count >= 4 ? arguments[3] : nil
-    runRecognize(imagePath: arguments[2], languageTag: languageTag)
-default:
-    fail("Неизвестный режим: \(arguments[1])")
 }
