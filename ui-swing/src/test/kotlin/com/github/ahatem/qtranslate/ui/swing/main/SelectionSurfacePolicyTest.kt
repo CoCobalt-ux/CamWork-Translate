@@ -455,6 +455,26 @@ class SelectionSurfacePolicyTest {
         assertTrue(result in SelectionSurface.entries)
     }
 
+
+    @Test
+    fun `форк Chromium с собственным классом окна тоже даёт автоокно`() {
+        val surface = classifySelectionSurface(
+            accessibility = null,
+            win32 = Win32SelectionSnapshot(
+                className = "Chrome_Yandex_WidgetWin_1",
+                hasCaret = false,
+                isReadOnly = null
+            ),
+            clipboard = ClipboardSelectionEvidence(hasHtml = true, hasEditableMarkup = false)
+        )
+
+        assertEquals(SelectionSurface.READ_ONLY, surface)
+        assertEquals(
+            SelectionPresentation.AUTO_OVERLAY,
+            resolveSelectionPresentation(surface, isAutoOverlayEnabled = true)
+        )
+    }
+
     private fun accessibility(
         controlType: Int,
         isEnabled: Boolean? = true,

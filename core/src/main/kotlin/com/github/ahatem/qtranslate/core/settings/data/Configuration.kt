@@ -445,6 +445,10 @@ data class Configuration(
     val popupLastKnownSize: Size = Size(width = 450, height = 250),
     val popupLastKnownPosition: Position = Position(x = 0, y = 0),
 
+    // ---- UI — LIVE translation lens ----
+    val liveLensLastKnownSize: Size = Size(width = 620, height = 420),
+    val liveLensLastKnownPosition: Position = Position(x = 120, y = 120),
+
     // ---- UI — Quick Dictionary Popup ----
     val quickDictionaryLastKnownSize: Size = Size(width = 420, height = 400),
     val quickDictionaryLastKnownPosition: Position = Position(x = 0, y = 0),

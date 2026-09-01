@@ -202,6 +202,7 @@ require_command hdiutil
 require_command iconutil
 require_command otool
 require_command plutil
+require_command swiftc
 require_command shasum
 require_command sips
 require_command xcode-select
@@ -225,9 +226,12 @@ fi
 GRADLE_WRAPPER="$REPO_ROOT/gradlew"
 [[ -x "$GRADLE_WRAPPER" ]] || fail "Gradle Wrapper не найден или не исполняемый: $GRADLE_WRAPPER"
 BOOTSTRAP_SOURCE="$REPO_ROOT/packaging/macos/CamWorkBootstrap.c"
+VISION_OCR_SOURCE="$REPO_ROOT/packaging/macos/CamWorkVisionOcr.swift"
 ENTITLEMENTS="$REPO_ROOT/packaging/macos/entitlements.plist"
+QA_INSTALL_GUIDE_SOURCE="$REPO_ROOT/packaging/macos/QA_INSTALL_RU.txt"
 ICON_SOURCE="$REPO_ROOT/ui-swing/src/main/resources/icons/app/icon-1024.png"
-for required_file in "$BOOTSTRAP_SOURCE" "$ENTITLEMENTS" "$ICON_SOURCE" \
+for required_file in "$BOOTSTRAP_SOURCE" "$VISION_OCR_SOURCE" "$ENTITLEMENTS" \
+    "$QA_INSTALL_GUIDE_SOURCE" "$ICON_SOURCE" \
     "$REPO_ROOT/LICENSE" "$REPO_ROOT/NOTICE" "$REPO_ROOT/docs/LEGAL_ATTRIBUTION.md"; do
     [[ -f "$required_file" ]] || fail "не найден обязательный файл: $required_file"
 done
@@ -346,6 +350,24 @@ clang \
     -o "$JPACKAGE_LAUNCHER"
 chmod 0755 "$JPACKAGE_LAUNCHER" "$ORIGINAL_LAUNCHER"
 
+# Локальный OCR: Vision framework не имеет C-совместимых точек входа, поэтому вместо JNA — общий
+# для мультиплатформенного JAR ProcessBuilder к маленькому Swift-бинарнику рядом с launcher'ом.
+# Тот же деплоймент-таргет, что и у самого приложения: если Vision недоступна на минимальной ОС
+# (Catalina нужна для VNRecognizeTextRequest, а планка ниже — до High Sierra на Intel), помощник
+# всё равно запускается и сообщает об этом сам, а не отказывается стартовать.
+case "$ARCHITECTURE" in
+    arm64) SWIFT_TARGET_ARCH="arm64" ;;
+    x64) SWIFT_TARGET_ARCH="x86_64" ;;
+    *) fail "неизвестная архитектура для сборки Swift-помощника: $ARCHITECTURE" ;;
+esac
+VISION_OCR_HELPER="$MACOS_DIRECTORY/camwork-vision-ocr"
+swiftc \
+    -O \
+    -target "$SWIFT_TARGET_ARCH-apple-macosx$MACOS_MINIMUM_VERSION" \
+    "$VISION_OCR_SOURCE" \
+    -o "$VISION_OCR_HELPER"
+chmod 0755 "$VISION_OCR_HELPER"
+
 # Уже после того, как jpackage составил app.classpath, — поэтому плагины в него не попадают.
 BUNDLED_DEFAULTS="$APP_IMAGE/Contents/Resources/default-data"
 mkdir -p "$BUNDLED_DEFAULTS"
@@ -412,7 +434,12 @@ codesign --verify --deep --strict --verbose=2 "$APP_IMAGE"
 APP_ZIP="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.app.zip"
 DMG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.dmg"
 PKG_PATH="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE.pkg"
-rm -f -- "$APP_ZIP" "$APP_ZIP.sha256" "$DMG_PATH" "$DMG_PATH.sha256" "$PKG_PATH" "$PKG_PATH.sha256"
+QA_INSTALL_GUIDE="$RELEASE_DIRECTORY/CamWork-Translate-$VERSION-macos-$ARCHITECTURE-READ-ME-FIRST.txt"
+rm -f -- "$APP_ZIP" "$APP_ZIP.sha256" "$DMG_PATH" "$DMG_PATH.sha256" \
+    "$PKG_PATH" "$PKG_PATH.sha256" "$QA_INSTALL_GUIDE"
+if [[ -z "$SIGNING_IDENTITY" ]]; then
+    ditto "$QA_INSTALL_GUIDE_SOURCE" "$QA_INSTALL_GUIDE"
+fi
 ditto -c -k --sequesterRsrc --keepParent "$APP_IMAGE" "$APP_ZIP"
 
 if [[ "$NOTARIZE" == true ]]; then
@@ -441,6 +468,9 @@ if [[ "$PACKAGE_FORMAT" == "dmg" || "$PACKAGE_FORMAT" == "all" ]]; then
     mkdir -p "$DMG_STAGE_DIRECTORY"
     ditto "$APP_IMAGE" "$DMG_STAGE_DIRECTORY/CamWork Translate.app"
     ln -s /Applications "$DMG_STAGE_DIRECTORY/Applications"
+    if [[ -z "$SIGNING_IDENTITY" ]]; then
+        ditto "$QA_INSTALL_GUIDE_SOURCE" "$DMG_STAGE_DIRECTORY/READ-ME-FIRST.txt"
+    fi
     hdiutil create \
         -volname "CamWork Translate $VERSION" \
         -srcfolder "$DMG_STAGE_DIRECTORY" \

@@ -64,6 +64,16 @@ jobs:
         env:
           APP_VERSION: ${{ steps.version.outputs.qa_version }}
 
+      - name: Self-test the local Vision OCR helper
+        shell: bash
+        run: |
+          helper="$GITHUB_WORKSPACE/build/macos-package-work-${{ matrix.arch }}/app-output/CamWork Translate.app/Contents/MacOS/camwork-vision-ocr"
+          [[ -x "$helper" ]] || {
+            echo "Помощник Vision OCR не найден или не исполняем: $helper" >&2
+            exit 1
+          }
+          "$helper" selftest
+
       - name: Smoke-test packaged macOS QA app
         shell: bash
         run: |
@@ -88,9 +98,33 @@ jobs:
       - name: Mark artifacts as QA only
         shell: bash
         run: |
+          guide="build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt"
+          dmg="build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg"
+          [[ -f "$guide" ]] || {
+            echo "Инструкция установки не включена в QA-пакет: $guide" >&2
+            exit 1
+          }
+          [[ -f "$dmg" ]] || {
+            echo "QA-DMG не найден: $dmg" >&2
+            exit 1
+          }
+
+          mount_point="$RUNNER_TEMP/camwork-qa-dmg-${{ matrix.arch }}"
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point" >/dev/null 2>&1 || true' EXIT
+          [[ -f "$mount_point/READ-ME-FIRST.txt" ]] || {
+            echo "READ-ME-FIRST отсутствует внутри QA-DMG" >&2
+            exit 1
+          }
+          grep -F 'Open Anyway' "$mount_point/READ-ME-FIRST.txt"
+          hdiutil detach "$mount_point"
+          trap - EXIT
+
           printf '%s\n' \
             'QA ONLY — НЕ ДЛЯ ПУБЛИЧНОГО РЕЛИЗА.' \
             'Приложение подписано ad-hoc, не нотариализовано Apple и может быть заблокировано Gatekeeper.' \
+            'Сначала прочитайте файл READ-ME-FIRST, лежащий рядом с DMG и внутри него.' \
             'Production macOS выпускается только через release.yml с Developer ID и notarization.' \
             > build/release/QA-ONLY-${{ matrix.arch }}.txt
 
@@ -104,6 +138,7 @@ jobs:
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.app.zip.sha256
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg
             build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.qa_version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt
           if-no-files-found: error
           retention-days: 14
 
@@ -117,5 +152,6 @@ jobs:
             echo "Artifact: \`camwork-translate-macos-QA-${{ matrix.arch }}-${{ github.run_number }}\`"
             echo
             echo "Download it from the **Artifacts** section of this workflow run."
+            echo "Before installation, open the included **READ-ME-FIRST** file and follow the **Open Anyway** steps."
             echo "The unsigned QA build is retained for 14 days and is not a public release."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -95,7 +95,6 @@ jobs:
 
   macos-package:
     name: Build macOS ${{ matrix.arch }} package
-    if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -110,6 +109,7 @@ jobs:
 
     steps:
       - name: Require production Apple credentials
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
         shell: bash
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
@@ -159,6 +159,7 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Import Developer ID and notarization credentials
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
         id: mac-signing
         shell: bash
         env:
@@ -208,7 +209,8 @@ jobs:
           echo "notary-profile=$notary_profile" >> "$GITHUB_OUTPUT"
           echo "signing-identity=$SIGNING_IDENTITY" >> "$GITHUB_OUTPUT"
 
-      - name: Build native app and DMG
+      - name: Build signed and notarized native app and DMG
+        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
         shell: bash
         run: |
           bash ./scripts/build-macos-release.sh \
@@ -220,6 +222,18 @@ jobs:
             --signing-keychain "${{ steps.mac-signing.outputs.keychain }}" \
             --notary-profile "${{ steps.mac-signing.outputs.notary-profile }}" \
             --notarize
+        env:
+          APP_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Build unsigned internal native app and DMG
+        if: ${{ vars.MACOS_STABLE_ENABLED != 'true' }}
+        shell: bash
+        run: |
+          bash ./scripts/build-macos-release.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --arch "${{ matrix.arch }}" \
+            --format dmg \
+            --java-home "$JAVA_HOME"
         env:
           APP_VERSION: ${{ steps.version.outputs.version }}
 
@@ -244,6 +258,40 @@ jobs:
           }
           grep -F 'CAMWORK_PACKAGED_SMOKE_OK' "$marker"
 
+      - name: Self-test the local Vision OCR helper
+        shell: bash
+        run: |
+          helper="$GITHUB_WORKSPACE/build/macos-package-work-${{ matrix.arch }}/app-output/CamWork Translate.app/Contents/MacOS/camwork-vision-ocr"
+          [[ -x "$helper" ]] || {
+            echo "Помощник Vision OCR не найден или не исполняем: $helper" >&2
+            exit 1
+          }
+          "$helper" selftest
+
+      - name: Verify unsigned DMG installation guide
+        if: ${{ vars.MACOS_STABLE_ENABLED != 'true' }}
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          guide="build/release/CamWork-Translate-$version-macos-${{ matrix.arch }}-READ-ME-FIRST.txt"
+          dmg="build/release/CamWork-Translate-$version-macos-${{ matrix.arch }}.dmg"
+          [[ -f "$guide" ]] || {
+            echo "Инструкция установки не включена в macOS-пакет: $guide" >&2
+            exit 1
+          }
+
+          mount_point="$RUNNER_TEMP/camwork-release-dmg-${{ matrix.arch }}"
+          mkdir -p "$mount_point"
+          hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_point"
+          trap 'hdiutil detach "$mount_point" >/dev/null 2>&1 || true' EXIT
+          [[ -f "$mount_point/READ-ME-FIRST.txt" ]] || {
+            echo "READ-ME-FIRST отсутствует внутри unsigned DMG" >&2
+            exit 1
+          }
+          grep -F 'Open Anyway' "$mount_point/READ-ME-FIRST.txt"
+          hdiutil detach "$mount_point"
+          trap - EXIT
+
       - name: Upload macOS package
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -253,10 +301,11 @@ jobs:
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.app.zip.sha256
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-${{ matrix.arch }}-READ-ME-FIRST.txt
           if-no-files-found: error
 
       - name: Remove temporary signing keychain
-        if: always()
+        if: ${{ always() && vars.MACOS_STABLE_ENABLED == 'true' }}
         shell: bash
         run: |
           keychain="${{ steps.mac-signing.outputs.keychain }}"
@@ -269,7 +318,7 @@ jobs:
     name: Build & Publish Release
     runs-on: ubuntu-latest
     needs: [windows-package, macos-package]
-    if: ${{ always() && needs.windows-package.result == 'success' && (needs.macos-package.result == 'success' || needs.macos-package.result == 'skipped') }}
+    if: ${{ always() && needs.windows-package.result == 'success' && needs.macos-package.result == 'success' }}
     permissions:
       contents: write
 
@@ -305,7 +354,6 @@ jobs:
           path: build/release
 
       - name: Download macOS packages
-        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: camwork-translate-macos-*
@@ -319,7 +367,6 @@ jobs:
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip" >> SHA256SUMS.txt
 
       - name: Add macOS package checksums
-        if: ${{ vars.MACOS_STABLE_ENABLED == 'true' }}
         run: |
           cd build/release
           sha256sum "CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip" >> SHA256SUMS.txt
@@ -411,17 +458,23 @@ jobs:
               f"| **[⬇ Установщик Windows x64]({base_url}/CamWork-Translate-{version}-Setup-windows-x64.exe)** | **Основной вариант для моделей.** Запустить EXE; права администратора не нужны. | Нет, runtime включён |",
               f"| **[⬇ Переносимый Windows x64]({base_url}/CamWork-Translate-{version}-windows-x64.zip)** | Распаковать в доступную для записи папку и запустить `CamWork Translate.exe`. | Нет, runtime включён |",
           ]
-          if os.environ.get("MACOS_STABLE_ENABLED") == "true":
-              download_rows.extend([
-                  f"| **[⬇ macOS Apple Silicon]({base_url}/CamWork-Translate-{version}-macos-arm64.dmg)** | Mac на M1/M2/M3/M4 и новее. | Нет, runtime включён |",
-                  f"| **[⬇ macOS Intel]({base_url}/CamWork-Translate-{version}-macos-x64.dmg)** | Mac с процессором Intel. | Нет, runtime включён |",
-              ])
+          signed_macos = os.environ.get("MACOS_STABLE_ENABLED") == "true"
+          macos_suffix = "Подписан и нотариализован Apple." if signed_macos else "Внутренняя unsigned-сборка: следуйте READ-ME-FIRST внутри DMG."
+          download_rows.extend([
+              f"| **[⬇ macOS Apple Silicon]({base_url}/CamWork-Translate-{version}-macos-arm64.dmg)** | Mac на M1/M2/M3/M4/M5 и новее. {macos_suffix} | Нет, runtime включён |",
+              f"| **[⬇ macOS Intel]({base_url}/CamWork-Translate-{version}-macos-x64.dmg)** | Mac с процессором Intel. {macos_suffix} | Нет, runtime включён |",
+          ])
           download_rows.extend([
               f"| **[⬇ Переносимый ZIP]({base_url}/CamWork-Translate-{version}.zip)** | Windows, macOS или Linux с установленной Java. | Java 17+ |",
               f"| **[⬇ Только приложение]({base_url}/CamWork-Translate-App-{version}.jar)** | Разработка и собственный комплект плагинов. | Java 17+ |",
           ])
 
           changelog = os.environ.get("CHANGELOG", "").strip() or "- Технический релиз."
+          macos_notice = (
+              "macOS-пакеты подписаны Developer ID и нотариализованы Apple."
+              if signed_macos
+              else "⚠️ macOS-пакеты пока подписаны ad-hoc и не нотариализованы Apple. Это внутренняя тестовая версия: откройте READ-ME-FIRST внутри DMG и разрешите запуск через Privacy & Security → Open Anyway. Не отключайте Gatekeeper целиком."
+          )
           body = "\n\n".join([
               "## Что изменилось",
               changelog,
@@ -434,6 +487,7 @@ jobs:
                   *download_rows,
               ]),
               "Windows- и переносимый архивы уже содержат все штатные плагины.",
+              macos_notice,
               "## Проверка файла",
               f"Загрузите [SHA256SUMS.txt]({base_url}/SHA256SUMS.txt) в тот же каталог и выполните:",
               "```\nsha256sum -c --ignore-missing SHA256SUMS.txt\n```",
@@ -441,7 +495,7 @@ jobs:
           Path("build/release/RELEASE_BODY.md").write_text(body, encoding="utf-8")
           PY
 
-      - name: Create GitHub Release without native macOS artifacts
+      - name: Create GitHub Release with unsigned internal macOS artifacts
         if: ${{ vars.MACOS_STABLE_ENABLED != 'true' }}
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3
         with:
@@ -452,6 +506,16 @@ jobs:
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}.zip
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}-Setup-windows-x64.exe
             build/release/CamWork-Translate-${{ steps.version.outputs.version }}-windows-x64.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-arm64-READ-ME-FIRST.txt
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.app.zip.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64.dmg.sha256
+            build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-x64-READ-ME-FIRST.txt
             build/release/plugins/*.jar
             build/release/release-metadata.json
             build/release/SIZE_REPORT.md

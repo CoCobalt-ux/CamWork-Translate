@@ -1,7 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.snippingtool
 
 import com.formdev.flatlaf.FlatClientProperties
-import com.github.ahatem.qtranslate.ui.swing.shared.util.getVirtualScreenBounds
 import java.awt.*
 import java.awt.geom.RoundRectangle2D
 import java.awt.image.BufferedImage
@@ -64,7 +63,17 @@ class ScreenCapturePanel(
     fun getSelectedImage(): BufferedImage? {
         val state = currentState ?: return null
         val selection = state.selection ?: return null
-        return state.screenshot.getSubimage(selection.x, selection.y, selection.width, selection.height)
+        val imageSelection = mapSelectionToImage(
+            selection = selection,
+            canvasSize = size,
+            imageSize = Dimension(state.screenshot.width, state.screenshot.height)
+        ) ?: return null
+        return state.screenshot.getSubimage(
+            imageSelection.x,
+            imageSelection.y,
+            imageSelection.width,
+            imageSelection.height
+        )
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -270,7 +279,7 @@ class ScreenCapturePanel(
 
     fun calculateButtonsPosition(selection: Rectangle): Point {
         val panelSize = buttonsPanel.preferredSize
-        val screenBounds = getVirtualScreenBounds()
+        val screenBounds = Rectangle(0, 0, width, height)
         val padding = 12
 
         var x = selection.x + (selection.width - panelSize.width) / 2
@@ -287,4 +296,26 @@ class ScreenCapturePanel(
 
         return Point(x, y)
     }
+}
+
+internal fun mapSelectionToImage(
+    selection: Rectangle,
+    canvasSize: Dimension,
+    imageSize: Dimension
+): Rectangle? {
+    if (selection.width <= 0 || selection.height <= 0 ||
+        canvasSize.width <= 0 || canvasSize.height <= 0 ||
+        imageSize.width <= 0 || imageSize.height <= 0
+    ) return null
+
+    val scaleX = imageSize.width.toDouble() / canvasSize.width
+    val scaleY = imageSize.height.toDouble() / canvasSize.height
+    val left = (selection.x * scaleX).roundToInt().coerceIn(0, imageSize.width)
+    val top = (selection.y * scaleY).roundToInt().coerceIn(0, imageSize.height)
+    val right = ((selection.x + selection.width) * scaleX).roundToInt()
+        .coerceIn(left, imageSize.width)
+    val bottom = ((selection.y + selection.height) * scaleY).roundToInt()
+        .coerceIn(top, imageSize.height)
+    if (right <= left || bottom <= top) return null
+    return Rectangle(left, top, right - left, bottom - top)
 }

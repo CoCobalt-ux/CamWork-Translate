@@ -152,17 +152,19 @@ $macDownloadStep = Get-TextSection `
     -Text $releaseWorkflow `
     -StartMarker "      - name: Download macOS packages" `
     -EndMarker "      - name: Add Windows package checksums"
-$windowsOnlyReleaseStep = Get-TextSection `
+$unsignedMacReleaseStep = Get-TextSection `
     -Text $releaseWorkflow `
-    -StartMarker "      - name: Create GitHub Release without native macOS artifacts" `
+    -StartMarker "      - name: Create GitHub Release with unsigned internal macOS artifacts" `
     -EndMarker "      - name: Create GitHub Release with signed macOS artifacts"
 
-Assert-Condition -Condition ($productionMacJob.Contains("vars.MACOS_STABLE_ENABLED == 'true'")) `
-    -Message 'Production macOS job должен включаться только через MACOS_STABLE_ENABLED=true.'
+Assert-Condition -Condition (-not [regex]::IsMatch($productionMacJob, '(?m)^\s{4}if:\s.*MACOS_STABLE_ENABLED')) `
+    -Message 'macOS job должен запускаться для каждого полного релиза, независимо от подписи.'
 $credentialStep = $productionMacJob.IndexOf('      - name: Require production Apple credentials')
 $checkoutStep = $productionMacJob.IndexOf('      - name: Checkout')
 Assert-Condition -Condition ($credentialStep -ge 0 -and $checkoutStep -gt $credentialStep) `
-    -Message 'Проверка Apple-секретов должна быть первым шагом production macOS job.'
+    -Message 'Условная проверка Apple-секретов должна оставаться первым шагом macOS job.'
+Assert-Condition -Condition ($productionMacJob.Contains("if: `${{ vars.MACOS_STABLE_ENABLED == 'true' }}")) `
+    -Message 'Подпись macOS должна включаться только через MACOS_STABLE_ENABLED=true.'
 
 $requiredAppleSecrets = @(
     'MACOS_CERTIFICATE_P12_BASE64',
@@ -178,15 +180,21 @@ foreach ($secret in $requiredAppleSecrets) {
 }
 Assert-Condition -Condition (-not $productionMacJob.Contains('has-signing')) `
     -Message 'Production macOS job не должен иметь условный fallback при отсутствии подписи.'
-Assert-Condition -Condition (-not $productionMacJob.Contains('ad-hoc')) `
-    -Message 'Production macOS job не должен собирать ad-hoc артефакты.'
 Assert-Condition -Condition (
     $productionMacJob.Contains('--signing-identity') -and
     $productionMacJob.Contains('--signing-keychain') -and
     $productionMacJob.Contains('--notary-profile') -and
     $productionMacJob.Contains('--notarize')
 ) `
-    -Message 'Production macOS job обязан всегда подписывать и нотариализовать пакет.'
+    -Message 'Подписанный macOS-режим обязан передавать все параметры подписи и notarization.'
+Assert-Condition -Condition (
+    $productionMacJob.Contains('Build unsigned internal native app and DMG') -and
+    $productionMacJob.Contains("if: `${{ vars.MACOS_STABLE_ENABLED != 'true' }}") -and
+    $productionMacJob.Contains('Verify unsigned DMG installation guide') -and
+    $productionMacJob.Contains('READ-ME-FIRST.txt') -and
+    $productionMacJob.Contains("grep -F 'Open Anyway'")
+) `
+    -Message 'Unsigned macOS-режим должен собираться явно и проверять инструкцию Open Anyway внутри DMG.'
 Assert-Condition -Condition (
     $macScript.Contains('submit "$APP_ZIP"') -and
     $macScript.Contains('stapler staple "$APP_IMAGE"') -and
@@ -201,9 +209,15 @@ Assert-Condition -Condition (
     $productionMacJob.Contains('CAMWORK_PACKAGED_SMOKE_OK')
 ) `
     -Message 'Production macOS job должен запускать packaged smoke в изолированном HOME/appData.'
+Assert-Condition -Condition (
+    $productionMacJob.Contains('Self-test the local Vision OCR helper') -and
+    $productionMacJob.Contains('camwork-vision-ocr') -and
+    $productionMacJob.Contains('"$helper" selftest')
+) `
+    -Message 'Каждая релизная macOS-сборка должна проходить нативный Vision OCR self-test.'
 
-Assert-Condition -Condition ($releaseWorkflow.Contains("needs.macos-package.result == 'skipped'")) `
-    -Message 'Windows release должен продолжаться, когда production macOS job выключен.'
+Assert-Condition -Condition ($releaseWorkflow.Contains("needs.macos-package.result == 'success'")) `
+    -Message 'Полный релиз должен требовать успешные macOS-сборки.'
 Assert-Condition -Condition ($releaseWorkflow.Contains("needs.windows-package.result == 'success'")) `
     -Message 'Публикация релиза должна требовать успешную Windows-сборку.'
 Assert-Condition -Condition (
@@ -211,22 +225,25 @@ Assert-Condition -Condition (
     ([regex]::Matches($releaseWorkflow, '(?m)^\s{6}contents: write\s*$').Count -eq 1)
 ) `
     -Message 'Только финальный release job должен иметь contents: write.'
-Assert-Condition -Condition ($macDownloadStep.Contains("vars.MACOS_STABLE_ENABLED == 'true'")) `
-    -Message 'Загрузка macOS artifacts должна быть условной.'
-Assert-Condition -Condition (-not $windowsOnlyReleaseStep.Contains('build/release/CamWork-Translate-${{ steps.version.outputs.version }}-macos-')) `
-    -Message 'Windows-only Release не должен содержать пути нативных macOS-файлов.'
-Assert-Condition -Condition ($windowsOnlyReleaseStep.Contains("vars.MACOS_STABLE_ENABLED != 'true'")) `
-    -Message 'Windows-only Release должен срабатывать при выключенном production macOS.'
+Assert-Condition -Condition (-not $macDownloadStep.Contains('MACOS_STABLE_ENABLED')) `
+    -Message 'macOS artifacts должны скачиваться для любого полного релиза.'
+Assert-Condition -Condition ($unsignedMacReleaseStep.Contains('macos-arm64.dmg') -and $unsignedMacReleaseStep.Contains('macos-x64.dmg')) `
+    -Message 'Unsigned Release должен содержать DMG для Apple Silicon и Intel.'
+Assert-Condition -Condition ($unsignedMacReleaseStep.Contains('READ-ME-FIRST.txt')) `
+    -Message 'Unsigned Release должен публиковать инструкции установки macOS.'
+Assert-Condition -Condition ($unsignedMacReleaseStep.Contains("vars.MACOS_STABLE_ENABLED != 'true'")) `
+    -Message 'Unsigned Release должен срабатывать только без production-подписи macOS.'
 Assert-Condition -Condition (
     ([regex]::Matches($releaseWorkflow, 'fail_on_unmatched_files: true').Count -eq 2)
 ) `
     -Message 'Оба шага публикации должны падать при отсутствии хотя бы одного релизного файла.'
 Assert-Condition -Condition (
-    $releaseWorkflow.Contains('if os.environ.get("MACOS_STABLE_ENABLED") == "true":') -and
+    $releaseWorkflow.Contains('signed_macos = os.environ.get("MACOS_STABLE_ENABLED") == "true"') -and
     $releaseWorkflow.Contains('macos-arm64.dmg') -and
-    $releaseWorkflow.Contains('macos-x64.dmg')
+    $releaseWorkflow.Contains('macos-x64.dmg') -and
+    $releaseWorkflow.Contains('Внутренняя unsigned-сборка')
 ) `
-    -Message 'Ссылки macOS в release body должны добавляться только при включённом production macOS.'
+    -Message 'Release body должен всегда содержать обе macOS-ссылки и честно указывать режим подписи.'
 Assert-Condition -Condition (
     $releaseWorkflow.Contains('Normalize checksum names for GitHub Release') -and
     $releaseWorkflow.Contains('published_name = Path(relative_name.strip()).name') -and
@@ -249,10 +266,19 @@ Assert-Condition -Condition (
     -Message 'macOS QA workflow должен собирать arm64 и x64.'
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('QA-ONLY-${{ matrix.arch }}.txt') -and
+    $macQaWorkflow.Contains('READ-ME-FIRST.txt') -and
+    $macQaWorkflow.Contains('hdiutil attach "$dmg" -readonly -nobrowse') -and
+    $macQaWorkflow.Contains("grep -F 'Open Anyway'") -and
     $macQaWorkflow.Contains('camwork-translate-macos-QA-') -and
     $macQaWorkflow.Contains('retention-days: 14')
 ) `
     -Message 'macOS QA artifacts должны быть явно маркированы и храниться 14 дней.'
+Assert-Condition -Condition (
+    $macScript.Contains('QA_INSTALL_RU.txt') -and
+    $macScript.Contains('$DMG_STAGE_DIRECTORY/READ-ME-FIRST.txt') -and
+    $macScript.Contains('macos-$ARCHITECTURE-READ-ME-FIRST.txt')
+) `
+    -Message 'Инструкция Open Anyway должна попадать рядом с QA-DMG и внутрь него.'
 Assert-Condition -Condition (
     $macQaWorkflow.Contains('CAMWORK_PACKAGED_SMOKE_TEST=1') -and
     $macQaWorkflow.Contains('-Dcamwork.packagedSmokeTest=true') -and

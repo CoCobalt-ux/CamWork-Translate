@@ -1,9 +1,9 @@
 #ifndef AppVersion
-  #define AppVersion "1.2.7"
+  #define AppVersion "1.2.8"
 #endif
 
 #ifndef PackageVersion
-  #define PackageVersion "1.2.7"
+  #define PackageVersion "1.2.8"
 #endif
 
 #ifndef SourceDir

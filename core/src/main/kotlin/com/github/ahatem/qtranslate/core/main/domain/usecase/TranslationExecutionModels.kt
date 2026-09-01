@@ -6,7 +6,8 @@ import com.github.ahatem.qtranslate.api.plugin.ServiceError
 enum class TranslationLane {
     MAIN,
     SELECTION_EXPLICIT,
-    SELECTION_AUTO
+    SELECTION_AUTO,
+    LIVE_LENS
 }
 
 /** Стабильная причина завершения, которую MVI может показать без разбора текста исключения. */

@@ -1,11 +1,15 @@
 package com.github.ahatem.qtranslate.ui.swing.snippingtool
 
-import com.github.ahatem.qtranslate.api.ocr.ImageData
 import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
-import com.github.ahatem.qtranslate.ui.swing.shared.util.getVirtualScreenBounds
 import com.github.ahatem.qtranslate.ui.swing.shared.util.toImageData
-import java.awt.*
+import java.awt.BorderLayout
+import java.awt.Frame
+import java.awt.GraphicsConfiguration
+import java.awt.GraphicsDevice
+import java.awt.GraphicsEnvironment
+import java.awt.MouseInfo
+import java.awt.Robot
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
@@ -15,88 +19,144 @@ import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
-import javax.swing.*
+import javax.swing.JComponent
+import javax.swing.JFileChooser
+import javax.swing.JWindow
+import javax.swing.KeyStroke
 import javax.swing.filechooser.FileNameExtensionFilter
 
+/**
+ * Замораживает каждый монитор отдельным окном, чтобы Windows не смешивала DPI
+ * нескольких дисплеев внутри одного тяжеловесного Swing-окна.
+ */
 class SnippingToolDialog(
-    owner: Frame,
+    private val owner: Frame,
     private val mainStore: MainStore
-) : JDialog(owner, "", true) {
+) {
+    private data class ScreenSnapshot(
+        val configuration: GraphicsConfiguration,
+        val image: BufferedImage
+    )
 
-    private val panel: ScreenCapturePanel
-    private val controller: ScreenCaptureController
+    private data class CaptureSurface(
+        val window: JWindow,
+        val panel: ScreenCapturePanel,
+        val controller: ScreenCaptureController
+    )
+
+    private val surfaces = mutableListOf<CaptureSurface>()
+    private var closed = false
 
     init {
-        defaultCloseOperation = DISPOSE_ON_CLOSE
-        isUndecorated = true
-        bounds = getVirtualScreenBounds()
+        val snapshots = GraphicsEnvironment.getLocalGraphicsEnvironment()
+            .screenDevices
+            .mapNotNull(::captureScreen)
 
-        val screenshot = Robot().createScreenCapture(bounds)
-        val initialState = ScreenCaptureState(screenshot = screenshot)
+        snapshots.forEach { snapshot -> surfaces += createSurface(snapshot) }
+        surfaces.forEach { surface -> surface.window.isVisible = true }
+        focusPointerScreen()
+    }
+
+    private fun captureScreen(device: GraphicsDevice): ScreenSnapshot? = runCatching {
+        val configuration = device.defaultConfiguration
+        ScreenSnapshot(
+            configuration = configuration,
+            image = Robot(device).createScreenCapture(configuration.bounds)
+        )
+    }.getOrNull()
+
+    private fun createSurface(snapshot: ScreenSnapshot): CaptureSurface {
+        val bounds = snapshot.configuration.bounds
+        val window = JWindow(owner, snapshot.configuration).apply {
+            isAlwaysOnTop = true
+            focusableWindowState = true
+            this.bounds = bounds
+        }
+
+        lateinit var panel: ScreenCapturePanel
+        lateinit var controller: ScreenCaptureController
+        val initialState = ScreenCaptureState(screenshot = snapshot.image)
 
         controller = ScreenCaptureController(initialState) { newState ->
-            val buttonsPosition = if (newState.selection != null) {
-                panel.calculateButtonsPosition(newState.selection)
-            } else null
+            val buttonsPosition = newState.selection?.let(panel::calculateButtonsPosition)
             val stateWithButtons = newState.copy(buttonsPosition = buttonsPosition)
             panel.render(stateWithButtons)
             controller.updateState(stateWithButtons)
         }
 
         panel = ScreenCapturePanel(
-            onTranslate = { capturedImage ->
-                val imageData = capturedImage.toImageData("png")
-                dispatchOcrAndTranslate(imageData)
-            },
-            onCopyText = { capturedImage ->
-                val imageData = capturedImage.toImageData("png")
-                dispatchOcrAndCopyText(imageData)
-            },
+            onTranslate = ::dispatchOcrAndTranslate,
+            onCopyText = ::dispatchOcrAndCopyText,
             onCopyImage = { capturedImage ->
                 copyImageToClipboard(capturedImage)
-                dispose()
+                closeAll()
             },
             onSaveImage = { capturedImage ->
+                closeAll()
                 saveImageToFile(capturedImage)
-                dispose()
             },
-            onRecrop = {
-                controller.resetToIdle()
-            },
-            onCancel = {
-                dispose()
-            }
+            onRecrop = controller::resetToIdle,
+            onCancel = ::closeAll
         )
 
         panel.attachController(controller)
-        panel.setBounds(0, 0, bounds.width, bounds.height)
-        contentPane.add(panel, BorderLayout.CENTER)
-
-        setupListeners()
+        window.contentPane.add(panel, BorderLayout.CENTER)
+        installCloseActions(window, panel)
         panel.render(initialState)
-
-        isVisible = true
+        return CaptureSurface(window, panel, controller)
     }
 
-    private fun dispatchOcrAndTranslate(image: ImageData) {
-        mainStore.dispatch(MainIntent.OcrAndTranslateImage(image))
-        (owner as? JFrame)?.let {
-            it.isVisible = true
-            it.state = JFrame.NORMAL
-            it.toFront()
+    private fun installCloseActions(window: JWindow, panel: ScreenCapturePanel) {
+        window.rootPane.registerKeyboardAction(
+            { closeAll() },
+            KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
+            JComponent.WHEN_IN_FOCUSED_WINDOW
+        )
+
+        panel.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(event: MouseEvent) {
+                val state = panel.currentStatePublic ?: return
+                val selection = state.selection
+                if (state.mode == CaptureMode.SELECTED &&
+                    (selection == null || !selection.contains(event.point))
+                ) {
+                    closeAll()
+                }
+            }
+        })
+    }
+
+    private fun focusPointerScreen() {
+        val pointer = MouseInfo.getPointerInfo()?.location
+        val target = if (pointer == null) {
+            surfaces.firstOrNull()
+        } else {
+            surfaces.firstOrNull { surface -> surface.window.bounds.contains(pointer) }
+                ?: surfaces.firstOrNull()
         }
-        dispose()
+        target?.window?.requestFocus()
     }
 
-    private fun dispatchOcrAndCopyText(image: ImageData) {
-        mainStore.dispatch(MainIntent.OcrAndCopyText(image))
-        dispose()
+    private fun dispatchOcrAndTranslate(image: BufferedImage) {
+        mainStore.dispatch(MainIntent.OcrAndTranslateImage(image.toImageData("png")))
+        owner.isVisible = true
+        owner.state = Frame.NORMAL
+        owner.toFront()
+        closeAll()
+    }
+
+    private fun dispatchOcrAndCopyText(image: BufferedImage) {
+        mainStore.dispatch(MainIntent.OcrAndCopyText(image.toImageData("png")))
+        closeAll()
     }
 
     private fun copyImageToClipboard(image: BufferedImage) {
         val transferable = object : Transferable {
             override fun getTransferDataFlavors() = arrayOf(DataFlavor.imageFlavor)
-            override fun isDataFlavorSupported(flavor: DataFlavor) = flavor == DataFlavor.imageFlavor
+
+            override fun isDataFlavorSupported(flavor: DataFlavor): Boolean =
+                flavor == DataFlavor.imageFlavor
+
             @Throws(UnsupportedFlavorException::class)
             override fun getTransferData(flavor: DataFlavor): Any {
                 if (!isDataFlavorSupported(flavor)) throw UnsupportedFlavorException(flavor)
@@ -104,7 +164,7 @@ class SnippingToolDialog(
             }
         }
         runCatching {
-            Toolkit.getDefaultToolkit().systemClipboard.setContents(transferable, null)
+            java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(transferable, null)
         }
     }
 
@@ -115,30 +175,20 @@ class SnippingToolDialog(
             selectedFile = File("screenshot.png")
         }
         if (chooser.showSaveDialog(null) == JFileChooser.APPROVE_OPTION) {
-            var file = chooser.selectedFile
-            if (!file.name.endsWith(".png", ignoreCase = true)) {
-                file = File("${file.absolutePath}.png")
+            val selected = chooser.selectedFile
+            val file = if (selected.name.endsWith(".png", ignoreCase = true)) {
+                selected
+            } else {
+                File("${selected.absolutePath}.png")
             }
             runCatching { ImageIO.write(image, "PNG", file) }
         }
     }
 
-    private fun setupListeners() {
-        rootPane.registerKeyboardAction(
-            { dispose() },
-            KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
-            JComponent.WHEN_IN_FOCUSED_WINDOW
-        )
-
-        panel.addMouseListener(object : MouseAdapter() {
-            override fun mousePressed(e: MouseEvent) {
-                val state = panel.currentStatePublic ?: return
-                val sel = state.selection
-                if (state.mode == CaptureMode.SELECTED && (sel == null || !sel.contains(e.point))) {
-                    dispose()
-                }
-            }
-        })
+    private fun closeAll() {
+        if (closed) return
+        closed = true
+        surfaces.forEach { surface -> surface.window.dispose() }
+        surfaces.clear()
     }
-
 }

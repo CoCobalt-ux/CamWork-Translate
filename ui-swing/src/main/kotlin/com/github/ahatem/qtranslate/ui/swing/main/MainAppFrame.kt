@@ -46,6 +46,8 @@ import com.github.ahatem.qtranslate.ui.swing.document.DocumentTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialog
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialogState
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryEntryState
+import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensController
+import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensStrings
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.ErrorDetailPopup
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.NotificationPopover
 import com.github.ahatem.qtranslate.ui.swing.update.UpdateDialog
@@ -127,6 +129,46 @@ class MainAppFrame(
     private val dictionaryDialog by lazy { DictionaryDialog(this, iconManager) }
     private val loadingIndicatorDelegate = lazy { LoadingIndicator(this) }
     private val loadingIndicator by loadingIndicatorDelegate
+    private val liveLensControllerDelegate = lazy {
+        LiveLensController(
+            scope = appScope,
+            strings = LiveLensStrings(
+                title = localizer.getString("live_lens.title"),
+                setupHint = localizer.getString("live_lens.setup_hint"),
+                start = localizer.getString("live_lens.start"),
+                pause = localizer.getString("live_lens.pause"),
+                edit = localizer.getString("live_lens.edit"),
+                close = localizer.getString("common.close"),
+                watching = localizer.getString("live_lens.watching"),
+                reading = localizer.getString("live_lens.reading"),
+                translating = localizer.getString("live_lens.translating"),
+                noText = localizer.getString("live_lens.no_text"),
+                failed = localizer.getString("live_lens.failed")
+            ),
+            initialBounds = ::resolveLiveLensBounds,
+            dispatch = mainStore::dispatch,
+            logger = logger,
+            saveBounds = { bounds ->
+                settingsStore.dispatch(
+                    SettingsIntent.ToggleSetting {
+                        it.copy(
+                            liveLensLastKnownPosition = Position(bounds.x, bounds.y),
+                            liveLensLastKnownSize = Size(bounds.width, bounds.height)
+                        )
+                    }
+                )
+            }
+        )
+    }
+    private val liveLensController by liveLensControllerDelegate
+
+    private fun openLiveLens() {
+        logger.info("Запуск окна LIVE-перевода")
+        runCatching { liveLensController.open() }
+            .onFailure { error ->
+                logger.error("Не удалось открыть окно LIVE-перевода", error)
+            }
+    }
 
     private val documentTranslationDialog by lazy {
         DocumentTranslationDialog(
@@ -870,6 +912,10 @@ class MainAppFrame(
                     MainEvent.AutoSelectionTranslationFinished -> withContext(Dispatchers.Swing) {
                         loadingIndicator.dismiss()
                     }
+                    is MainEvent.LiveLensTranslationCompleted,
+                    is MainEvent.LiveLensTranslationFinished -> withContext(Dispatchers.Swing) {
+                        liveLensController.handle(event)
+                    }
                     is MainEvent.ShowUpdateDialog -> withContext(Dispatchers.Swing) {
                         showUpdateDialog(NotificationCode.UpdateAvailable(
                             newVersion = event.newVersion,
@@ -1360,6 +1406,26 @@ class MainAppFrame(
         }
     }
 
+    private fun resolveLiveLensBounds(): Rectangle {
+        val config = settingsStore.state.value.workingConfiguration
+        val saved = Rectangle(
+            config.liveLensLastKnownPosition.x,
+            config.liveLensLastKnownPosition.y,
+            config.liveLensLastKnownSize.width,
+            config.liveLensLastKnownSize.height
+        )
+        val screens = connectedScreenBounds()
+        if (isPositionReachable(saved, screens)) return saved
+        val screen = screens.firstOrNull()
+            ?: GraphicsEnvironment.getLocalGraphicsEnvironment().maximumWindowBounds
+        return Rectangle(
+            screen.x + (screen.width - saved.width) / 2,
+            screen.y + (screen.height - saved.height) / 2,
+            saved.width,
+            saved.height
+        )
+    }
+
     private fun createOptionsPopupMenu(): JPopupMenu {
         val currentConfig = settingsStore.state.value.workingConfiguration
         val layouts = LayoutManager.getAvailableLayouts().map {
@@ -1390,6 +1456,8 @@ class MainAppFrame(
             onShowDictionary = { showDictionaryDialog() },
             onShowImageSearch = { showImageSearchDialog() },
             onShowHistory = { showHistoryDialog() },
+            onRecognizeText = { openSnippingTool() },
+            onShowLiveLens = ::openLiveLens,
             onTranslateDocument = { documentTranslationDialog.open() },
             onShowSettings = { openSettingsDialog() },
             onShowHowToUse = { openUrl(AppConstants.HELP_URL) },
@@ -1446,6 +1514,8 @@ class MainAppFrame(
             isDictionaryPanelOpen = mainStore.state.value.isDictionaryPanelVisible,
             imageSearch = localizer.getString("system_tray_menu.image_search"),
             history = localizer.getString("system_tray_menu.history"),
+            textRecognition = localizer.getString("system_tray_menu.recognize_text"),
+            liveLens = localizer.getString("main_window_main_menu.live_lens"),
             translateDocument = localizer.getString("main_window_main_menu.translate_document"),
             settings = localizer.getString("main_window_main_menu.settings"),
             help = localizer.getString("main_window_main_menu.help_submenu"),
@@ -1576,6 +1646,7 @@ class MainAppFrame(
             dictionary = localizer.getString("system_tray_menu.dictionary"),
             imageSearch = localizer.getString("system_tray_menu.image_search"),
             textRecognition = localizer.getString("system_tray_menu.recognize_text"),
+            liveLens = localizer.getString("system_tray_menu.live_lens"),
             history = localizer.getString("system_tray_menu.history"),
             settings = localizer.getString("system_tray_menu.settings"),
             toggleHotkeys = localizer.getString("system_tray_menu.enable_hotkeys"),
@@ -1587,6 +1658,7 @@ class MainAppFrame(
             onShowDictionary = { showDictionaryDialog() },
             onShowImageSearch = { showImageSearchDialog() },
             onRecognizeText = { openSnippingTool() },
+            onShowLiveLens = ::openLiveLens,
             onShowHistory = { showHistoryDialog() },
             onShowSettings = {
                 runOnUi {
@@ -1633,6 +1705,7 @@ class MainAppFrame(
 
             override fun windowClosed(e: WindowEvent?) {
                 cancelPendingTraySingleClick()
+                if (liveLensControllerDelegate.isInitialized()) liveLensController.close()
                 appScope.cancel()
                 trayIcon?.let { SystemTray.getSystemTray().remove(it) }
                 trayIcon = null
