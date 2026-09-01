@@ -48,6 +48,8 @@ import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialogState
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryEntryState
 import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensController
 import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensStrings
+import com.github.ahatem.qtranslate.ui.swing.gamesubtitles.GameSubtitleController
+import com.github.ahatem.qtranslate.ui.swing.gamesubtitles.GameSubtitleStrings
 import com.github.ahatem.qtranslate.ui.swing.imagetranslation.ImageTranslationController
 import com.github.ahatem.qtranslate.ui.swing.imagetranslation.ImageTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.ErrorDetailPopup
@@ -166,6 +168,27 @@ class MainAppFrame(
         )
     }
     private val liveLensController by liveLensControllerDelegate
+    private val gameSubtitleControllerDelegate = lazy {
+        GameSubtitleController(
+            scope = appScope,
+            strings = GameSubtitleStrings(
+                title = localizer.getString("game_subtitles.title"),
+                active = localizer.getString("game_subtitles.active"),
+                scanning = localizer.getString("game_subtitles.scanning"),
+                translating = localizer.getString("game_subtitles.translating"),
+                paused = localizer.getString("game_subtitles.paused"),
+                failed = localizer.getString("game_subtitles.failed"),
+                pause = localizer.getString("game_subtitles.pause"),
+                resume = localizer.getString("game_subtitles.resume"),
+                changeArea = localizer.getString("game_subtitles.change_area"),
+                close = localizer.getString("common.close")
+            ),
+            dispatch = mainStore::dispatch,
+            logger = logger,
+            onChangeArea = ::openGameSubtitleSelection
+        )
+    }
+    private val gameSubtitleController by gameSubtitleControllerDelegate
     private val imageTranslationControllerDelegate = lazy {
         ImageTranslationController(
             owner = this,
@@ -200,6 +223,7 @@ class MainAppFrame(
     private val imageTranslationController by imageTranslationControllerDelegate
 
     private fun openLiveLens() {
+        if (gameSubtitleControllerDelegate.isInitialized()) gameSubtitleController.close()
         logger.info("Запуск окна LIVE-перевода")
         runCatching { liveLensController.open() }
             .onFailure { error ->
@@ -953,7 +977,8 @@ class MainAppFrame(
                     is MainEvent.LiveLensTranslationFinished,
                     is MainEvent.LiveLensFrameRecognized,
                     is MainEvent.LiveLensFrameRecognitionFinished -> withContext(Dispatchers.Swing) {
-                        liveLensController.handle(event)
+                        if (liveLensControllerDelegate.isInitialized()) liveLensController.handle(event)
+                        if (gameSubtitleControllerDelegate.isInitialized()) gameSubtitleController.handle(event)
                     }
                     is MainEvent.ImageInPlaceTranslationProgress,
                     is MainEvent.ImageInPlaceTranslationCompleted,
@@ -1435,7 +1460,11 @@ class MainAppFrame(
         mainContentView.requestFocusOnInput()
     }
 
-    private fun openSnippingTool() {
+    private fun openSnippingTool() = openCaptureTool(gameSubtitlesPrimary = false)
+
+    private fun openGameSubtitleSelection() = openCaptureTool(gameSubtitlesPrimary = true)
+
+    private fun openCaptureTool(gameSubtitlesPrimary: Boolean) {
         runOnUi {
             isVisible = false
             state = ICONIFIED
@@ -1449,11 +1478,24 @@ class MainAppFrame(
                     owner = this@MainAppFrame,
                     mainStore = mainStore,
                     onTranslateInImage = imageTranslationController::start,
+                    onStartGameSubtitles = ::startGameSubtitles,
                     translateInImageLabel = localizer.getString("image_translation.translate_in_image"),
+                    gameSubtitlesLabel = localizer.getString("game_subtitles.capture_action"),
+                    gameSubtitlesPrimary = gameSubtitlesPrimary,
                     onCancelled = ::showAndFocus
                 )
             }
         }
+    }
+
+    private fun startGameSubtitles(bounds: Rectangle) {
+        if (liveLensControllerDelegate.isInitialized()) liveLensController.close()
+        logger.info("Запуск LIVE-субтитров для игр")
+        runCatching { gameSubtitleController.open(Rectangle(bounds)) }
+            .onFailure { error ->
+                logger.error("Не удалось запустить LIVE-субтитры", error)
+                showAndFocus()
+            }
     }
 
     private fun resolveLiveLensBounds(): Rectangle {
@@ -1507,6 +1549,7 @@ class MainAppFrame(
             onShowImageSearch = { showImageSearchDialog() },
             onShowHistory = { showHistoryDialog() },
             onRecognizeText = { openSnippingTool() },
+            onShowGameSubtitles = ::openGameSubtitleSelection,
             onShowLiveLens = ::openLiveLens,
             onTranslateDocument = { documentTranslationDialog.open() },
             onShowSettings = { openSettingsDialog() },
@@ -1565,6 +1608,7 @@ class MainAppFrame(
             imageSearch = localizer.getString("system_tray_menu.image_search"),
             history = localizer.getString("system_tray_menu.history"),
             textRecognition = localizer.getString("system_tray_menu.recognize_text"),
+            gameSubtitles = localizer.getString("main_window_main_menu.game_subtitles"),
             liveLens = localizer.getString("main_window_main_menu.live_lens"),
             translateDocument = localizer.getString("main_window_main_menu.translate_document"),
             settings = localizer.getString("main_window_main_menu.settings"),
@@ -1696,6 +1740,7 @@ class MainAppFrame(
             dictionary = localizer.getString("system_tray_menu.dictionary"),
             imageSearch = localizer.getString("system_tray_menu.image_search"),
             textRecognition = localizer.getString("system_tray_menu.recognize_text"),
+            gameSubtitles = localizer.getString("system_tray_menu.game_subtitles"),
             liveLens = localizer.getString("system_tray_menu.live_lens"),
             history = localizer.getString("system_tray_menu.history"),
             settings = localizer.getString("system_tray_menu.settings"),
@@ -1708,6 +1753,7 @@ class MainAppFrame(
             onShowDictionary = { showDictionaryDialog() },
             onShowImageSearch = { showImageSearchDialog() },
             onRecognizeText = { openSnippingTool() },
+            onShowGameSubtitles = ::openGameSubtitleSelection,
             onShowLiveLens = ::openLiveLens,
             onShowHistory = { showHistoryDialog() },
             onShowSettings = {
@@ -1756,6 +1802,7 @@ class MainAppFrame(
             override fun windowClosed(e: WindowEvent?) {
                 cancelPendingTraySingleClick()
                 if (liveLensControllerDelegate.isInitialized()) liveLensController.close()
+                if (gameSubtitleControllerDelegate.isInitialized()) gameSubtitleController.close()
                 if (imageTranslationControllerDelegate.isInitialized()) imageTranslationController.close()
                 appScope.cancel()
                 trayIcon?.let { SystemTray.getSystemTray().remove(it) }

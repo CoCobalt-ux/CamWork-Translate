@@ -73,6 +73,7 @@ class TranslateTextUseCase(
         includeExtraOutput: Boolean = true,
         applyTranslationRules: Boolean = true,
         sameLanguageFallbackTarget: LanguageCode? = null,
+        recordHistory: Boolean = true,
         lane: TranslationLane = TranslationLane.MAIN,
         requestContext: TranslationRequestContext? = null
     ): TranslationRunResult {
@@ -233,6 +234,7 @@ class TranslateTextUseCase(
                                     updateState      = updateState,
                                     onStatusUpdate   = onStatusUpdate,
                                     includeExtraOutput = includeExtraOutput,
+                                    recordHistory = recordHistory,
                                     context = context.copy(attempt = context.attempt + 1)
                                 )
                                 outcome.complete(retryOutcome)
@@ -245,7 +247,8 @@ class TranslateTextUseCase(
 
                         val (newHistory, newHistoryIndex) = buildHistory(
                             currentState, textToTranslate, response.translatedText, execution.translatorId,
-                            detectedSourceLanguage = detectedLanguage?.tag
+                            detectedSourceLanguage = detectedLanguage?.tag,
+                            recordHistory = recordHistory
                         )
 
                         // Publish the primary translation before requesting extra output —
@@ -265,7 +268,8 @@ class TranslateTextUseCase(
                             ),
                             updateState       = updateState,
                             onStatusUpdate    = onStatusUpdate,
-                            includeExtraOutput = includeExtraOutput
+                            includeExtraOutput = includeExtraOutput,
+                            recordHistory = recordHistory
                         )
                         outcome.complete(
                             TranslationRunResult.Success(
@@ -337,6 +341,7 @@ class TranslateTextUseCase(
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
         includeExtraOutput: Boolean,
+        recordHistory: Boolean,
         context: TranslationRequestContext
     ): TranslationRunResult {
         logger.info(
@@ -384,7 +389,8 @@ class TranslateTextUseCase(
                 val (newHistory, newHistoryIndex) = buildHistory(
                     currentState, textToTranslate, retryResponse.translatedText,
                     retryExecution.translatorId,
-                    detectedSourceLanguage = detectedLanguage.tag
+                    detectedSourceLanguage = detectedLanguage.tag,
+                    recordHistory = recordHistory
                 )
 
                 publishPrimaryThenExtraOutput(
@@ -402,7 +408,8 @@ class TranslateTextUseCase(
                     updateState       = updateState,
                     onStatusUpdate    = onStatusUpdate,
                     ruleTarget        = ruleTarget,
-                    includeExtraOutput = includeExtraOutput
+                    includeExtraOutput = includeExtraOutput,
+                    recordHistory = recordHistory
                 )
                 TranslationRunResult.Success(
                     translatedText = retryResponse.translatedText,
@@ -450,9 +457,10 @@ class TranslateTextUseCase(
         inputText: String,
         translatedText: String,
         translatorId: String,
-        detectedSourceLanguage: String? = null
+        detectedSourceLanguage: String? = null,
+        recordHistory: Boolean = true
     ): Pair<List<HistorySnapshot>, Int> {
-        if (!settingsState.value.isHistoryEnabled) {
+        if (!recordHistory || !settingsState.value.isHistoryEnabled) {
             return currentState.history to currentState.historyIndex
         }
 
@@ -595,7 +603,8 @@ class TranslateTextUseCase(
         updateState: (MainState.() -> MainState) -> Unit,
         onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
         ruleTarget: LanguageCode? = null,
-        includeExtraOutput: Boolean = true
+        includeExtraOutput: Boolean = true,
+        recordHistory: Boolean = true
     ) {
         val extraOutputType = settingsState.value.extraOutputType
         val expectsExtraOutput = includeExtraOutput && extraOutputType != ExtraOutputType.None
@@ -614,7 +623,7 @@ class TranslateTextUseCase(
         }
 
         if (!expectsExtraOutput) {
-            if (settingsState.value.isHistoryEnabled) historyRepository.saveHistory(history)
+            if (recordHistory && settingsState.value.isHistoryEnabled) historyRepository.saveHistory(history)
             return
         }
 
@@ -645,7 +654,7 @@ class TranslateTextUseCase(
             )
         }
 
-        if (settingsState.value.isHistoryEnabled) historyRepository.saveHistory(finalHistory)
+        if (recordHistory && settingsState.value.isHistoryEnabled) historyRepository.saveHistory(finalHistory)
     }
 
     private suspend fun handleExtraOutput(

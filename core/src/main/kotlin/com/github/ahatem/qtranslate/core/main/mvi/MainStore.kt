@@ -931,6 +931,7 @@ class MainStore(
             textOverride = sourceText,
             includeExtraOutput = false,
             applyTranslationRules = false,
+            recordHistory = false,
             lane = TranslationLane.LIVE_LENS,
             requestContext = TranslationRequestContext(
                 requestId = intent.requestId,

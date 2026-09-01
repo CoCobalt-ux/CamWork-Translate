@@ -9,6 +9,7 @@ import java.awt.GraphicsConfiguration
 import java.awt.GraphicsDevice
 import java.awt.GraphicsEnvironment
 import java.awt.MouseInfo
+import java.awt.Rectangle
 import java.awt.Robot
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
@@ -33,7 +34,10 @@ class SnippingToolDialog(
     private val owner: Frame,
     private val mainStore: MainStore,
     private val onTranslateInImage: (BufferedImage) -> Unit,
+    private val onStartGameSubtitles: (Rectangle) -> Unit,
     private val translateInImageLabel: String,
+    private val gameSubtitlesLabel: String,
+    private val gameSubtitlesPrimary: Boolean = false,
     private val onCancelled: () -> Unit
 ) {
     private data class ScreenSnapshot(
@@ -92,6 +96,16 @@ class SnippingToolDialog(
                 closeAll()
                 onTranslateInImage(capturedImage)
             },
+            onStartGameSubtitles = { selection ->
+                val screenSelection = Rectangle(
+                    bounds.x + selection.x,
+                    bounds.y + selection.y,
+                    selection.width,
+                    selection.height
+                )
+                closeAll()
+                onStartGameSubtitles(screenSelection)
+            },
             onTranslate = ::dispatchOcrAndTranslate,
             onCopyText = ::dispatchOcrAndCopyText,
             onCopyImage = { capturedImage ->
@@ -107,8 +121,10 @@ class SnippingToolDialog(
             onRecrop = controller::resetToIdle,
             onCancel = ::cancelAll,
             buttonLabels = ScreenCapturePanel.ButtonLabels(
-                translateInImage = translateInImageLabel
-            )
+                translateInImage = translateInImageLabel,
+                gameSubtitles = gameSubtitlesLabel
+            ),
+            gameSubtitlesPrimary = gameSubtitlesPrimary
         )
 
         panel.attachController(controller)
