@@ -20,6 +20,7 @@ import java.awt.Window
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.geom.RoundRectangle2D
+import java.util.Locale
 import javax.swing.BorderFactory
 import javax.swing.JButton
 import javax.swing.JDialog
@@ -28,7 +29,6 @@ import javax.swing.JPanel
 import javax.swing.JWindow
 import javax.swing.Timer
 import javax.swing.border.EmptyBorder
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -44,7 +44,10 @@ internal data class LiveLensStrings(
     val reading: String,
     val translating: String,
     val noText: String,
-    val failed: String
+    val failed: String,
+    val nextScan: String,
+    val newMessage: String,
+    val secondsShort: String
 )
 
 internal enum class LiveLensMode { SETUP, WATCHING, PAUSED, READING, TRANSLATING, ERROR }
@@ -55,9 +58,7 @@ private data class LiveLensCard(
     val sourceText: String,
     val translatedText: String,
     val provider: String,
-    var anchor: Point,
-    val createdAt: Long,
-    var lastSeenAt: Long
+    val createdAt: Long
 )
 
 /** Прозрачная область наблюдения с позиционным переводом поверх исходного текста. */
@@ -124,11 +125,8 @@ internal class LiveLensWindow(
         positionControls()
     }
 
-    fun syncSources(blocks: List<LiveLensTextBlock>) {
-        // Один запрос физических координат на весь снимок: это вызов Windows, а не поле.
-        val nativeBounds = currentScanBounds()
-        panel.syncSources(blocks.map { block -> toLocalBlock(block, nativeBounds) })
-    }
+    fun snapshotCompleted(nextScanDelayMillis: Long) =
+        panel.snapshotCompleted(nextScanDelayMillis)
 
     fun showTranslation(
         requestId: Long,
@@ -138,7 +136,7 @@ internal class LiveLensWindow(
     ) {
         panel.addCard(
             id = requestId,
-            source = toLocalBlock(source),
+            source = source,
             translatedText = translatedText,
             provider = provider
         )
@@ -154,17 +152,6 @@ internal class LiveLensWindow(
         controls.dispose()
         overlay.dispose()
     }
-
-    private fun toLocalBlock(
-        block: LiveLensTextBlock,
-        nativeBounds: Rectangle = currentScanBounds()
-    ): LiveLensTextBlock = block.copy(
-        anchor = mapNativePointToLocal(
-            point = block.anchor,
-            nativeBounds = nativeBounds,
-            localSize = overlay.size
-        )
-    )
 
     private fun buildControls() {
         controls.apply {
@@ -308,14 +295,13 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
     private var message = strings.setupHint
     private val cards = mutableListOf<LiveLensCard>()
     private var animationPhase = 0f
-    private val animation = Timer(36) {
-        animationPhase = (animationPhase + 0.025f) % 1f
+    private var nextScanAt = 0L
+    private var scanIntervalMillis = DEFAULT_SCAN_INTERVAL_MS
+    private var lastCardAddedAt = 0L
+    private val animation = Timer(80) {
+        animationPhase = (animationPhase + 0.04f) % 1f
         repaint()
     }
-    private val expiryTimer = Timer(600) {
-        pruneCards(System.currentTimeMillis())
-        repaint()
-    }.also(Timer::start)
 
     init {
         isOpaque = false
@@ -330,13 +316,21 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
         } else {
             Cursor.getDefaultCursor()
         }
-        if (value == LiveLensMode.READING || value == LiveLensMode.TRANSLATING) animation.start()
-        else animation.stop()
+        if (value.isRunning()) animation.start() else animation.stop()
         repaint()
     }
 
     fun clearCards() {
         cards.clear()
+        nextScanAt = 0L
+        lastCardAddedAt = 0L
+        repaint()
+    }
+
+    fun snapshotCompleted(nextScanDelayMillis: Long) {
+        scanIntervalMillis = nextScanDelayMillis.coerceAtLeast(1L)
+        nextScanAt = System.currentTimeMillis() + scanIntervalMillis
+        if (mode.isRunning() && !animation.isRunning) animation.start()
         repaint()
     }
 
@@ -347,52 +341,25 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
         provider: String
     ) {
         val now = System.currentTimeMillis()
-        cards.removeAll { card ->
-            card.sourceText.equals(source.text, ignoreCase = true) &&
-                card.speaker.equals(source.speaker, ignoreCase = true) &&
-                abs(card.anchor.y - source.anchor.y) <= SAME_CARD_Y_TOLERANCE
-        }
         cards += LiveLensCard(
             id = id,
             speaker = source.speaker,
             sourceText = source.text,
             translatedText = translatedText,
             provider = provider,
-            anchor = Point(source.anchor),
-            createdAt = now,
-            lastSeenAt = now
+            createdAt = now
         )
-        while (cards.size > MAX_VISIBLE_CARDS) cards.removeAt(0)
-        repaint()
-    }
-
-    fun syncSources(blocks: List<LiveLensTextBlock>) {
-        val now = System.currentTimeMillis()
-        cards.forEach { card ->
-            blocks.asSequence()
-                .filter { block ->
-                    block.text.equals(card.sourceText, ignoreCase = true) &&
-                        block.speaker.equals(card.speaker, ignoreCase = true)
-                }
-                .minByOrNull { block -> abs(block.anchor.y - card.anchor.y) }
-                ?.let { matching ->
-                    // Чат прокручивается, поэтому перевод обязан ехать вместе с исходной строкой,
-                    // иначе он перестаёт быть подписью к конкретному сообщению.
-                    card.anchor = Point(matching.anchor)
-                    card.lastSeenAt = now
-                }
-        }
-        pruneCards(now)
+        while (cards.size > MAX_STORED_CARDS) cards.removeAt(0)
+        lastCardAddedAt = now
         repaint()
     }
 
     fun stopAnimation() {
         animation.stop()
-        expiryTimer.stop()
     }
 
     fun resumeTimers() {
-        if (!expiryTimer.isRunning) expiryTimer.start()
+        if (mode.isRunning() && !animation.isRunning) animation.start()
     }
 
     override fun paintComponent(graphics: Graphics) {
@@ -410,6 +377,22 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
             g.stroke = BasicStroke(if (mode == LiveLensMode.SETUP) 2f else 1.25f)
             g.color = border
             g.drawRoundRect(1, 1, width - 3, height - 3, 18, 18)
+
+            if (mode.isRunning() && nextScanAt > 0L) {
+                val remaining = (nextScanAt - System.currentTimeMillis()).coerceAtLeast(0L)
+                val progress = 1.0 - remaining.toDouble() / scanIntervalMillis
+                g.color = Color(66, 218, 188, 52)
+                g.fillRoundRect(2, 2, width - 4, 4, 8, 8)
+                g.color = Color(73, 224, 194, 190)
+                g.fillRoundRect(
+                    2,
+                    2,
+                    ((width - 4) * progress.coerceIn(0.0, 1.0)).roundToInt(),
+                    4,
+                    8,
+                    8
+                )
+            }
 
             if (mode == LiveLensMode.READING || mode == LiveLensMode.TRANSLATING) {
                 val bandX = ((width + 180) * animationPhase - 180).toInt()
@@ -437,61 +420,77 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
         g.fillRoundRect(12, 11, statusWidth, 26, 13, 13)
         g.color = if (mode == LiveLensMode.ERROR) Color(244, 125, 125) else Color(102, 230, 203)
         g.drawString(status, 23, 29)
+
+        if (mode.isRunning()) {
+            val now = System.currentTimeMillis()
+            val rightStatus = if (now - lastCardAddedAt <= NEW_INDICATOR_MS) {
+                strings.newMessage
+            } else {
+                val remaining = (nextScanAt - now).coerceAtLeast(0L) / 1_000.0
+                "${strings.nextScan} ${String.format(Locale.ROOT, "%.1f", remaining)} ${strings.secondsShort}"
+            }
+            g.font = font.deriveFont(Font.PLAIN, 10.5f)
+            val rightMetrics = g.fontMetrics
+            val rightWidth = rightMetrics.stringWidth(rightStatus) + 20
+            val rightX = width - rightWidth - 12
+            if (rightX > 24 + statusWidth) {
+                g.color = Color(12, 24, 28, 190)
+                g.fillRoundRect(rightX, 11, rightWidth, 26, 13, 13)
+                g.color = Color(157, 208, 199)
+                g.drawString(rightStatus, rightX + 10, 29)
+            }
+        }
     }
 
     private fun paintCards(g: Graphics2D) {
-        var occupiedBottom = STATUS_BOTTOM
-        // Порядок и высота карточек повторяют исходный чат, иначе структура диалога теряется.
-        for (card in cards.sortedBy { it.anchor.y }) {
+        val cardWidth = (width - 24).coerceAtLeast(230)
+        val prepared = cards.map { card ->
             g.font = font.deriveFont(Font.PLAIN, 14f)
-            val cardWidth = (width - 24).coerceAtLeast(230)
             val nicknameColumnWidth = if (card.speaker.isNullOrBlank()) 0 else {
                 (cardWidth / 4).coerceIn(86, 132)
             }
             val messageWidth = cardWidth - nicknameColumnWidth - 26
             val lines = wrap(card.translatedText, g.fontMetrics, messageWidth).take(4)
             val cardHeight = max(50, 18 + lines.size * 19)
-            val y = calculateLiveLensCardY(
-                anchorY = card.anchor.y,
-                occupiedBottom = occupiedBottom,
-                panelHeight = height,
-                cardHeight = cardHeight
-            )
-            if (y < occupiedBottom) break
+            PreparedCard(card, lines, nicknameColumnWidth, cardHeight)
+        }
+        val placements = calculateLiveLensFeedPlacements(
+            cardHeights = prepared.map(PreparedCard::height),
+            panelHeight = height
+        )
+
+        placements.forEach { placement ->
+            val current = prepared[placement.cardIndex]
+            val card = current.card
+            val y = placement.y
             val x = 12
 
-            g.color = Color(9, 20, 24, 238)
+            g.color = Color(9, 20, 24, 214)
             g.fill(RoundRectangle2D.Float(
-                x.toFloat(), y.toFloat(), cardWidth.toFloat(), cardHeight.toFloat(), 14f, 14f
+                x.toFloat(), y.toFloat(), cardWidth.toFloat(), current.height.toFloat(), 12f, 12f
             ))
-            g.stroke = BasicStroke(1.5f)
-            g.color = Color(72, 214, 187, 225)
-            g.drawRoundRect(x, y, cardWidth, cardHeight, 14, 14)
+            g.stroke = BasicStroke(1f)
+            g.color = Color(72, 214, 187, 105)
+            g.drawRoundRect(x, y, cardWidth, current.height, 12, 12)
+            g.color = Color(72, 214, 187, 220)
+            g.fillRoundRect(x, y + 7, 3, current.height - 14, 3, 3)
 
             var messageX = x + 13
             card.speaker?.takeIf(String::isNotBlank)?.let { speaker ->
                 g.font = font.deriveFont(Font.BOLD, 12f)
                 g.color = Color(111, 224, 203)
                 g.drawString(abbreviate(speaker, 18), x + 13, y + 29)
-                val dividerX = x + nicknameColumnWidth
+                val dividerX = x + current.nicknameColumnWidth
                 g.color = Color(72, 214, 187, 80)
-                g.drawLine(dividerX, y + 10, dividerX, y + cardHeight - 10)
+                g.drawLine(dividerX, y + 10, dividerX, y + current.height - 10)
                 messageX = dividerX + 13
             }
 
             g.font = font.deriveFont(Font.PLAIN, 14f)
             g.color = Color.WHITE
-            lines.forEachIndexed { index, line ->
+            current.lines.forEachIndexed { index, line ->
                 g.drawString(line, messageX, y + 29 + index * 19)
             }
-            occupiedBottom = max(occupiedBottom, y + cardHeight)
-        }
-    }
-
-    private fun pruneCards(now: Long) {
-        if (mode == LiveLensMode.PAUSED || mode == LiveLensMode.SETUP) return
-        cards.removeAll { card ->
-            shouldRemoveLiveLensCard(now, card.lastSeenAt)
         }
     }
 
@@ -524,11 +523,24 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
     }
 
     private companion object {
-        const val STATUS_BOTTOM = 44
-        const val MAX_VISIBLE_CARDS = 10
-        const val SAME_CARD_Y_TOLERANCE = 34
+        const val MAX_STORED_CARDS = 200
+        const val DEFAULT_SCAN_INTERVAL_MS = 5_000L
+        const val NEW_INDICATOR_MS = 6_000L
     }
+
+    private data class PreparedCard(
+        val card: LiveLensCard,
+        val lines: List<String>,
+        val nicknameColumnWidth: Int,
+        val height: Int
+    )
 }
+
+private fun LiveLensMode.isRunning(): Boolean =
+    this == LiveLensMode.WATCHING ||
+        this == LiveLensMode.READING ||
+        this == LiveLensMode.TRANSLATING ||
+        this == LiveLensMode.ERROR
 
 internal fun mapNativePointToLocal(
     point: Point,
@@ -544,19 +556,28 @@ internal fun mapNativePointToLocal(
     )
 }
 
-internal fun calculateLiveLensCardY(
-    anchorY: Int,
-    occupiedBottom: Int,
+internal data class LiveLensCardPlacement(
+    val cardIndex: Int,
+    val y: Int
+)
+
+internal fun calculateLiveLensFeedPlacements(
+    cardHeights: List<Int>,
     panelHeight: Int,
-    cardHeight: Int
-): Int {
-    val desired = max(anchorY - 18, LIVE_LENS_STATUS_BOTTOM)
-    val afterPrevious = max(desired, occupiedBottom + 5)
-    return min(afterPrevious, max(LIVE_LENS_STATUS_BOTTOM, panelHeight - cardHeight - 12))
+    statusBottom: Int = LIVE_LENS_STATUS_BOTTOM,
+    bottomPadding: Int = 12,
+    gap: Int = 5
+): List<LiveLensCardPlacement> {
+    var cursorBottom = panelHeight - bottomPadding
+    val result = mutableListOf<LiveLensCardPlacement>()
+    for (index in cardHeights.indices.reversed()) {
+        val cardHeight = cardHeights[index].coerceAtLeast(1)
+        val y = cursorBottom - cardHeight
+        if (y < statusBottom) break
+        result += LiveLensCardPlacement(index, y)
+        cursorBottom = y - gap
+    }
+    return result.asReversed()
 }
 
-internal fun shouldRemoveLiveLensCard(now: Long, lastSeenAt: Long): Boolean =
-    now - lastSeenAt > LIVE_LENS_SOURCE_LOST_GRACE_MS
-
 private const val LIVE_LENS_STATUS_BOTTOM = 44
-private const val LIVE_LENS_SOURCE_LOST_GRACE_MS = 10_000L

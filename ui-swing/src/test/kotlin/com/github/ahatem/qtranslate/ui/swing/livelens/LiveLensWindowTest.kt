@@ -49,7 +49,10 @@ class LiveLensWindowTest {
                     reading = "Чтение",
                     translating = "Перевод",
                     noText = "Текст не найден",
-                    failed = "Ошибка"
+                    failed = "Ошибка",
+                    nextScan = "Следующий снимок через",
+                    newMessage = "Новое сообщение",
+                    secondsShort = "с"
                 ),
                 onStart = { _, _ -> },
                 onPause = {},

@@ -15,77 +15,80 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.SwingUtilities
 
-/** Подтверждает строку двумя наблюдениями и не переотправляет её при кратком мерцании UIA. */
+/**
+ * Сравнивает законченные снимки чата и возвращает только хвост, которого не было в прошлом
+ * снимке. Координаты намеренно не участвуют в идентичности: прокрутка двигает весь чат, но не
+ * превращает старое сообщение в новое.
+ */
 internal class LiveLensChangeDetector {
-    private data class Track(
-        var block: LiveLensTextBlock,
-        var observations: Int,
-        var lastSeenAt: Long,
-        var emitted: Boolean
-    )
-
-    private val tracks = mutableListOf<Track>()
+    private var previousSnapshot = emptyList<LiveLensTextBlock>()
     private var scanCount = 0
 
     val isCalibrated: Boolean
-        get() = scanCount >= REQUIRED_OBSERVATIONS
+        get() = scanCount > 0
 
-    fun accept(
-        current: List<LiveLensTextBlock>,
-        nowMillis: Long = System.currentTimeMillis()
-    ): List<LiveLensTextBlock> {
+    fun accept(current: List<LiveLensTextBlock>): List<LiveLensTextBlock> {
         scanCount++
-        val claimed = mutableSetOf<Track>()
-        val added = mutableListOf<LiveLensTextBlock>()
+        val snapshot = current.sortedBy { block -> block.anchor.y }
+        if (snapshot.isEmpty()) {
+            // Пустой OCR-кадр бывает во время анимации или перерисовки сайта. Он не должен
+            // стирать базовую линию и заставлять следующий нормальный кадр выглядеть новым.
+            return emptyList()
+        }
 
-        current.sortedBy { it.anchor.y }.forEach { block ->
-            val track = tracks.asSequence()
-                .filterNot(claimed::contains)
-                .filter { candidate -> identity(candidate.block) == identity(block) }
-                .filter { candidate ->
-                    kotlin.math.abs(candidate.block.anchor.y - block.anchor.y) <= POSITION_TOLERANCE_PX
-                }
-                .minByOrNull { candidate -> kotlin.math.abs(candidate.block.anchor.y - block.anchor.y) }
-                ?: Track(
-                    block = block,
-                    observations = 0,
-                    lastSeenAt = nowMillis,
-                    emitted = false
-                ).also(tracks::add)
+        if (previousSnapshot.isEmpty()) {
+            previousSnapshot = snapshot
+            return snapshot
+        }
 
-            claimed += track
-            track.block = block
-            track.observations++
-            track.lastSeenAt = nowMillis
-            if (!track.emitted && track.observations >= REQUIRED_OBSERVATIONS) {
-                track.emitted = true
-                added += block
+        var previousCursor = 0
+        var lastMatchedCurrentIndex = -1
+        snapshot.forEachIndexed { currentIndex, currentBlock ->
+            val matchedIndex = (previousCursor until previousSnapshot.size).firstOrNull { previousIndex ->
+                isSameMessage(previousSnapshot[previousIndex], currentBlock)
+            }
+            if (matchedIndex != null) {
+                previousCursor = matchedIndex + 1
+                lastMatchedCurrentIndex = currentIndex
             }
         }
 
-        tracks.removeAll { track ->
-            track !in claimed && nowMillis - track.lastSeenAt > TRACK_RETENTION_MS
+        val added = if (lastMatchedCurrentIndex >= 0) {
+            snapshot.drop(lastMatchedCurrentIndex + 1)
+        } else {
+            // При полном скачке страницы нельзя снова отправлять переводчику весь экран. Самая
+            // нижняя строка — единственная безопасная гипотеза о действительно новом сообщении.
+            snapshot.takeLast(1)
         }
+        previousSnapshot = snapshot
         return added
     }
 
     fun reset() {
-        tracks.clear()
+        previousSnapshot = emptyList()
         scanCount = 0
     }
 
-    private fun identity(block: LiveLensTextBlock): String =
-        "${block.speaker.orEmpty().trim().lowercase(Locale.ROOT)}\u0000" +
-            block.text.trim().lowercase(Locale.ROOT)
+    private fun isSameMessage(first: LiveLensTextBlock, second: LiveLensTextBlock): Boolean =
+        normalize(first.speaker.orEmpty()) == normalize(second.speaker.orEmpty()) &&
+            normalize(first.text) == normalize(second.text)
 
-    private companion object {
-        const val REQUIRED_OBSERVATIONS = 2
-        const val POSITION_TOLERANCE_PX = 180
-        const val TRACK_RETENTION_MS = 5_000L
-    }
+    private fun normalize(text: String): String = buildString(text.length) {
+        var pendingSpace = false
+        text.lowercase(Locale.ROOT).forEach { character ->
+            when {
+                character.isLetterOrDigit() -> {
+                    if (pendingSpace && isNotEmpty()) append(' ')
+                    append(character)
+                    pendingSpace = false
+                }
+                isNotEmpty() -> pendingSpace = true
+            }
+        }
+    }.trim()
 }
 
-/** Связывает наблюдение, MVI-перевод и позиционный неблокирующий оверлей. */
+/** Связывает снимки области, MVI-перевод и стабильную неблокирующую ленту. */
 internal class LiveLensController(
     private val scope: CoroutineScope,
     private val strings: LiveLensStrings,
@@ -165,7 +168,6 @@ internal class LiveLensController(
                     .onFailure { error -> logger.error("Ошибка чтения LIVE-области", error) }
                     .getOrDefault(emptyList())
                 val messages = assembleLiveLensMessages(fragments, lensBounds)
-                val wasCalibrated = detector.isCalibrated
                 val added = detector.accept(messages)
                 if (messages.size != lastMessageCount || added.isNotEmpty()) {
                     logger.info(
@@ -175,14 +177,8 @@ internal class LiveLensController(
                     )
                     lastMessageCount = messages.size
                 }
-                runOnUi { window.syncSources(messages) }
-                if (wasCalibrated) {
-                    // Новая реплика важнее старого хвоста, иначе чат успевает уйти далеко вперёд.
-                    added.forEach { block -> queue(block, priority = true) }
-                } else {
-                    // На первом устойчивом снимке начинаем снизу — с самой свежей видимой строки.
-                    added.asReversed().forEach { block -> queue(block, priority = false) }
-                }
+                runOnUi { window.snapshotCompleted(POLL_INTERVAL_MS) }
+                added.forEach(::queue)
                 if (activeRequestId == null) {
                     runOnUi {
                         window.setMode(
@@ -202,24 +198,14 @@ internal class LiveLensController(
     }
 
     @Synchronized
-    private fun queue(
-        block: LiveLensTextBlock,
-        priority: Boolean
-    ) {
+    private fun queue(block: LiveLensTextBlock) {
         val normalized = block.text.trim()
         if (normalized.isBlank()) return
-        val alreadyQueued = pending.any { it.isSameSourceAs(block) }
-        val alreadyRunning = requests.values.any { it.isSameSourceAs(block) }
-        if (alreadyQueued || alreadyRunning) return
 
         if (pending.size >= MAX_PENDING_BLOCKS) {
-            if (priority) pending.removeLast() else pending.removeFirst()
+            pending.removeFirst()
         }
-        if (priority) {
-            pending.addFirst(block.copy(text = normalized))
-        } else {
-            pending.addLast(block.copy(text = normalized))
-        }
+        pending.addLast(block.copy(text = normalized))
         submitNext()
     }
 
@@ -281,12 +267,7 @@ internal class LiveLensController(
     }
 
     private companion object {
-        const val POLL_INTERVAL_MS = 700L
+        const val POLL_INTERVAL_MS = 5_000L
         const val MAX_PENDING_BLOCKS = 30
     }
 }
-
-private fun LiveLensTextBlock.isSameSourceAs(other: LiveLensTextBlock): Boolean =
-    speaker.equals(other.speaker, ignoreCase = true) &&
-    text.equals(other.text, ignoreCase = true) &&
-        kotlin.math.abs(anchor.y - other.anchor.y) <= 34

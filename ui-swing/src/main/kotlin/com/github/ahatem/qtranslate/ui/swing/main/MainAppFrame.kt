@@ -143,7 +143,10 @@ class MainAppFrame(
                 reading = localizer.getString("live_lens.reading"),
                 translating = localizer.getString("live_lens.translating"),
                 noText = localizer.getString("live_lens.no_text"),
-                failed = localizer.getString("live_lens.failed")
+                failed = localizer.getString("live_lens.failed"),
+                nextScan = localizer.getString("live_lens.next_scan"),
+                newMessage = localizer.getString("live_lens.new_message"),
+                secondsShort = localizer.getString("live_lens.seconds_short")
             ),
             initialBounds = ::resolveLiveLensBounds,
             dispatch = mainStore::dispatch,
