@@ -121,10 +121,11 @@ Windows до передачи исходников на Mac:
 репозиторий нельзя добавлять `.p12`, пароль, Apple ID app-specific password или
 ключ App Store Connect.
 
-Релизный GitHub Actions workflow намеренно не публикует неподписанный DMG. Нативная
-macOS-часть стабильного релиза по умолчанию выключена. Для её включения нужно создать
-repository variable `MACOS_STABLE_ENABLED` со строго строковым значением `true` и
-задать все секреты ниже (перечислены только имена, без выдуманных значений):
+Релизный GitHub Actions workflow всегда собирает DMG для Apple Silicon и Intel. Пока
+Developer ID отсутствует, релиз публикует их как внутренние ad-hoc сборки с явным
+предупреждением и `READ-ME-FIRST` внутри DMG. Чтобы включить production-подпись, нужно создать
+repository variable `MACOS_STABLE_ENABLED` со строго строковым значением `true` и задать все
+секреты ниже (перечислены только имена, без выдуманных значений):
 
 - `MACOS_CERTIFICATE_P12_BASE64` — Developer ID Application в P12, закодированный base64;
 - `MACOS_CERTIFICATE_PASSWORD` — пароль P12;
@@ -134,9 +135,8 @@ repository variable `MACOS_STABLE_ENABLED` со строго строковым 
 
 Поведение release workflow специально разделено:
 
-- при отсутствующей переменной или любом значении кроме `true` macOS jobs пропускаются;
-  Windows и переносимые артефакты публикуются штатно, а в Release нет ссылок и файлов
-  нативного macOS;
+- при отсутствующей переменной или любом значении кроме `true` macOS jobs собирают ad-hoc
+  `.app.zip` и DMG, проверяют `READ-ME-FIRST` внутри образа и публикуют их рядом с Windows;
 - при `MACOS_STABLE_ENABLED=true` каждый macOS job первым шагом, ещё до checkout,
   проверяет полный комплект из шести Apple-секретов;
 - отсутствие хотя бы одного секрета немедленно завершает macOS job ошибкой и блокирует
@@ -144,8 +144,8 @@ repository variable `MACOS_STABLE_ENABLED` со строго строковым 
 - успешный production job всегда передаёт сборщику Developer ID, отдельный keychain,
   профиль `notarytool` и обязательный `--notarize`. В нём нет fallback на ad-hoc.
 
-Так production-релиз не может незаметно получить неподписанный macOS-артефакт, а
-выключенный macOS-контур не мешает выпуску Windows.
+Так неподписанный macOS-артефакт не может маскироваться под нотариализованный, а полный релиз
+всегда содержит проверенные пакеты Windows, macOS Apple Silicon и macOS Intel.
 
 Пример переменных без секретных значений:
 

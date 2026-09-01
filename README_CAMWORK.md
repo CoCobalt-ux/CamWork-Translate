@@ -1,4 +1,4 @@
-# CamWork Translate 1.2.7
+# CamWork Translate 1.2.8
 
 Быстрый настольный переводчик для моделей CamWork на Windows 10/11.
 
@@ -97,11 +97,11 @@
 
 ## Установка
 
-Запустите `CamWork-Translate-1.2.7-Setup-windows-x64.exe`. Установщик не требует прав
+Запустите `CamWork-Translate-1.2.8-Setup-windows-x64.exe`. Установщик не требует прав
 администратора, создаёт ярлык в меню «Пуск» и по желанию — на рабочем столе. Обновление поверх
 предыдущей версии сохраняет настройки, историю, журналы и дополнительные плагины.
 
-Переносимый архив `CamWork-Translate-1.2.7-windows-x64.zip` остаётся доступен как запасной
+Переносимый архив `CamWork-Translate-1.2.8-windows-x64.zip` остаётся доступен как запасной
 вариант: распакуйте его в отдельную доступную для записи папку и запустите
 `CamWork Translate.exe`.
 
@@ -119,7 +119,7 @@
 Windows-архив и SHA-256 суммы. Java входит в оба варианта:
 
 ```powershell
-.\scripts\build-windows-release.ps1 -Version 1.2.7 -JavaHome $env:JAVA_HOME -Jdk21Home 'C:\path\to\jdk-21'
+.\scripts\build-windows-release.ps1 -Version 1.2.8 -JavaHome $env:JAVA_HOME -Jdk21Home 'C:\path\to\jdk-21'
 ```
 
 ## Сборка macOS x64/arm64
@@ -135,10 +135,11 @@ Automation пока нет.
 Требования, команды для x64/arm64, Developer ID, notarization и полный чек-лист:
 [docs/MACOS_BUILD.md](docs/MACOS_BUILD.md).
 
-Свежие неподписанные DMG для внутреннего теста доступны в
-[macOS QA (unsigned)](https://github.com/CoCobalt-ux/CamWork-Translate/actions/workflows/macos-qa.yml):
-выберите последний зелёный запуск и скачайте artifact `arm64` для Apple Silicon или `x64` для
-Intel. Артефакты хранятся 14 дней и не предназначены для выдачи моделям как production-релиз.
+Каждый полный GitHub Release содержит DMG для Apple Silicon и Intel. Пока Developer ID не
+настроен, это внутренняя ad-hoc сборка: перед установкой прочитайте `READ-ME-FIRST` внутри DMG и
+разрешите запуск через **Privacy & Security → Open Anyway**. Отдельный workflow
+[macOS QA (unsigned)](https://github.com/CoCobalt-ux/CamWork-Translate/actions/workflows/macos-qa.yml)
+остаётся для промежуточных тестов без создания релиза.
 
 ## Лицензия
 
