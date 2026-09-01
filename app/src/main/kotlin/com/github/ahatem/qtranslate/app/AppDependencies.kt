@@ -15,6 +15,7 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.FetchInlineDefiniti
 import com.github.ahatem.qtranslate.core.main.domain.usecase.RewriteUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SummarizeUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateStringUseCase
+import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateImageUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateTextUseCase
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
@@ -280,6 +281,7 @@ suspend fun buildDependencies(
         translateTextUseCase       = translateUseCase,
         swapLanguagesUseCase       = SwapLanguagesUseCase(),
         ocrAndTranslateUseCase     = OcrAndTranslateUseCase(activeServiceManager, loggerFactory),
+        translateImageUseCase      = TranslateImageUseCase(activeServiceManager, loggerFactory),
         summarizeUseCase           = summarizeUseCase,
         rewriteUseCase             = rewriteUseCase,
         lookupWordUseCase          = lookupWordUseCase,

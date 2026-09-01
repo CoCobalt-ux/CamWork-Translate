@@ -133,6 +133,23 @@ next_scan = "Следующий снимок через"
 new_message = "● Новое сообщение"
 seconds_short = "с"
 
+[image_translation]
+title = "Перевод изображения"
+processing = "Распознаю и перевожу изображение…"
+completed = "Перевод завершён"
+partial = "Часть текста не удалось перевести"
+target_language = "Язык перевода"
+original = "Показать оригинал"
+translation = "Показать перевод"
+copy_text = "Копировать перевод"
+copy_image = "Копировать изображение"
+save_png = "Сохранить PNG"
+recapture = "Выбрать другую область"
+translate_in_image = "Перевести в кадре"
+no_spatial_ocr = "OCR с координатами недоступен на этой системе."
+no_text = "В выбранном изображении не найден читаемый текст."
+translation_failed = "Текст распознан, но выполнить перевод не удалось."
+
 [document_translation]
 title = "Перевод документа"
 input_file = "Исходный документ"
@@ -167,7 +184,7 @@ error_detail_copied = "Скопировано!"
 # ===================================================================
 [system_tray_menu]
 show_application = "Показать CamWork Translate"
-recognize_text = "Распознавание текста (OCR)"
+recognize_text = "Перевести изображение (OCR)"
 live_lens = "LIVE-перевод в рамке"
 dictionary = "Словарь"
 image_search = "Поиск изображений"

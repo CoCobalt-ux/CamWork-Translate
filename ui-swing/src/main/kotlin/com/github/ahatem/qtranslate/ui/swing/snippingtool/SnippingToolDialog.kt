@@ -31,7 +31,10 @@ import javax.swing.filechooser.FileNameExtensionFilter
  */
 class SnippingToolDialog(
     private val owner: Frame,
-    private val mainStore: MainStore
+    private val mainStore: MainStore,
+    private val onTranslateInImage: (BufferedImage) -> Unit,
+    private val translateInImageLabel: String,
+    private val onCancelled: () -> Unit
 ) {
     private data class ScreenSnapshot(
         val configuration: GraphicsConfiguration,
@@ -85,18 +88,27 @@ class SnippingToolDialog(
         }
 
         panel = ScreenCapturePanel(
+            onTranslateInImage = { capturedImage ->
+                closeAll()
+                onTranslateInImage(capturedImage)
+            },
             onTranslate = ::dispatchOcrAndTranslate,
             onCopyText = ::dispatchOcrAndCopyText,
             onCopyImage = { capturedImage ->
                 copyImageToClipboard(capturedImage)
                 closeAll()
+                onCancelled()
             },
             onSaveImage = { capturedImage ->
                 closeAll()
                 saveImageToFile(capturedImage)
+                onCancelled()
             },
             onRecrop = controller::resetToIdle,
-            onCancel = ::closeAll
+            onCancel = ::cancelAll,
+            buttonLabels = ScreenCapturePanel.ButtonLabels(
+                translateInImage = translateInImageLabel
+            )
         )
 
         panel.attachController(controller)
@@ -108,7 +120,7 @@ class SnippingToolDialog(
 
     private fun installCloseActions(window: JWindow, panel: ScreenCapturePanel) {
         window.rootPane.registerKeyboardAction(
-            { closeAll() },
+            { cancelAll() },
             KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0),
             JComponent.WHEN_IN_FOCUSED_WINDOW
         )
@@ -120,7 +132,7 @@ class SnippingToolDialog(
                 if (state.mode == CaptureMode.SELECTED &&
                     (selection == null || !selection.contains(event.point))
                 ) {
-                    closeAll()
+                    cancelAll()
                 }
             }
         })
@@ -190,5 +202,10 @@ class SnippingToolDialog(
         closed = true
         surfaces.forEach { surface -> surface.window.dispose() }
         surfaces.clear()
+    }
+
+    private fun cancelAll() {
+        closeAll()
+        onCancelled()
     }
 }

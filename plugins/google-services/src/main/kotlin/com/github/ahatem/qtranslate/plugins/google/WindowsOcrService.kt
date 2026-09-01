@@ -1,13 +1,18 @@
 package com.github.ahatem.qtranslate.plugins.google
 
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
+import com.github.ahatem.qtranslate.api.ocr.OCRBounds
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.ocr.OCRTextRegion
 import com.github.ahatem.qtranslate.api.ocr.LocalOCR
+import com.github.ahatem.qtranslate.api.ocr.PositionedOCR
+import com.github.ahatem.qtranslate.api.ocr.PositionedOCRResponse
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.fold
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -17,7 +22,7 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /** Локальный OCR Windows 10/11 без сетевого API и пользовательского ключа. */
-internal class WindowsOcrService : LocalOCR {
+internal class WindowsOcrService : LocalOCR, PositionedOCR {
     override val key: String = "google-ocr"
     override val name: String = "Windows OCR (локальный)"
     override val version: String = "1.0.0"
@@ -25,6 +30,16 @@ internal class WindowsOcrService : LocalOCR {
     override val supportedLanguages: SupportedLanguages = SupportedLanguages.All
 
     override suspend fun extractText(request: OCRRequest): Result<OCRResponse, ServiceError> =
+        extractPositionedText(request).fold(
+            success = { response ->
+                Ok(OCRResponse(text = response.regions.joinToString("\n") { region -> region.text }))
+            },
+            failure = ::Err
+        )
+
+    override suspend fun extractPositionedText(
+        request: OCRRequest
+    ): Result<PositionedOCRResponse, ServiceError> =
         withContext(Dispatchers.IO) {
             if (request.image.bytes.isEmpty()) {
                 return@withContext Err(ServiceError.InvalidInputError("Изображение для OCR пустое."))
@@ -37,7 +52,7 @@ internal class WindowsOcrService : LocalOCR {
             val imagePath = Files.createTempFile("camwork-ocr-", ".$extension")
             try {
                 Files.write(imagePath, request.image.bytes)
-                recognize(
+                recognizePositioned(
                     imagePath = imagePath.toAbsolutePath().toString(),
                     languageTag = request.language.tag.takeUnless { it == "auto" } ?: DEFAULT_OCR_LANGUAGE
                 )
@@ -46,10 +61,10 @@ internal class WindowsOcrService : LocalOCR {
             }
         }
 
-    private fun recognize(
+    private fun recognizePositioned(
         imagePath: String,
         languageTag: String
-    ): Result<OCRResponse, ServiceError> {
+    ): Result<PositionedOCRResponse, ServiceError> {
         val process = ProcessBuilder(
             "powershell.exe",
             "-NoLogo",
@@ -92,18 +107,46 @@ internal class WindowsOcrService : LocalOCR {
         }
         // stdout и stderr объединены, поэтому распознанным считается только текст после маркера:
         // предупреждение PowerShell не должно попасть в перевод.
-        return Ok(OCRResponse(text = extractRecognizedText(rawOutput)))
+        return Ok(PositionedOCRResponse(regions = extractPositionedRegions(rawOutput)))
     }
 
     internal companion object {
         /** Отделяет распознанный текст от служебного вывода PowerShell. */
         fun extractRecognizedText(rawOutput: String): String {
-            val markerIndex = rawOutput.lastIndexOf(OUTPUT_MARKER)
+            val positioned = extractPositionedRegions(rawOutput)
+            if (positioned.isNotEmpty()) return positioned.joinToString("\n") { region -> region.text }
+            val markerIndex = rawOutput.lastIndexOf(LEGACY_OUTPUT_MARKER)
             if (markerIndex < 0) return ""
-            return rawOutput.substring(markerIndex + OUTPUT_MARKER.length).trim()
+            return rawOutput.substring(markerIndex + LEGACY_OUTPUT_MARKER.length).trim()
         }
 
-        private const val OUTPUT_MARKER = "<<<CAMWORK-OCR>>>"
+        /** Разбирает безопасный табличный протокол PowerShell без исполнения JSON или текста OCR. */
+        fun extractPositionedRegions(rawOutput: String): List<OCRTextRegion> {
+            val markerIndex = rawOutput.lastIndexOf(POSITIONED_OUTPUT_MARKER)
+            if (markerIndex < 0) return emptyList()
+            return rawOutput.substring(markerIndex + POSITIONED_OUTPUT_MARKER.length)
+                .lineSequence()
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .mapNotNull { line ->
+                    val parts = line.split('\t', limit = 5)
+                    if (parts.size != 5) return@mapNotNull null
+                    val x = parts[0].toIntOrNull() ?: return@mapNotNull null
+                    val y = parts[1].toIntOrNull() ?: return@mapNotNull null
+                    val width = parts[2].toIntOrNull() ?: return@mapNotNull null
+                    val height = parts[3].toIntOrNull() ?: return@mapNotNull null
+                    if (x < 0 || y < 0 || width <= 0 || height <= 0) return@mapNotNull null
+                    val text = runCatching {
+                        String(Base64.getDecoder().decode(parts[4]), StandardCharsets.UTF_8)
+                    }.getOrNull()?.trim().orEmpty()
+                    if (text.isBlank()) return@mapNotNull null
+                    OCRTextRegion(text, OCRBounds(x, y, width, height))
+                }
+                .toList()
+        }
+
+        private const val POSITIONED_OUTPUT_MARKER = "<<<CAMWORK-OCR-LAYOUT>>>"
+        private const val LEGACY_OUTPUT_MARKER = "<<<CAMWORK-OCR>>>"
         private const val IMAGE_PATH_ENV = "CAMWORK_OCR_IMAGE"
         private const val LANGUAGE_ENV = "CAMWORK_OCR_LANGUAGE"
         private const val DEFAULT_OCR_LANGUAGE = "en-US"
@@ -153,11 +196,17 @@ internal class WindowsOcrService : LocalOCR {
             }
             if (${'$'}null -eq ${'$'}engine) { throw 'В Windows не установлен пакет языка для OCR.' }
             ${'$'}result = Await (${'$'}engine.RecognizeAsync(${'$'}bitmap)) ([Windows.Media.Ocr.OcrResult])
-            # OcrResult.Text склеивает весь снимок в одну строку и ломает структуру чата,
-            # поэтому строки собираются вручную.
-            ${'$'}lines = @(${'$'}result.Lines | ForEach-Object { ${'$'}_.Text })
-            [Console]::Write('<<<CAMWORK-OCR>>>')
-            [Console]::Write((${'$'}lines -join [char]10))
+            [Console]::WriteLine('<<<CAMWORK-OCR-LAYOUT>>>')
+            foreach (${'$'}line in ${'$'}result.Lines) {
+                ${'$'}words = @(${'$'}line.Words)
+                if (${'$'}words.Count -eq 0) { continue }
+                ${'$'}left = [int][Math]::Floor(((${'$'}words | ForEach-Object { ${'$'}_.BoundingRect.X }) | Measure-Object -Minimum).Minimum)
+                ${'$'}top = [int][Math]::Floor(((${'$'}words | ForEach-Object { ${'$'}_.BoundingRect.Y }) | Measure-Object -Minimum).Minimum)
+                ${'$'}right = [int][Math]::Ceiling(((${'$'}words | ForEach-Object { ${'$'}_.BoundingRect.X + ${'$'}_.BoundingRect.Width }) | Measure-Object -Maximum).Maximum)
+                ${'$'}bottom = [int][Math]::Ceiling(((${'$'}words | ForEach-Object { ${'$'}_.BoundingRect.Y + ${'$'}_.BoundingRect.Height }) | Measure-Object -Maximum).Maximum)
+                ${'$'}encodedText = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(${'$'}line.Text))
+                [Console]::WriteLine("${'$'}left`t${'$'}top`t$(${'$'}right - ${'$'}left)`t$(${'$'}bottom - ${'$'}top)`t${'$'}encodedText")
+            }
         """.trimIndent()
 
         private val ENCODED_OCR_SCRIPT: String = Base64.getEncoder().encodeToString(

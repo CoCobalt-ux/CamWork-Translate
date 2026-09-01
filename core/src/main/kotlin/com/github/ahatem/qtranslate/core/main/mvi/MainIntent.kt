@@ -198,6 +198,14 @@ sealed interface MainIntent : UiIntent {
         val requestId: Long
     ) : MainIntent
 
+    /** Одноразово переводит текст в координатах снимка, не затрагивая LIVE и главное окно. */
+    data class TranslateImageInPlace(
+        val image: ImageData,
+        val requestId: Long
+    ) : MainIntent
+
+    data object CancelImageInPlaceTranslation : MainIntent
+
     /** Останавливает LIVE-перевод и распознавание кадра, не затрагивая Shift и главное окно. */
     data object CancelLiveLensTranslation : MainIntent
 

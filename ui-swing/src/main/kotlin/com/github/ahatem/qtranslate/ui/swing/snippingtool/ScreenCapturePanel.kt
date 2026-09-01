@@ -8,6 +8,7 @@ import javax.swing.*
 import kotlin.math.roundToInt
 
 class ScreenCapturePanel(
+    private val onTranslateInImage: (BufferedImage) -> Unit,
     private val onTranslate: (BufferedImage) -> Unit,
     private val onCopyText: (BufferedImage) -> Unit,
     private val onCopyImage: (BufferedImage) -> Unit,
@@ -18,6 +19,7 @@ class ScreenCapturePanel(
 ) : JLayeredPane() {
 
     data class ButtonLabels(
+        val translateInImage: String = "Translate Image",
         val translate: String  = "Translate",
         val copyText: String   = "Copy Text",
         val copyImage: String  = "Copy Image",
@@ -180,14 +182,18 @@ class ScreenCapturePanel(
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun createButtonsPanel(): JPanel {
-        val translateBtn = JButton(buttonLabels.translate).apply {
+        val translateInImageBtn = JButton(buttonLabels.translateInImage).apply {
             // "default" = filled accent button — primary action
             putClientProperty(FlatClientProperties.BUTTON_TYPE, "default")
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            toolTipText = "OCR and translate the captured region"
-            addActionListener { getSelectedImage()?.let(onTranslate) }
+            toolTipText = "Replace visible text with its translation in the captured image"
+            addActionListener { getSelectedImage()?.let(onTranslateInImage) }
             alignmentY = Component.CENTER_ALIGNMENT
         }
+        val translateBtn = flatBtn(
+            buttonLabels.translate,
+            "OCR and translate the captured text in the main window"
+        ) { getSelectedImage()?.let(onTranslate) }
         val copyTextBtn  = flatBtn(buttonLabels.copyText,  "Recognize text and copy to clipboard")  { getSelectedImage()?.let(onCopyText)  }
         val copyImageBtn = flatBtn(buttonLabels.copyImage, "Copy image to clipboard")                 { getSelectedImage()?.let(onCopyImage) }
         val saveImageBtn = flatBtn(buttonLabels.saveImage, "Save captured image as PNG")              { getSelectedImage()?.let(onSaveImage) }
@@ -217,6 +223,8 @@ class ScreenCapturePanel(
             border = BorderFactory.createEmptyBorder(7, 12, 7, 12)
 
             // ── Group 1: primary action ──────────────────────────────────────
+            add(Box.createHorizontalStrut(2))
+            add(translateInImageBtn)
             add(Box.createHorizontalStrut(2))
             add(translateBtn)
 

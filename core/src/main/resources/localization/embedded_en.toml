@@ -132,6 +132,23 @@ next_scan = "Next snapshot in"
 new_message = "● New message"
 seconds_short = "s"
 
+[image_translation]
+title = "Image translation"
+processing = "Recognizing and translating image…"
+completed = "Translation completed"
+partial = "Translation completed partially"
+target_language = "Translation language"
+original = "Show original"
+translation = "Show translation"
+copy_text = "Copy translated text"
+copy_image = "Copy image"
+save_png = "Save as PNG"
+recapture = "Capture another area"
+translate_in_image = "Translate in image"
+no_spatial_ocr = "Position-aware OCR is unavailable on this system."
+no_text = "No readable text was found in the selected image."
+translation_failed = "The text was recognized, but translation failed."
+
 [document_translation]
 title = "Translate Document"
 input_file = "Source document"
@@ -166,7 +183,7 @@ error_detail_copied = "Copied!"
 # ===================================================================
 [system_tray_menu]
 show_application = "Show CamWork Translate"
-recognize_text = "Recognize Text (OCR)"
+recognize_text = "Translate Image (OCR)"
 live_lens = "LIVE Translation Lens"
 dictionary = "Dictionary"
 image_search = "Image Search"

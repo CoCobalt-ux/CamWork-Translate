@@ -55,6 +55,7 @@ class MainStore(
     private val translateTextUseCase: TranslateTextUseCase,
     private val swapLanguagesUseCase: SwapLanguagesUseCase,
     private val ocrAndTranslateUseCase: OcrAndTranslateUseCase,
+    private val translateImageUseCase: TranslateImageUseCase,
     private val summarizeUseCase: SummarizeUseCase,
     private val rewriteUseCase: RewriteUseCase,
     private val lookupWordUseCase: LookupWordUseCase,
@@ -66,6 +67,7 @@ class MainStore(
     private var documentTranslationJob: Job? = null
     private var documentTranslationGeneration = 0L
     private var liveLensRecognitionJob: Job? = null
+    private var imageTranslationJob: Job? = null
     private val instantTranslationCoordinator = InstantTranslationCoordinator()
     private val userInputChanges = MutableSharedFlow<UserInputRevision>(
         extraBufferCapacity = 64,
@@ -384,6 +386,16 @@ class MainStore(
                 translateTextUseCase.cancel(TranslationLane.LIVE_LENS)
                 liveLensRecognitionJob?.cancel()
                 liveLensRecognitionJob = null
+            }
+
+            is MainIntent.TranslateImageInPlace -> {
+                imageTranslationJob?.cancel()
+                imageTranslationJob = scope.launch { handleImageInPlaceTranslation(intent) }
+            }
+
+            MainIntent.CancelImageInPlaceTranslation -> {
+                imageTranslationJob?.cancel()
+                imageTranslationJob = null
             }
 
             is MainIntent.ListenToText -> scope.launch {
@@ -967,6 +979,37 @@ class MainStore(
             )
         }
         liveLensRecognitionJob = null
+    }
+
+    private suspend fun handleImageInPlaceTranslation(intent: MainIntent.TranslateImageInPlace) {
+        val modelLanguage = runCatching { LanguageCode(settingsState.value.modelLanguage) }
+            .getOrDefault(LanguageCode.RUSSIAN)
+        when (val result = translateImageUseCase(
+            image = intent.image,
+            targetLanguage = modelLanguage,
+            onProgress = { completed, total ->
+                _eventChannel.trySend(
+                    MainEvent.ImageInPlaceTranslationProgress(
+                        requestId = intent.requestId,
+                        completed = completed,
+                        total = total
+                    )
+                )
+            }
+        )) {
+            is ImageTranslationRunResult.Success -> _eventChannel.send(
+                MainEvent.ImageInPlaceTranslationCompleted(
+                    requestId = intent.requestId,
+                    regions = result.regions,
+                    failedRegions = result.failedRegions,
+                    providers = result.providers
+                )
+            )
+            is ImageTranslationRunResult.Failure -> _eventChannel.send(
+                MainEvent.ImageInPlaceTranslationFailed(intent.requestId, result.kind)
+            )
+        }
+        imageTranslationJob = null
     }
 
     /**

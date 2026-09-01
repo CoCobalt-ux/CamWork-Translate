@@ -48,6 +48,8 @@ import com.github.ahatem.qtranslate.ui.swing.history.HistoryDialogState
 import com.github.ahatem.qtranslate.ui.swing.history.HistoryEntryState
 import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensController
 import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensStrings
+import com.github.ahatem.qtranslate.ui.swing.imagetranslation.ImageTranslationController
+import com.github.ahatem.qtranslate.ui.swing.imagetranslation.ImageTranslationStrings
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.ErrorDetailPopup
 import com.github.ahatem.qtranslate.ui.swing.main.statusbar.NotificationPopover
 import com.github.ahatem.qtranslate.ui.swing.update.UpdateDialog
@@ -164,6 +166,38 @@ class MainAppFrame(
         )
     }
     private val liveLensController by liveLensControllerDelegate
+    private val imageTranslationControllerDelegate = lazy {
+        ImageTranslationController(
+            owner = this,
+            mainStore = mainStore,
+            strings = ImageTranslationStrings(
+                title = localizer.getString("image_translation.title"),
+                processing = localizer.getString("image_translation.processing"),
+                completed = localizer.getString("image_translation.completed"),
+                partial = localizer.getString("image_translation.partial"),
+                targetLanguage = localizer.getString("image_translation.target_language"),
+                original = localizer.getString("image_translation.original"),
+                translation = localizer.getString("image_translation.translation"),
+                copyText = localizer.getString("image_translation.copy_text"),
+                copyImage = localizer.getString("image_translation.copy_image"),
+                savePng = localizer.getString("image_translation.save_png"),
+                recapture = localizer.getString("image_translation.recapture"),
+                close = localizer.getString("common.close"),
+                noSpatialOcr = localizer.getString("image_translation.no_spatial_ocr"),
+                noText = localizer.getString("image_translation.no_text"),
+                translationFailed = localizer.getString("image_translation.translation_failed")
+            ),
+            targetLanguageName = {
+                runCatching {
+                    LanguageCode(settingsStore.state.value.workingConfiguration.modelLanguage)
+                        .getDisplayName()
+                }.getOrDefault("Русский")
+            },
+            onRecapture = ::openSnippingTool,
+            onClosed = ::showAndFocus
+        )
+    }
+    private val imageTranslationController by imageTranslationControllerDelegate
 
     private fun openLiveLens() {
         logger.info("Запуск окна LIVE-перевода")
@@ -921,6 +955,11 @@ class MainAppFrame(
                     is MainEvent.LiveLensFrameRecognitionFinished -> withContext(Dispatchers.Swing) {
                         liveLensController.handle(event)
                     }
+                    is MainEvent.ImageInPlaceTranslationProgress,
+                    is MainEvent.ImageInPlaceTranslationCompleted,
+                    is MainEvent.ImageInPlaceTranslationFailed -> withContext(Dispatchers.Swing) {
+                        imageTranslationController.handle(event)
+                    }
                     is MainEvent.ShowUpdateDialog -> withContext(Dispatchers.Swing) {
                         showUpdateDialog(NotificationCode.UpdateAvailable(
                             newVersion = event.newVersion,
@@ -1406,7 +1445,13 @@ class MainAppFrame(
         appScope.launch {
             delay(200)
             withContext(Dispatchers.Swing) {
-                SnippingToolDialog(this@MainAppFrame, mainStore)
+                SnippingToolDialog(
+                    owner = this@MainAppFrame,
+                    mainStore = mainStore,
+                    onTranslateInImage = imageTranslationController::start,
+                    translateInImageLabel = localizer.getString("image_translation.translate_in_image"),
+                    onCancelled = ::showAndFocus
+                )
             }
         }
     }
@@ -1711,6 +1756,7 @@ class MainAppFrame(
             override fun windowClosed(e: WindowEvent?) {
                 cancelPendingTraySingleClick()
                 if (liveLensControllerDelegate.isInitialized()) liveLensController.close()
+                if (imageTranslationControllerDelegate.isInitialized()) imageTranslationController.close()
                 appScope.cancel()
                 trayIcon?.let { SystemTray.getSystemTray().remove(it) }
                 trayIcon = null
