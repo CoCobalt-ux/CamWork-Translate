@@ -65,6 +65,7 @@ class MainStore(
 
     private var documentTranslationJob: Job? = null
     private var documentTranslationGeneration = 0L
+    private var liveLensRecognitionJob: Job? = null
     private val instantTranslationCoordinator = InstantTranslationCoordinator()
     private val userInputChanges = MutableSharedFlow<UserInputRevision>(
         extraBufferCapacity = 64,
@@ -372,8 +373,18 @@ class MainStore(
                 handleLiveLensTranslation(intent)
             }
 
-            MainIntent.CancelLiveLensTranslation ->
+            is MainIntent.RecognizeLiveLensFrame -> {
+                liveLensRecognitionJob?.cancel()
+                liveLensRecognitionJob = scope.launch {
+                    handleLiveLensFrameRecognition(intent)
+                }
+            }
+
+            MainIntent.CancelLiveLensTranslation -> {
                 translateTextUseCase.cancel(TranslationLane.LIVE_LENS)
+                liveLensRecognitionJob?.cancel()
+                liveLensRecognitionJob = null
+            }
 
             is MainIntent.ListenToText -> scope.launch {
                 handleListen(intent.textSource, intent.text, intent.language)
@@ -935,6 +946,27 @@ class MainStore(
                     MainEvent.LiveLensTranslationFinished(intent.requestId, result.kind)
                 )
         }
+    }
+
+    /** Распознаёт игровой/графический кадр без изменения состояния главного окна. */
+    private suspend fun handleLiveLensFrameRecognition(intent: MainIntent.RecognizeLiveLensFrame) {
+        val extractedText = ocrAndTranslateUseCase(
+            image = intent.image,
+            currentState = _state.value,
+            onStatusUpdate = { _, _, _ -> },
+            preferLocal = true
+        )
+        if (extractedText.isBlank()) {
+            _eventChannel.send(MainEvent.LiveLensFrameRecognitionFinished(intent.requestId))
+        } else {
+            _eventChannel.send(
+                MainEvent.LiveLensFrameRecognized(
+                    requestId = intent.requestId,
+                    text = extractedText
+                )
+            )
+        }
+        liveLensRecognitionJob = null
     }
 
     /**

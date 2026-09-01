@@ -96,7 +96,8 @@ internal class LiveLensController(
     private val dispatch: (MainIntent) -> Unit,
     private val saveBounds: (Rectangle) -> Unit,
     private val logger: Logger,
-    private val reader: LiveLensTextReader = defaultLiveLensTextReader()
+    private val reader: LiveLensTextReader = defaultLiveLensTextReader(),
+    private val frameCapture: LiveLensFrameCapture? = defaultLiveLensFrameCapture()
 ) {
     private val sequence = AtomicLong(0L)
     private val detector = LiveLensChangeDetector()
@@ -105,6 +106,10 @@ internal class LiveLensController(
     private var pollJob: Job? = null
     @Volatile
     private var activeRequestId: Long? = null
+    @Volatile
+    private var activeFrameRecognitionId: Long? = null
+    @Volatile
+    private var pixelCaptureEnabled = false
     @Volatile
     private var lensBounds = Rectangle()
     private var lastMessageCount = -1
@@ -144,12 +149,21 @@ internal class LiveLensController(
                 provider = "",
                 failure = event.failure
             )
+            is MainEvent.LiveLensFrameRecognized -> completeFrameRecognition(
+                requestId = event.requestId,
+                recognizedText = event.text
+            )
+            is MainEvent.LiveLensFrameRecognitionFinished -> completeFrameRecognition(
+                requestId = event.requestId,
+                recognizedText = null
+            )
             else -> Unit
         }
     }
 
     private fun start(bounds: Rectangle, resume: Boolean) {
         lensBounds = window.currentScanBounds()
+        pixelCaptureEnabled = frameCapture != null && window.enablePixelCapture()
         saveBounds(Rectangle(bounds))
         if (!resume) {
             detector.reset()
@@ -159,7 +173,8 @@ internal class LiveLensController(
         pollJob?.cancel()
         logger.info(
             "LIVE-перевод запущен: область интерфейса=${bounds.x},${bounds.y} ${bounds.width}x${bounds.height}; " +
-                "область сканирования=${lensBounds.x},${lensBounds.y} ${lensBounds.width}x${lensBounds.height}"
+                "область сканирования=${lensBounds.x},${lensBounds.y} ${lensBounds.width}x${lensBounds.height}; " +
+                "пиксельный OCR=${if (pixelCaptureEnabled) "доступен" else "недоступен"}"
         )
         runOnUi { window.beginWatching(clearCards = !resume, calibrating = !resume) }
         pollJob = scope.launch(Dispatchers.IO) {
@@ -168,7 +183,7 @@ internal class LiveLensController(
                     .onFailure { error -> logger.error("Ошибка чтения LIVE-области", error) }
                     .getOrDefault(emptyList())
                 val messages = assembleLiveLensMessages(fragments, lensBounds)
-                val added = detector.accept(messages)
+                val added = detectNewMessages(messages)
                 if (messages.size != lastMessageCount || added.isNotEmpty()) {
                     logger.info(
                         "LIVE-сканирование: фрагментов=${fragments.size}, сообщений=${messages.size}, " +
@@ -179,11 +194,17 @@ internal class LiveLensController(
                 }
                 runOnUi { window.snapshotCompleted(POLL_INTERVAL_MS) }
                 added.forEach(::queue)
+                if (messages.isEmpty()) requestFrameRecognition()
                 if (activeRequestId == null) {
                     runOnUi {
                         window.setMode(
-                            if (detector.isCalibrated) LiveLensMode.WATCHING else LiveLensMode.READING,
+                            if (activeFrameRecognitionId != null || !detector.isCalibrated) {
+                                LiveLensMode.READING
+                            } else {
+                                LiveLensMode.WATCHING
+                            },
                             when {
+                                activeFrameRecognitionId != null -> strings.reading
                                 !detector.isCalibrated -> strings.reading
                                 messages.isEmpty() -> strings.noText
                                 else -> strings.watching
@@ -195,6 +216,36 @@ internal class LiveLensController(
             }
         }
         if (resume) submitNext()
+    }
+
+    @Synchronized
+    private fun requestFrameRecognition() {
+        if (!pixelCaptureEnabled || activeFrameRecognitionId != null) return
+        val image = frameCapture?.capture(Rectangle(lensBounds)) ?: return
+        val requestId = sequence.incrementAndGet()
+        activeFrameRecognitionId = requestId
+        logger.debug(
+            "LIVE OCR-кадр: id=$requestId, размер=${image.width}x${image.height}, байт=${image.bytes.size}"
+        )
+        dispatch(MainIntent.RecognizeLiveLensFrame(image, requestId))
+    }
+
+    @Synchronized
+    private fun detectNewMessages(messages: List<LiveLensTextBlock>): List<LiveLensTextBlock> =
+        detector.accept(messages)
+
+    @Synchronized
+    private fun completeFrameRecognition(requestId: Long, recognizedText: String?) {
+        if (requestId != activeFrameRecognitionId) return
+        activeFrameRecognitionId = null
+        if (recognizedText.isNullOrBlank()) return
+
+        val messages = liveLensOcrTextBlocks(recognizedText, lensBounds)
+        val added = detectNewMessages(messages)
+        logger.info(
+            "LIVE OCR распознал: сообщений=${messages.size}, новых=${added.size}, символов=${recognizedText.length}"
+        )
+        added.forEach(::queue)
     }
 
     @Synchronized
@@ -254,6 +305,7 @@ internal class LiveLensController(
             requests.remove(requestId)?.let(pending::addFirst)
         }
         activeRequestId = null
+        activeFrameRecognitionId = null
         dispatch(MainIntent.CancelLiveLensTranslation)
     }
 

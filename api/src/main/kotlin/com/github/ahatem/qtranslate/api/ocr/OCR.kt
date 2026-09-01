@@ -93,3 +93,6 @@ public data class OCRResponse(
         }
     }
 }
+
+/** Маркер системного OCR, который работает локально и не требует сетевого API-ключа. */
+public interface LocalOCR : OCR

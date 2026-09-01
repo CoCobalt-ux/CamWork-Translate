@@ -916,7 +916,9 @@ class MainAppFrame(
                         loadingIndicator.dismiss()
                     }
                     is MainEvent.LiveLensTranslationCompleted,
-                    is MainEvent.LiveLensTranslationFinished -> withContext(Dispatchers.Swing) {
+                    is MainEvent.LiveLensTranslationFinished,
+                    is MainEvent.LiveLensFrameRecognized,
+                    is MainEvent.LiveLensFrameRecognitionFinished -> withContext(Dispatchers.Swing) {
                         liveLensController.handle(event)
                     }
                     is MainEvent.ShowUpdateDialog -> withContext(Dispatchers.Swing) {

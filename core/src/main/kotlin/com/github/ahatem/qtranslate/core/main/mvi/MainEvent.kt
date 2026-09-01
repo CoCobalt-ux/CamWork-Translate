@@ -49,6 +49,15 @@ sealed interface MainEvent : UiEvent {
         val failure: com.github.ahatem.qtranslate.core.main.domain.usecase.TranslationFailureKind? = null
     ) : MainEvent
 
+    /** Локальный OCR распознал текст в графическом кадре LIVE-рамки. */
+    data class LiveLensFrameRecognized(
+        val requestId: Long,
+        val text: String
+    ) : MainEvent
+
+    /** Распознавание кадра завершилось без пригодного текста. */
+    data class LiveLensFrameRecognitionFinished(val requestId: Long) : MainEvent
+
     data class ShowUpdateDialog(
         val newVersion: String,
         val currentVersion: String,

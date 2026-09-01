@@ -128,6 +128,13 @@ internal class LiveLensWindow(
     fun snapshotCompleted(nextScanDelayMillis: Long) =
         panel.snapshotCompleted(nextScanDelayMillis)
 
+    /** Готовит окна к OCR-снимкам так, чтобы они не распознавали собственный перевод. */
+    fun enablePixelCapture(): Boolean {
+        val overlayExcluded = WindowsClickThrough.setExcludedFromCapture(overlay, true)
+        val controlsExcluded = WindowsClickThrough.setExcludedFromCapture(controls, true)
+        return overlayExcluded && controlsExcluded
+    }
+
     fun showTranslation(
         requestId: Long,
         source: LiveLensTextBlock,

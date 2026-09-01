@@ -5,6 +5,7 @@ import com.github.ahatem.qtranslate.api.ocr.ImageData
 import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.ocr.LocalOCR
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
@@ -36,14 +37,20 @@ class OcrAndTranslateUseCase(
     suspend operator fun invoke(
         image: ImageData,
         currentState: MainState,
-        onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit
+        onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
+        preferLocal: Boolean = false
     ): String {
         val preferred = activeServiceManager.getActive<OCR>(ServiceRole.OCR)
-        val services = buildList {
+        val available = buildList {
             preferred?.let(::add)
             activeServiceManager.getAvailable<OCR>(ServiceRole.OCR)
                 .filterNot { candidate -> candidate.id == preferred?.id }
                 .forEach(::add)
+        }
+        val services = if (preferLocal) {
+            available.sortedBy { active -> if (active.service is LocalOCR) 0 else 1 }
+        } else {
+            available
         }
         if (services.isEmpty()) {
             logger.warn("No OCR service available")

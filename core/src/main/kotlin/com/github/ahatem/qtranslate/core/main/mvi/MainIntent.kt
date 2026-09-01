@@ -192,7 +192,13 @@ sealed interface MainIntent : UiIntent {
         val requestId: Long
     ) : MainIntent
 
-    /** Останавливает только LIVE-запрос, не затрагивая Shift и главный перевод. */
+    /** Кадр LIVE-рамки, для которого требуется локальное системное распознавание текста. */
+    data class RecognizeLiveLensFrame(
+        val image: ImageData,
+        val requestId: Long
+    ) : MainIntent
+
+    /** Останавливает LIVE-перевод и распознавание кадра, не затрагивая Shift и главное окно. */
     data object CancelLiveLensTranslation : MainIntent
 
     /** User dismissed the quick translate popup. */

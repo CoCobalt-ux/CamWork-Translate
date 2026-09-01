@@ -1,8 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.google
 
-import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.ocr.LocalOCR
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.michaelbull.result.Err
@@ -17,7 +17,7 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 
 /** Локальный OCR Windows 10/11 без сетевого API и пользовательского ключа. */
-internal class WindowsOcrService : OCR {
+internal class WindowsOcrService : LocalOCR {
     override val key: String = "google-ocr"
     override val name: String = "Windows OCR (локальный)"
     override val version: String = "1.0.0"
