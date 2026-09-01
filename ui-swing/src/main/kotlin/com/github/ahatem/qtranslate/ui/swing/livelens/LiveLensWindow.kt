@@ -524,7 +524,7 @@ private class LensPanel(private val strings: LiveLensStrings) : JPanel() {
 
     private companion object {
         const val MAX_STORED_CARDS = 200
-        const val DEFAULT_SCAN_INTERVAL_MS = 5_000L
+        const val DEFAULT_SCAN_INTERVAL_MS = 1_000L
         const val NEW_INDICATOR_MS = 6_000L
     }
 

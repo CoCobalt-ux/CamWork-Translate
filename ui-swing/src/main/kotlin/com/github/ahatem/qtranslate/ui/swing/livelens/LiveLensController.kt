@@ -267,7 +267,7 @@ internal class LiveLensController(
     }
 
     private companion object {
-        const val POLL_INTERVAL_MS = 5_000L
+        const val POLL_INTERVAL_MS = 1_000L
         const val MAX_PENDING_BLOCKS = 30
     }
 }
