@@ -102,6 +102,7 @@ internal class LiveLensController(
     private val sequence = AtomicLong(0L)
     private val detector = LiveLensChangeDetector()
     private val requests = mutableMapOf<Long, LiveLensTextBlock>()
+    private val frameSnapshots = mutableMapOf<Long, LiveLensFrameSnapshot>()
     private val pending = ArrayDeque<LiveLensTextBlock>()
     private var pollJob: Job? = null
     @Volatile
@@ -183,18 +184,16 @@ internal class LiveLensController(
                     .onFailure { error -> logger.error("Ошибка чтения LIVE-области", error) }
                     .getOrDefault(emptyList())
                 val messages = assembleLiveLensMessages(fragments, lensBounds)
-                val added = detectNewMessages(messages)
-                if (messages.size != lastMessageCount || added.isNotEmpty()) {
-                    logger.info(
-                        "LIVE-сканирование: фрагментов=${fragments.size}, сообщений=${messages.size}, " +
-                            "подтверждено=${added.size}, " +
-                            "очередь=${pending.size}, активен=${activeRequestId != null}"
+                when (requestFrameRecognition(messages, fragments.size)) {
+                    LiveLensFrameRequest.STARTED,
+                    LiveLensFrameRequest.BUSY -> Unit
+                    LiveLensFrameRequest.UNAVAILABLE -> processSnapshot(
+                        messages = messages,
+                        fragmentCount = fragments.size,
+                        source = LiveLensInputSource.ACCESSIBILITY
                     )
-                    lastMessageCount = messages.size
                 }
                 runOnUi { window.snapshotCompleted(POLL_INTERVAL_MS) }
-                added.forEach(::queue)
-                if (messages.isEmpty()) requestFrameRecognition()
                 if (activeRequestId == null) {
                     runOnUi {
                         window.setMode(
@@ -219,15 +218,25 @@ internal class LiveLensController(
     }
 
     @Synchronized
-    private fun requestFrameRecognition() {
-        if (!pixelCaptureEnabled || activeFrameRecognitionId != null) return
-        val image = frameCapture?.capture(Rectangle(lensBounds)) ?: return
+    private fun requestFrameRecognition(
+        accessibilityMessages: List<LiveLensTextBlock>,
+        fragmentCount: Int
+    ): LiveLensFrameRequest {
+        if (!pixelCaptureEnabled) return LiveLensFrameRequest.UNAVAILABLE
+        if (activeFrameRecognitionId != null) return LiveLensFrameRequest.BUSY
+        val image = frameCapture?.capture(Rectangle(lensBounds))
+            ?: return LiveLensFrameRequest.UNAVAILABLE
         val requestId = sequence.incrementAndGet()
         activeFrameRecognitionId = requestId
+        frameSnapshots[requestId] = LiveLensFrameSnapshot(
+            accessibilityMessages = accessibilityMessages,
+            fragmentCount = fragmentCount
+        )
         logger.debug(
             "LIVE OCR-кадр: id=$requestId, размер=${image.width}x${image.height}, байт=${image.bytes.size}"
         )
         dispatch(MainIntent.RecognizeLiveLensFrame(image, requestId))
+        return LiveLensFrameRequest.STARTED
     }
 
     @Synchronized
@@ -238,13 +247,42 @@ internal class LiveLensController(
     private fun completeFrameRecognition(requestId: Long, recognizedText: String?) {
         if (requestId != activeFrameRecognitionId) return
         activeFrameRecognitionId = null
-        if (recognizedText.isNullOrBlank()) return
-
-        val messages = liveLensOcrTextBlocks(recognizedText, lensBounds)
-        val added = detectNewMessages(messages)
-        logger.info(
-            "LIVE OCR распознал: сообщений=${messages.size}, новых=${added.size}, символов=${recognizedText.length}"
+        val frameSnapshot = frameSnapshots.remove(requestId) ?: return
+        val ocrMessages = recognizedText
+            ?.takeIf(String::isNotBlank)
+            ?.let { text -> liveLensOcrTextBlocks(text, lensBounds) }
+            .orEmpty()
+        val selection = selectLiveLensInput(
+            accessibilityMessages = frameSnapshot.accessibilityMessages,
+            ocrMessages = ocrMessages
         )
+        processSnapshot(
+            messages = selection.messages,
+            fragmentCount = frameSnapshot.fragmentCount,
+            source = selection.source
+        )
+        logger.debug(
+            "LIVE-сверка источников: accessibility=${frameSnapshot.accessibilityMessages.size}, " +
+                "ocr=${ocrMessages.size}, выбран=${selection.source.logName}, " +
+                "символов OCR=${recognizedText?.length ?: 0}"
+        )
+    }
+
+    @Synchronized
+    private fun processSnapshot(
+        messages: List<LiveLensTextBlock>,
+        fragmentCount: Int,
+        source: LiveLensInputSource
+    ) {
+        val added = detectNewMessages(messages)
+        if (messages.size != lastMessageCount || added.isNotEmpty()) {
+            logger.info(
+                "LIVE-сканирование: источник=${source.logName}, фрагментов=$fragmentCount, " +
+                    "сообщений=${messages.size}, подтверждено=${added.size}, " +
+                    "очередь=${pending.size}, активен=${activeRequestId != null}"
+            )
+            lastMessageCount = messages.size
+        }
         added.forEach(::queue)
     }
 
@@ -306,6 +344,7 @@ internal class LiveLensController(
         }
         activeRequestId = null
         activeFrameRecognitionId = null
+        frameSnapshots.clear()
         dispatch(MainIntent.CancelLiveLensTranslation)
     }
 
@@ -323,3 +362,10 @@ internal class LiveLensController(
         const val MAX_PENDING_BLOCKS = 30
     }
 }
+
+private data class LiveLensFrameSnapshot(
+    val accessibilityMessages: List<LiveLensTextBlock>,
+    val fragmentCount: Int
+)
+
+private enum class LiveLensFrameRequest { STARTED, BUSY, UNAVAILABLE }
