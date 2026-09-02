@@ -7,6 +7,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.ui.swing.livelens.LiveLensFrameCapture
 import com.github.ahatem.qtranslate.ui.swing.livelens.defaultLiveLensFrameCapture
 import java.awt.Rectangle
+import java.util.ArrayDeque
 import java.util.LinkedHashMap
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.SwingUtilities
@@ -26,6 +27,11 @@ internal class GameSubtitleController(
     private val onChangeArea: () -> Unit,
     private val frameCapture: LiveLensFrameCapture? = defaultLiveLensFrameCapture()
 ) {
+    private data class PendingSubtitle(
+        val sourceText: String,
+        val replaceLatest: Boolean
+    )
+
     private val sequence = AtomicLong(REQUEST_ID_BASE)
     private val tracker = GameSubtitleFrameTracker()
     private val translationCache = object : LinkedHashMap<String, String>(CACHE_SIZE + 1, 0.75f, true) {
@@ -46,19 +52,20 @@ internal class GameSubtitleController(
     private var pollJob: Job? = null
     private var frameRequestId: Long? = null
     private var translationRequestId: Long? = null
-    private var translationSource = ""
-    private var latestSource = ""
+    private var activeSubtitle: PendingSubtitle? = null
+    private val pendingSubtitles = ArrayDeque<PendingSubtitle>()
     private var paused = false
 
     fun open(bounds: Rectangle) {
         stopWork()
         captureBounds = Rectangle(bounds)
         tracker.reset()
-        latestSource = ""
         translationCache.clear()
+        pendingSubtitles.clear()
+        activeSubtitle = null
         paused = false
         runOnUi {
-            window.clearTranslation()
+            window.resetTranslations()
             window.showAt(Rectangle(bounds))
         }
         logger.info(
@@ -122,41 +129,46 @@ internal class GameSubtitleController(
         frameRequestId = null
         when (val decision = tracker.observe(recognizedText)) {
             GameSubtitleFrameDecision.Unchanged -> Unit
-            GameSubtitleFrameDecision.Clear -> {
-                latestSource = ""
-                runOnUi { window.clearTranslation() }
-            }
-            is GameSubtitleFrameDecision.Translate -> acceptSource(decision.sourceText)
+            GameSubtitleFrameDecision.Clear -> Unit
+            is GameSubtitleFrameDecision.Translate -> acceptSource(decision)
         }
-        if (translationRequestId == null && !paused) {
+        if (translationRequestId == null && pendingSubtitles.isEmpty() && !paused) {
             runOnUi { window.setMode(GameSubtitleWindowMode.SCANNING) }
         }
     }
 
     @Synchronized
-    private fun acceptSource(sourceText: String) {
-        latestSource = sourceText
-        val cacheKey = cacheKey(sourceText)
-        translationCache[cacheKey]?.let { cached ->
-            runOnUi {
-                window.showTranslation(cached)
-                window.setMode(GameSubtitleWindowMode.SCANNING)
-            }
-            return
-        }
-        if (translationRequestId == null) submitLatestSource()
+    private fun acceptSource(decision: GameSubtitleFrameDecision.Translate) {
+        val subtitle = PendingSubtitle(decision.sourceText, decision.replaceLatest)
+        val sourceKey = cacheKey(subtitle.sourceText)
+        if (activeSubtitle?.sourceText?.let(::cacheKey) == sourceKey) return
+        if (pendingSubtitles.any { queued -> cacheKey(queued.sourceText) == sourceKey }) return
+        if (pendingSubtitles.size >= MAX_PENDING_SUBTITLES) pendingSubtitles.removeFirst()
+        pendingSubtitles.addLast(subtitle)
+        submitNextSubtitle()
     }
 
     @Synchronized
-    private fun submitLatestSource() {
-        val source = latestSource.trim()
-        if (source.isBlank() || translationRequestId != null) return
-        translationSource = source
-        val requestId = sequence.incrementAndGet()
-        translationRequestId = requestId
-        runOnUi { window.setMode(GameSubtitleWindowMode.TRANSLATING) }
-        logger.debug("LIVE-субтитры: перевод id=$requestId, символов=${source.length}")
-        dispatch(MainIntent.TranslateLiveLensText(source, requestId))
+    private fun submitNextSubtitle() {
+        if (translationRequestId != null) return
+        while (pendingSubtitles.isNotEmpty()) {
+            val subtitle = pendingSubtitles.removeFirst()
+            val source = subtitle.sourceText.trim()
+            if (source.isBlank()) continue
+            val cached = translationCache[cacheKey(source)]
+            if (cached != null) {
+                runOnUi { window.showTranslation(cached, subtitle.replaceLatest) }
+                continue
+            }
+            activeSubtitle = subtitle
+            val requestId = sequence.incrementAndGet()
+            translationRequestId = requestId
+            runOnUi { window.setMode(GameSubtitleWindowMode.TRANSLATING) }
+            logger.debug("LIVE-субтитры: перевод id=$requestId, символов=${source.length}")
+            dispatch(MainIntent.TranslateLiveLensText(source, requestId))
+            return
+        }
+        if (!paused) runOnUi { window.setMode(GameSubtitleWindowMode.SCANNING) }
     }
 
     @Synchronized
@@ -167,34 +179,24 @@ internal class GameSubtitleController(
         failure: TranslationFailureKind?
     ) {
         if (requestId != translationRequestId) return
-        val completedSource = translationSource
+        val completedSubtitle = activeSubtitle ?: return
         translationRequestId = null
-        translationSource = ""
+        activeSubtitle = null
 
         if (!translatedText.isNullOrBlank()) {
-            translationCache[cacheKey(completedSource)] = translatedText.trim()
-            if (latestSource.equals(completedSource, ignoreCase = true)) {
-                runOnUi {
-                    window.showTranslation(translatedText)
-                    window.setMode(GameSubtitleWindowMode.SCANNING)
-                }
-                logger.info("LIVE-субтитры: переведено через $provider")
+            translationCache[cacheKey(completedSubtitle.sourceText)] = translatedText.trim()
+            runOnUi {
+                window.showTranslation(translatedText, completedSubtitle.replaceLatest)
+                window.setMode(GameSubtitleWindowMode.SCANNING)
             }
+            logger.info("LIVE-субтитры: переведено через $provider")
         } else if (failure != null && failure != TranslationFailureKind.CANCELLED) {
             runOnUi { window.setMode(GameSubtitleWindowMode.ERROR) }
             logger.warn("LIVE-субтитры: перевод не выполнен, причина=$failure")
-        } else if (latestSource.equals(completedSource, ignoreCase = true)) {
-            runOnUi { window.clearTranslation() }
         }
 
-        if (!latestSource.equals(completedSource, ignoreCase = true)) {
-            translationCache[cacheKey(latestSource)]?.let { cached ->
-                runOnUi {
-                    window.showTranslation(cached)
-                    window.setMode(GameSubtitleWindowMode.SCANNING)
-                }
-            } ?: submitLatestSource()
-        } else if (failure == null && !paused) {
+        submitNextSubtitle()
+        if (translationRequestId == null && pendingSubtitles.isEmpty() && failure == null && !paused) {
             runOnUi { window.setMode(GameSubtitleWindowMode.SCANNING) }
         }
     }
@@ -210,7 +212,8 @@ internal class GameSubtitleController(
             pollJob = null
             frameRequestId = null
             translationRequestId = null
-            translationSource = ""
+            activeSubtitle = null
+            pendingSubtitles.clear()
             dispatch(MainIntent.CancelLiveLensTranslation)
             runOnUi { window.setMode(GameSubtitleWindowMode.PAUSED) }
         }
@@ -234,7 +237,8 @@ internal class GameSubtitleController(
         paused = false
         frameRequestId = null
         translationRequestId = null
-        translationSource = ""
+        activeSubtitle = null
+        pendingSubtitles.clear()
         dispatch(MainIntent.CancelLiveLensTranslation)
     }
 
@@ -247,6 +251,7 @@ internal class GameSubtitleController(
     private companion object {
         const val CAPTURE_INTERVAL_MS = 650L
         const val CACHE_SIZE = 128
+        const val MAX_PENDING_SUBTITLES = 5
         const val REQUEST_ID_BASE = 8_000_000_000_000L
     }
 }

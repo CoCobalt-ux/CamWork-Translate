@@ -3,7 +3,10 @@ package com.github.ahatem.qtranslate.ui.swing.gamesubtitles
 internal sealed interface GameSubtitleFrameDecision {
     data object Unchanged : GameSubtitleFrameDecision
     data object Clear : GameSubtitleFrameDecision
-    data class Translate(val sourceText: String) : GameSubtitleFrameDecision
+    data class Translate(
+        val sourceText: String,
+        val replaceLatest: Boolean = false
+    ) : GameSubtitleFrameDecision
 }
 
 /**
@@ -13,33 +16,51 @@ internal sealed interface GameSubtitleFrameDecision {
 internal class GameSubtitleFrameTracker(
     private val emptyFramesBeforeClear: Int = DEFAULT_EMPTY_FRAMES_BEFORE_CLEAR
 ) {
-    private var observedText = ""
+    private var observedLines = emptyList<String>()
     private var emptyFrames = 0
 
     fun observe(rawText: String?): GameSubtitleFrameDecision {
-        val normalized = normalizeGameSubtitleText(rawText.orEmpty())
-        if (normalized.isBlank()) {
+        val currentLines = normalizeGameSubtitleLines(rawText.orEmpty())
+        if (currentLines.isEmpty()) {
             emptyFrames++
-            if (observedText.isNotBlank() && emptyFrames >= emptyFramesBeforeClear) {
-                observedText = ""
+            if (observedLines.isNotEmpty() && emptyFrames >= emptyFramesBeforeClear) {
+                observedLines = emptyList()
                 return GameSubtitleFrameDecision.Clear
             }
             return GameSubtitleFrameDecision.Unchanged
         }
 
         emptyFrames = 0
-        if (isSameGameSubtitle(normalized, observedText)) {
-            // Сохраняем более свежую OCR-форму, но не считаем мелкую поправку новой репликой.
-            observedText = normalized
+        val currentText = currentLines.joinToString(" ")
+        val previousText = observedLines.joinToString(" ")
+        if (isSameGameSubtitle(currentText, previousText)) {
+            observedLines = currentLines
             return GameSubtitleFrameDecision.Unchanged
         }
 
-        observedText = normalized
-        return GameSubtitleFrameDecision.Translate(normalized)
+        if (observedLines.isEmpty()) {
+            observedLines = currentLines
+            return GameSubtitleFrameDecision.Translate(currentText)
+        }
+
+        val overlap = longestTrailingOverlap(observedLines, currentLines)
+        if (overlap > 0) {
+            val addedLines = currentLines.drop(overlap)
+            observedLines = currentLines
+            return if (addedLines.isEmpty()) {
+                GameSubtitleFrameDecision.Unchanged
+            } else {
+                GameSubtitleFrameDecision.Translate(addedLines.joinToString(" "))
+            }
+        }
+
+        val replaceLatest = isProgressiveSubtitleUpdate(observedLines, currentLines)
+        observedLines = currentLines
+        return GameSubtitleFrameDecision.Translate(currentText, replaceLatest)
     }
 
     fun reset() {
-        observedText = ""
+        observedLines = emptyList()
         emptyFrames = 0
     }
 
@@ -48,15 +69,39 @@ internal class GameSubtitleFrameTracker(
     }
 }
 
+internal fun normalizeGameSubtitleLines(value: String): List<String> = value.lineSequence()
+    .map(String::trim)
+    .map { line -> line.replace(Regex("\\s+"), " ").trim() }
+    .filter { line -> line.count(Char::isLetterOrDigit) >= 2 }
+    .map { line -> line.take(MAX_SUBTITLE_LENGTH) }
+    .toList()
+
 internal fun normalizeGameSubtitleText(value: String): String {
-    val normalized = value.lineSequence()
-        .map(String::trim)
-        .filter(String::isNotBlank)
+    return normalizeGameSubtitleLines(value)
         .joinToString(" ")
-        .replace(Regex("\\s+"), " ")
-        .trim()
         .take(MAX_SUBTITLE_LENGTH)
-    return normalized.takeIf { text -> text.count(Char::isLetterOrDigit) >= 2 }.orEmpty()
+}
+
+private fun longestTrailingOverlap(previous: List<String>, current: List<String>): Int {
+    val maximum = minOf(previous.size, current.size)
+    for (size in maximum downTo 1) {
+        val previousStart = previous.size - size
+        val matches = (0 until size).all { index ->
+            isSameGameSubtitle(previous[previousStart + index], current[index])
+        }
+        if (matches) return size
+    }
+    return 0
+}
+
+private fun isProgressiveSubtitleUpdate(previous: List<String>, current: List<String>): Boolean {
+    if (previous.size != 1 || current.size != 1) return false
+    val oldText = canonicalSubtitle(previous.single())
+    val newText = canonicalSubtitle(current.single())
+    val shorter = if (oldText.length <= newText.length) oldText else newText
+    val longer = if (oldText.length > newText.length) oldText else newText
+    if (shorter.length < MIN_PROGRESSIVE_LENGTH || !longer.startsWith(shorter)) return false
+    return shorter.length.toDouble() / longer.length >= MIN_PROGRESSIVE_COMMON_RATIO
 }
 
 internal fun isSameGameSubtitle(first: String, second: String): Boolean {
@@ -105,3 +150,5 @@ private const val MAX_SUBTITLE_LENGTH = 600
 private const val MIN_FUZZY_LENGTH = 10
 private const val MAX_LENGTH_DELTA_RATIO = 0.18
 private const val MAX_EDIT_DISTANCE_RATIO = 0.12
+private const val MIN_PROGRESSIVE_LENGTH = 4
+private const val MIN_PROGRESSIVE_COMMON_RATIO = 0.30

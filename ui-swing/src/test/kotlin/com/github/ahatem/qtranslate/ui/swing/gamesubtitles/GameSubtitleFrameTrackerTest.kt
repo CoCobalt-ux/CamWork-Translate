@@ -2,7 +2,9 @@ package com.github.ahatem.qtranslate.ui.swing.gamesubtitles
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertTrue
 
 class GameSubtitleFrameTrackerTest {
     @Test
@@ -62,5 +64,42 @@ class GameSubtitleFrameTrackerTest {
         val noisyFrame = tracker.observe("If he tries to touch me agaln, I will scream!")
 
         assertIs<GameSubtitleFrameDecision.Unchanged>(noisyFrame)
+    }
+
+    @Test
+    fun `из кадра со старой и новой репликой переводится только нижняя новая`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("Hello")
+
+        val decision = assertIs<GameSubtitleFrameDecision.Translate>(
+            tracker.observe("Hello\nHow are you?")
+        )
+
+        assertEquals("How are you?", decision.sourceText)
+        assertFalse(decision.replaceLatest)
+    }
+
+    @Test
+    fun `при прокрутке диалога уже известная реплика не переводится повторно`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("Hello\nHow are you?")
+
+        assertIs<GameSubtitleFrameDecision.Unchanged>(tracker.observe("How are you?"))
+        val decision = assertIs<GameSubtitleFrameDecision.Translate>(
+            tracker.observe("How are you?\nI am fine")
+        )
+
+        assertEquals("I am fine", decision.sourceText)
+    }
+
+    @Test
+    fun `постепенно появляющаяся одна реплика обновляет нижний перевод`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("Wait")
+
+        val decision = assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe("Wait for me"))
+
+        assertEquals("Wait for me", decision.sourceText)
+        assertTrue(decision.replaceLatest)
     }
 }

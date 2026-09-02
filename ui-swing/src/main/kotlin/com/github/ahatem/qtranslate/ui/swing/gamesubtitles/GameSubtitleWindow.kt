@@ -2,6 +2,7 @@ package com.github.ahatem.qtranslate.ui.swing.gamesubtitles
 
 import com.formdev.flatlaf.FlatClientProperties
 import com.github.ahatem.qtranslate.ui.swing.livelens.WindowsClickThrough
+import java.awt.AlphaComposite
 import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
@@ -27,6 +28,8 @@ import javax.swing.JWindow
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 import javax.swing.Timer
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 internal data class GameSubtitleStrings(
     val title: String,
@@ -104,12 +107,12 @@ internal class GameSubtitleWindow(
         captionPanel.setLoading(mode == GameSubtitleWindowMode.TRANSLATING)
     }
 
-    fun showTranslation(text: String) {
-        captionPanel.setCaption(text)
+    fun showTranslation(text: String, replaceLatest: Boolean) {
+        captionPanel.appendCaption(text, replaceLatest)
     }
 
-    fun clearTranslation() {
-        captionPanel.setCaption("")
+    fun resetTranslations() {
+        captionPanel.reset()
     }
 
     /** На старых Windows защита от захвата может отсутствовать; тогда окно скрывается только на время кадра. */
@@ -200,12 +203,21 @@ internal class GameSubtitleWindow(
     }
 }
 
+private data class CaptionRenderLayout(
+    val line: GameSubtitleVisualLine,
+    val wrappedLines: List<String>,
+    val boxWidth: Int,
+    val boxHeight: Int,
+    val targetY: Int
+)
+
 private class CaptionPanel(private val loadingText: String) : JComponent() {
-    private var caption = ""
+    private val timeline = GameSubtitleTimeline()
+    private val renderedY = mutableMapOf<Long, Float>()
     private var loading = false
-    private var pulse = false
-    private val timer = Timer(320) {
-        pulse = !pulse
+    private var pulsePhase = 0f
+    private val timer = Timer(ANIMATION_FRAME_MS) {
+        pulsePhase = (pulsePhase + PULSE_STEP) % FULL_CIRCLE
         repaint()
     }
 
@@ -214,8 +226,14 @@ private class CaptionPanel(private val loadingText: String) : JComponent() {
         timer.start()
     }
 
-    fun setCaption(value: String) {
-        caption = value.trim()
+    fun appendCaption(value: String, replaceLatest: Boolean) {
+        timeline.append(value, System.currentTimeMillis(), replaceLatest)
+        repaint()
+    }
+
+    fun reset() {
+        timeline.clear()
+        renderedY.clear()
         repaint()
     }
 
@@ -233,44 +251,126 @@ private class CaptionPanel(private val loadingText: String) : JComponent() {
     }
 
     override fun paintComponent(graphics: Graphics) {
-        val displayText = caption.ifBlank { if (loading) loadingText else "" }
-        if (displayText.isBlank()) return
-
         val g = graphics.create() as Graphics2D
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON)
-        val fontSize = (height * 0.12f).coerceIn(21f, 42f)
+        val now = System.currentTimeMillis()
+        val visibleLines = timeline.snapshot(now)
+        if (visibleLines.isEmpty()) {
+            renderedY.clear()
+            if (loading) paintLoadingPlaceholder(g)
+            g.dispose()
+            return
+        }
+
+        val fontSize = (height * 0.075f).coerceIn(18f, 32f)
         g.font = Font(Font.SANS_SERIF, Font.BOLD, fontSize.toInt())
         val metrics = g.fontMetrics
         val maxTextWidth = (width - 64).coerceAtLeast(120)
-        val lines = wrapCaption(displayText, metrics, maxTextWidth, 3)
         val lineHeight = metrics.height
-        val textWidth = lines.maxOfOrNull(metrics::stringWidth).orEmptyWidth()
-        val boxWidth = (textWidth + 36).coerceAtMost(width - 20)
-        val boxHeight = lineHeight * lines.size + 24
-        val x = (width - boxWidth) / 2
-        val y = (height - boxHeight - 14).coerceAtLeast(8)
+        val layouts = buildLayouts(visibleLines, metrics, maxTextWidth, lineHeight)
+        val visibleIds = visibleLines.mapTo(mutableSetOf()) { line -> line.id }
+        renderedY.keys.retainAll(visibleIds)
 
-        g.color = Color(3, 12, 15, 218)
-        g.fillRoundRect(x, y, boxWidth, boxHeight, 20, 20)
-        g.color = Color(54, 207, 184, 205)
-        g.fillRoundRect(x + 1, y + 1, boxWidth - 2, 3, 12, 12)
-
-        lines.forEachIndexed { index, line ->
-            val lineWidth = metrics.stringWidth(line)
-            val textX = (width - lineWidth) / 2
-            val baseline = y + 14 + metrics.ascent + index * lineHeight
-            g.color = Color(0, 0, 0, 190)
-            g.drawString(line, textX + 2, baseline + 2)
-            g.color = Color.WHITE
-            g.drawString(line, textX, baseline)
-        }
-
-        if (loading && caption.isNotBlank()) {
-            g.color = Color(75, 231, 204, if (pulse) 245 else 95)
-            g.fillOval(x + boxWidth - 17, y + 9, 7, 7)
+        layouts.asReversed().forEachIndexed { index, layout ->
+            val currentY = renderedY[layout.line.id] ?: layout.targetY.toFloat()
+            val nextY = currentY + (layout.targetY - currentY) * MOVE_EASING
+            renderedY[layout.line.id] = nextY
+            val isNewest = index == layouts.lastIndex
+            paintCaption(g, layout, nextY.roundToInt(), lineHeight, isNewest)
         }
         g.dispose()
+    }
+
+    private fun buildLayouts(
+        lines: List<GameSubtitleVisualLine>,
+        metrics: FontMetrics,
+        maxTextWidth: Int,
+        lineHeight: Int
+    ): List<CaptionRenderLayout> {
+        val result = mutableListOf<CaptionRenderLayout>()
+        var bottom = height - BOTTOM_INSET
+        lines.asReversed().forEach { line ->
+            val wrapped = wrapCaption(line.text, metrics, maxTextWidth, MAX_WRAPPED_LINES)
+            if (wrapped.isEmpty()) return@forEach
+            val textWidth = wrapped.maxOfOrNull(metrics::stringWidth).orEmptyWidth()
+            val boxWidth = (textWidth + HORIZONTAL_PADDING).coerceAtMost(width - 20)
+            val boxHeight = lineHeight * wrapped.size + VERTICAL_PADDING
+            val targetY = bottom - boxHeight
+            if (targetY < TOP_INSET && result.isNotEmpty()) return@forEach
+            result += CaptionRenderLayout(
+                line = line,
+                wrappedLines = wrapped,
+                boxWidth = boxWidth,
+                boxHeight = boxHeight,
+                targetY = targetY.coerceAtLeast(TOP_INSET)
+            )
+            bottom = targetY - CAPTION_GAP
+        }
+        return result
+    }
+
+    private fun paintCaption(
+        g: Graphics2D,
+        layout: CaptionRenderLayout,
+        y: Int,
+        lineHeight: Int,
+        isNewest: Boolean
+    ) {
+        val opacity = layout.line.opacity.coerceIn(MIN_VISIBLE_OPACITY, 1f)
+        g.composite = AlphaComposite.SrcOver.derive(opacity)
+        val x = (width - layout.boxWidth) / 2
+        g.color = Color(3, 12, 15, 218)
+        g.fillRoundRect(x, y, layout.boxWidth, layout.boxHeight, 18, 18)
+        g.color = Color(54, 207, 184, 205)
+        g.fillRoundRect(x + 1, y + 1, layout.boxWidth - 2, 3, 12, 12)
+
+        layout.wrappedLines.forEachIndexed { index, text ->
+            val lineWidth = g.fontMetrics.stringWidth(text)
+            val textX = (width - lineWidth) / 2
+            val baseline = y + 13 + g.fontMetrics.ascent + index * lineHeight
+            g.color = Color(0, 0, 0, 190)
+            g.drawString(text, textX + 2, baseline + 2)
+            g.color = Color.WHITE
+            g.drawString(text, textX, baseline)
+        }
+
+        if (loading && isNewest) {
+            val pulseAlpha = (145 + 100 * ((sin(pulsePhase.toDouble()) + 1.0) / 2.0)).toInt()
+            g.color = Color(75, 231, 204, pulseAlpha)
+            g.fillOval(x + layout.boxWidth - 17, y + 9, 7, 7)
+        }
+        g.composite = AlphaComposite.SrcOver
+    }
+
+    private fun paintLoadingPlaceholder(g: Graphics2D) {
+        val fontSize = (height * 0.06f).coerceIn(16f, 24f)
+        g.font = Font(Font.SANS_SERIF, Font.BOLD, fontSize.toInt())
+        val metrics = g.fontMetrics
+        val textWidth = metrics.stringWidth(loadingText)
+        val boxWidth = (textWidth + 40).coerceAtMost(width - 20)
+        val boxHeight = metrics.height + 20
+        val x = (width - boxWidth) / 2
+        val y = (height - boxHeight - BOTTOM_INSET).coerceAtLeast(TOP_INSET)
+        val pulseAlpha = (145 + 60 * ((sin(pulsePhase.toDouble()) + 1.0) / 2.0)).toInt()
+        g.color = Color(3, 12, 15, pulseAlpha)
+        g.fillRoundRect(x, y, boxWidth, boxHeight, 16, 16)
+        g.color = Color(190, 216, 212, pulseAlpha.coerceAtMost(220))
+        g.drawString(loadingText, (width - textWidth) / 2, y + 10 + metrics.ascent)
+    }
+
+    private companion object {
+        const val ANIMATION_FRAME_MS = 40
+        const val PULSE_STEP = 0.18f
+        const val FULL_CIRCLE = 6.283_185f
+        const val MOVE_EASING = 0.2f
+        const val MIN_VISIBLE_OPACITY = 0.02f
+        const val MAX_WRAPPED_LINES = 2
+        const val HORIZONTAL_PADDING = 36
+        const val VERTICAL_PADDING = 22
+        const val CAPTION_GAP = 10
+        const val TOP_INSET = 8
+        const val BOTTOM_INSET = 14
     }
 }
 
