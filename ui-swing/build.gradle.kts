@@ -25,7 +25,7 @@ dependencies {
     implementation(libs.jnativehook)
     implementation(libs.jkeymaster)
     // Используется напрямую для UI Automation и GetGUIThreadInfo на Windows.
-    implementation("net.java.dev.jna:jna-platform:5.4.0")
+    implementation("net.java.dev.jna:jna-platform:5.19.1")
 
     implementation(libs.commonmark)
 
