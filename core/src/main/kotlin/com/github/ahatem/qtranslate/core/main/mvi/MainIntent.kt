@@ -24,6 +24,18 @@ sealed interface MainIntent : UiIntent {
     /** User selected a target language from the dropdown. */
     data class SelectTargetLanguage(val language: LanguageCode) : MainIntent
 
+    /**
+     * Смена языка в пассивном окошке (входящий авто-перевод чужого текста).
+     *
+     * Не переиспользует [SelectSourceLanguage]/[SelectTargetLanguage]: те меняют общую
+     * sourceLanguage/targetLanguage, которую читает и исходящий Shift-перевод. Вход и выход —
+     * разные направления с разными языками (клиент пишет на английском, модель отвечает по-
+     * русски), поэтому выбор здесь должен остаться внутри временных quickTranslate*Override и
+     * никак не задевать то, что затем сделает Shift.
+     */
+    data class SelectQuickTranslatePassiveSourceLanguage(val language: LanguageCode) : MainIntent
+    data class SelectQuickTranslatePassiveTargetLanguage(val language: LanguageCode) : MainIntent
+
     /** User clicked the swap button to exchange source and target languages. */
     data object SwapLanguages : MainIntent
     /** Обмен пары внутри быстрого окна с учётом его временных языков. */
@@ -101,7 +113,10 @@ sealed interface MainIntent : UiIntent {
      */
     data class ApplyCorrection(
         val original: String,
-        val suggestion: String
+        val suggestion: String,
+        val startIndex: Int,
+        val endIndex: Int,
+        val expectedInputText: String
     ) : MainIntent
 
     // ---- History navigation ----
@@ -192,7 +207,21 @@ sealed interface MainIntent : UiIntent {
         val requestId: Long
     ) : MainIntent
 
-    /** Останавливает только LIVE-запрос, не затрагивая Shift и главный перевод. */
+    /** Кадр LIVE-рамки, для которого требуется локальное системное распознавание текста. */
+    data class RecognizeLiveLensFrame(
+        val image: ImageData,
+        val requestId: Long
+    ) : MainIntent
+
+    /** Одноразово переводит текст в координатах снимка, не затрагивая LIVE и главное окно. */
+    data class TranslateImageInPlace(
+        val image: ImageData,
+        val requestId: Long
+    ) : MainIntent
+
+    data object CancelImageInPlaceTranslation : MainIntent
+
+    /** Останавливает LIVE-перевод и распознавание кадра, не затрагивая Shift и главное окно. */
     data object CancelLiveLensTranslation : MainIntent
 
     /** User dismissed the quick translate popup. */

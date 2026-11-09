@@ -6,10 +6,8 @@ import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.formdev.flatlaf.icons.FlatSearchIcon
 import com.formdev.flatlaf.util.UIScale
 import com.github.ahatem.qtranslate.api.language.LanguageCode
-import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
-import com.github.ahatem.qtranslate.core.settings.mvi.SettingsEvent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
@@ -20,8 +18,7 @@ import com.github.ahatem.qtranslate.ui.swing.shared.widgets.Renderable
 import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
 import com.github.ahatem.qtranslate.core.settings.data.NetworkConfig
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
+import com.github.michaelbull.result.fold
 import kotlinx.coroutines.swing.Swing
 import java.awt.*
 import java.awt.event.KeyEvent
@@ -68,6 +65,7 @@ class SettingsDialog(
 ) : JDialog(owner, "Settings", true) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var saveInProgress = false
 
     /**
      * The proxy password, loaded once when the dialog opens.
@@ -957,7 +955,7 @@ class SettingsDialog(
         applyButton = JButton(localizationManager.getString("common.apply")).apply {
             mnemonic = KeyEvent.VK_A
             isEnabled = false
-            addActionListener { settingsStore.dispatch(SettingsIntent.SaveChanges) }
+            addActionListener { saveConfiguration(closeOnSuccess = false) }
         }
         val resetButton = JButton(
             localizationManager.getString("settings_dialog.reset_defaults_button")
@@ -987,7 +985,7 @@ class SettingsDialog(
                     val baseTitle = localizationManager.getString("settings_dialog.title")
                     title = if (state.isDirty) "● $baseTitle" else baseTitle
 
-                    applyButton.isEnabled = state.isDirty && !state.isSaving
+                    applyButton.isEnabled = state.isDirty && !state.isSaving && !saveInProgress
 
                     currentPanelName?.let { name ->
                         val panel = panelCache[name]
@@ -1004,31 +1002,45 @@ class SettingsDialog(
     // ── Actions ───────────────────────────────────────────────────────────────
 
     private fun onOk() {
-        if (!settingsStore.state.value.isDirty) {
+        val state = settingsStore.state.value
+        if (!state.isDirty && !state.isSaving) {
             dispose(); return
         }
+        saveConfiguration(closeOnSuccess = true)
+    }
 
+    private fun saveConfiguration(closeOnSuccess: Boolean) {
+        if (saveInProgress) return
+        saveInProgress = true
         okButton.isEnabled = false
+        applyButton.isEnabled = false
         okButton.text = localizationManager.getString("settings_dialog.saving")
-        settingsStore.dispatch(SettingsIntent.SaveChanges)
-
         scope.launch {
-            val event = settingsStore.events
-                .filter { it is SettingsEvent.ShowMessage }
-                .first() as SettingsEvent.ShowMessage
-
-            withContext(Dispatchers.Swing) {
-                if (event.type != NotificationType.ERROR) {
-                    dispose()
-                } else {
-                    okButton.isEnabled = true
-                    okButton.text = localizationManager.getString("common.ok")
-                    JOptionPane.showMessageDialog(
-                        this@SettingsDialog,
-                        event.message,
-                        localizationManager.getString("settings_dialog.save_failed_title"),
-                        JOptionPane.ERROR_MESSAGE
+            try {
+                val result = settingsStore.saveChanges()
+                withContext(Dispatchers.Swing) {
+                    result.fold(
+                        success = {
+                            if (closeOnSuccess && !settingsStore.state.value.isDirty) dispose()
+                        },
+                        failure = { error ->
+                            JOptionPane.showMessageDialog(
+                                this@SettingsDialog,
+                                error.message,
+                                localizationManager.getString("settings_dialog.save_failed_title"),
+                                JOptionPane.ERROR_MESSAGE
+                            )
+                        }
                     )
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Swing) {
+                    saveInProgress = false
+                    if (isDisplayable) {
+                        okButton.isEnabled = true
+                        okButton.text = localizationManager.getString("common.ok")
+                        applyButton.isEnabled = settingsStore.state.value.isDirty
+                    }
                 }
             }
         }

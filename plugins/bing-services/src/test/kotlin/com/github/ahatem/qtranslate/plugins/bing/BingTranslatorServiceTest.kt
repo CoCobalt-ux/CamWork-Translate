@@ -27,6 +27,47 @@ import kotlin.test.assertTrue
 class BingTranslatorServiceTest {
 
     @Test
+    fun cancelledAuthRefreshReleasesMutexAndNextRefreshIsShared() = runTest {
+        val entered = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var calls = 0
+        val http = object : TextHttpClient() {
+            override suspend fun get(url: String, headers: Map<String, String>, queryParams: Map<String, Any?>): Result<String, ServiceError> {
+                calls++
+                if (calls == 1) { entered.complete(Unit); kotlinx.coroutines.awaitCancellation() }
+                return Ok(authPage(2))
+            }
+            override suspend fun post(url: String, headers: Map<String, String>, body: String?, queryParams: Map<String, Any?>): Result<String, ServiceError> = error("POST не ожидается")
+        }
+        val manager = BingAuthManager(FakePluginContext(), http, testApiConfig())
+        val pending = async { manager.getAuth() }
+        entered.await()
+        pending.cancel()
+        pending.join()
+        val results = List(30) { async { manager.getAuth().success() } }.awaitAll()
+        assertEquals(2, calls)
+        assertTrue(results.all { it === results.first() })
+    }
+
+    @Test
+    fun failedAuthFetchAndMalformedPageDoNotPoisonRefresh() = runTest {
+        var calls = 0
+        val http = object : TextHttpClient() {
+            override suspend fun get(url: String, headers: Map<String, String>, queryParams: Map<String, Any?>): Result<String, ServiceError> = when (++calls) {
+                1 -> Err(ServiceError.NetworkError("Тестовый обрыв"))
+                2 -> Ok("<html>Временная ошибка</html>")
+                else -> Ok(authPage(3))
+            }
+            override suspend fun post(url: String, headers: Map<String, String>, body: String?, queryParams: Map<String, Any?>): Result<String, ServiceError> = error("POST не ожидается")
+        }
+        val manager = BingAuthManager(FakePluginContext(), http, testApiConfig())
+        assertIs<ServiceError.NetworkError>(manager.getAuth().failure())
+        assertIs<ServiceError.InvalidResponseError>(manager.getAuth().failure())
+        val recovered = manager.getAuth().success()
+        assertSame(recovered, manager.getAuth().success())
+        assertEquals(3, calls)
+    }
+
+    @Test
     fun `параллельное получение auth выполняет один сетевой запрос`() = runTest {
         val client = RecordingBingHttpClient(
             authPages = listOf(authPage(1)),

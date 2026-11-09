@@ -8,16 +8,21 @@ import javax.swing.*
 import kotlin.math.roundToInt
 
 class ScreenCapturePanel(
+    private val onTranslateInImage: (BufferedImage) -> Unit,
+    private val onStartGameSubtitles: ((Rectangle) -> Unit)? = null,
     private val onTranslate: (BufferedImage) -> Unit,
     private val onCopyText: (BufferedImage) -> Unit,
     private val onCopyImage: (BufferedImage) -> Unit,
     private val onSaveImage: (BufferedImage) -> Unit,
     private val onRecrop: () -> Unit,
     private val onCancel: () -> Unit,
-    private val buttonLabels: ButtonLabels = ButtonLabels()
+    private val buttonLabels: ButtonLabels = ButtonLabels(),
+    private val gameSubtitlesPrimary: Boolean = false
 ) : JLayeredPane() {
 
     data class ButtonLabels(
+        val translateInImage: String = "Translate Image",
+        val gameSubtitles: String = "LIVE Subtitles",
         val translate: String  = "Translate",
         val copyText: String   = "Copy Text",
         val copyImage: String  = "Copy Image",
@@ -75,6 +80,8 @@ class ScreenCapturePanel(
             imageSelection.height
         )
     }
+
+    fun getSelection(): Rectangle? = currentState?.selection?.let(::Rectangle)
 
     // ─────────────────────────────────────────────────────────────────────────
     // Painting
@@ -180,14 +187,32 @@ class ScreenCapturePanel(
     // ─────────────────────────────────────────────────────────────────────────
 
     private fun createButtonsPanel(): JPanel {
-        val translateBtn = JButton(buttonLabels.translate).apply {
-            // "default" = filled accent button — primary action
-            putClientProperty(FlatClientProperties.BUTTON_TYPE, "default")
+        val translateInImageBtn = JButton(buttonLabels.translateInImage).apply {
+            putClientProperty(
+                FlatClientProperties.BUTTON_TYPE,
+                if (gameSubtitlesPrimary) "toolBarButton" else "default"
+            )
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            toolTipText = "OCR and translate the captured region"
-            addActionListener { getSelectedImage()?.let(onTranslate) }
+            toolTipText = "Replace visible text with its translation in the captured image"
+            addActionListener { getSelectedImage()?.let(onTranslateInImage) }
             alignmentY = Component.CENTER_ALIGNMENT
         }
+        val gameSubtitlesBtn = onStartGameSubtitles?.let { start ->
+            JButton(buttonLabels.gameSubtitles).apply {
+                putClientProperty(
+                    FlatClientProperties.BUTTON_TYPE,
+                    if (gameSubtitlesPrimary) "default" else "toolBarButton"
+                )
+                cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                toolTipText = "Continuously recognize and translate subtitles in this area"
+                addActionListener { getSelection()?.let(start) }
+                alignmentY = Component.CENTER_ALIGNMENT
+            }
+        }
+        val translateBtn = flatBtn(
+            buttonLabels.translate,
+            "OCR and translate the captured text in the main window"
+        ) { getSelectedImage()?.let(onTranslate) }
         val copyTextBtn  = flatBtn(buttonLabels.copyText,  "Recognize text and copy to clipboard")  { getSelectedImage()?.let(onCopyText)  }
         val copyImageBtn = flatBtn(buttonLabels.copyImage, "Copy image to clipboard")                 { getSelectedImage()?.let(onCopyImage) }
         val saveImageBtn = flatBtn(buttonLabels.saveImage, "Save captured image as PNG")              { getSelectedImage()?.let(onSaveImage) }
@@ -217,6 +242,12 @@ class ScreenCapturePanel(
             border = BorderFactory.createEmptyBorder(7, 12, 7, 12)
 
             // ── Group 1: primary action ──────────────────────────────────────
+            add(Box.createHorizontalStrut(2))
+            gameSubtitlesBtn?.let {
+                add(it)
+                add(Box.createHorizontalStrut(2))
+            }
+            add(translateInImageBtn)
             add(Box.createHorizontalStrut(2))
             add(translateBtn)
 

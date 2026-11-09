@@ -38,6 +38,27 @@ class ShiftTranslationMemoryTest {
     }
 
     @Test
+    fun `выбранный язык входящих переводов не перебивается ошибочным определением`() {
+        val memory = ShiftTranslationMemory()
+        // Google регулярно принимает короткий русский за украинский. Раньше одна такая ошибка
+        // закреплялась и уводила все последующие входящие переводы в украинский.
+        memory.rememberReplacement(
+            "Good morning!",
+            detectedSourceLanguage = LanguageCode.UKRAINIAN,
+            configuredModelLanguage = LanguageCode.RUSSIAN
+        )
+
+        assertEquals(
+            LanguageCode.RUSSIAN,
+            memory.reverseTargetFor(
+                selectedText = "How are you?",
+                fallback = LanguageCode.RUSSIAN,
+                allowDetectionGuess = false
+            )
+        )
+    }
+
+    @Test
     fun `явно изменённый язык модели важнее старой памяти для произвольного текста`() {
         val memory = ShiftTranslationMemory()
         memory.rememberReplacement(

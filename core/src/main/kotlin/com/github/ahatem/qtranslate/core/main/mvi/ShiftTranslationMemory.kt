@@ -44,12 +44,23 @@ internal class ShiftTranslationMemory {
      * приоритет для произвольного текста; точный предыдущий результат всё ещё возвращается в свой
      * реальный исходный язык.
      */
-    fun reverseTargetFor(selectedText: String, fallback: LanguageCode): LanguageCode {
+    /**
+     * @param allowDetectionGuess разрешает подставить язык, определённый в прошлом исходящем
+     *   переводе, вместо [fallback]. Догадка снимается, когда пользователь сам выбрал язык
+     *   входящих переводов: определение ошибается на коротком тексте — русский регулярно
+     *   опознаётся как украинский — и одна такая ошибка иначе закреплялась за всеми дальнейшими
+     *   входящими переводами, перебивая явный выбор.
+     */
+    fun reverseTargetFor(
+        selectedText: String,
+        fallback: LanguageCode,
+        allowDetectionGuess: Boolean = true
+    ): LanguageCode {
         val replacement = lastReplacement ?: return fallback
         return when {
             replacement.translatedFingerprint == fingerprint(selectedText) ->
                 replacement.detectedSourceLanguage
-            replacement.configuredModelLanguage == fallback ->
+            allowDetectionGuess && replacement.configuredModelLanguage == fallback ->
                 replacement.detectedSourceLanguage
             else -> fallback
         }

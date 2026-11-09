@@ -11,6 +11,7 @@ data class TrayMenuStrings(
     val dictionary: String,
     val imageSearch: String,
     val textRecognition: String,
+    val gameSubtitles: String,
     val liveLens: String,
     val history: String,
     val settings: String,
@@ -23,6 +24,7 @@ data class TrayMenuActions(
     val onShowDictionary: () -> Unit,
     val onShowImageSearch: () -> Unit,
     val onRecognizeText: () -> Unit,
+    val onShowGameSubtitles: () -> Unit,
     val onShowLiveLens: () -> Unit,
     val onShowHistory: () -> Unit,
     val onShowSettings: () -> Unit,
@@ -50,6 +52,10 @@ class TrayMenuPopup(
 
         add(JMenuItem(strings.textRecognition).apply {
             addActionListener { actions.onRecognizeText() }
+        })
+
+        add(JMenuItem(strings.gameSubtitles).apply {
+            addActionListener { actions.onShowGameSubtitles() }
         })
 
         add(JMenuItem(strings.liveLens).apply {

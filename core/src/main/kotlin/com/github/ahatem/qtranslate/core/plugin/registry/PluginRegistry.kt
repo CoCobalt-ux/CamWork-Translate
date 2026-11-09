@@ -33,7 +33,10 @@ internal data class PluginContainer(
      * Which copy of this plugin this is. Every plugin has exactly one until the user creates
      * more, but identifiers carry it from the start so their shape never changes.
      */
-    val instanceId: String = ServiceId.DEFAULT_INSTANCE
+    val instanceId: String = ServiceId.DEFAULT_INSTANCE,
+    val lifecycleMutex: Mutex = Mutex(),
+    var disposed: Boolean = false,
+    var initialized: Boolean = false
 ) {
     val id: String get() = manifest.id
 

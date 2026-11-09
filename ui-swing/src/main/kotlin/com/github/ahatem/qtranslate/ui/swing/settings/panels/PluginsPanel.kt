@@ -15,6 +15,7 @@ import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.util.applyForegroundColorFilter
 import com.github.ahatem.qtranslate.ui.swing.shared.util.GridBag
 import com.github.michaelbull.result.fold
+import com.github.michaelbull.result.Result
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.awt.*
@@ -674,11 +675,11 @@ class PluginsPanel(
             PluginStatus.AWAITING_VERIFICATION -> {
                 rightGroup.add(JButton(localizationManager.getString("settings_plugins.btn_accept_update")).apply {
                     toolTipText = localizationManager.getString("settings_plugins.tip_accept_update")
-                    addActionListener { scope.launch { pluginManager.resolveAsUpdate(plugin.manifest.id) } }
+                    addActionListener { runPluginMutation { pluginManager.resolveAsUpdate(plugin.manifest.id) } }
                 })
                 rightGroup.add(JButton(localizationManager.getString("settings_plugins.btn_clean_install")).apply {
                     toolTipText = localizationManager.getString("settings_plugins.tip_clean_install")
-                    addActionListener { scope.launch { pluginManager.resolveAsCleanInstall(plugin.manifest.id) } }
+                    addActionListener { runPluginMutation { pluginManager.resolveAsCleanInstall(plugin.manifest.id) } }
                 })
             }
             PluginStatus.FAILED -> Unit
@@ -847,7 +848,24 @@ class PluginsPanel(
             localizationManager.getString("settings_plugins.uninstall_confirm_title"),
             JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE
         ) == JOptionPane.YES_OPTION
-        if (confirmed) scope.launch { pluginManager.uninstallPlugin(plugin.manifest.id) }
+        if (confirmed) runPluginMutation { pluginManager.uninstallPlugin(plugin.manifest.id) }
+    }
+
+    private fun runPluginMutation(action: suspend () -> Result<Unit, String>) {
+        scope.launch {
+            action().fold(
+                success = {},
+                failure = { error ->
+                    SwingUtilities.invokeLater {
+                        JOptionPane.showMessageDialog(
+                            this@PluginsPanel, error,
+                            localizationManager.getString("settings_plugins.install_fail_title"),
+                            JOptionPane.ERROR_MESSAGE
+                        )
+                    }
+                }
+            )
+        }
     }
 
     private fun onConfigure(plugin: PluginState) {
@@ -862,9 +880,7 @@ class PluginsPanel(
                         localizationManager = localizationManager,
                         settingsModel       = model,
                         settingsInstance    = instance,
-                        onSave = { map ->
-                            scope.launch { pluginManager.applySettingsFromMap(plugin.manifest.id, map) }
-                        }
+                        onSave = { map -> pluginManager.applySettingsFromMap(plugin.manifest.id, map) }
                     ).isVisible = true
                 } else {
                     JOptionPane.showMessageDialog(this@PluginsPanel,

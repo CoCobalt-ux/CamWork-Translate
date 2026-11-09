@@ -25,6 +25,7 @@ import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
 import com.github.ahatem.qtranslate.core.shared.notification.AppNotification
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationCode
 import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.getError
 import com.github.michaelbull.result.Result
 import kotlinx.coroutines.Dispatchers
@@ -70,7 +71,8 @@ class PluginManager(
      * Resolves the [com.github.ahatem.qtranslate.api.plugin.DisplayText] plugins hand back.
      * Defaults to the fallback-only resolver so a host without localization still runs.
      */
-    private val textResolver: PluginTextResolver = PluginTextResolver.Fallback
+    private val textResolver: PluginTextResolver = PluginTextResolver.Fallback,
+    pluginHttpFactory: (com.github.ahatem.qtranslate.api.core.Logger, HttpClientConfig) -> com.github.ahatem.qtranslate.api.plugin.HttpClient = ::KtorHttpClientOf
 ) {
     private companion object {
         /** A check is a network round trip; long enough to succeed, short enough to give up on. */
@@ -105,7 +107,8 @@ class PluginManager(
         notificationBus = notificationBus,
         textResolver = textResolver,
         loggerFactory = loggerFactory,
-        httpConfig = ::currentHttpConfig
+        httpConfig = ::currentHttpConfig,
+        httpFactory = pluginHttpFactory
     )
 
     private val installer = PluginInstaller(
@@ -123,6 +126,7 @@ class PluginManager(
     private val _plugins = MutableStateFlow<List<PluginState>>(emptyList())
     private val _activeServices = MutableStateFlow<Map<String, Service>>(emptyMap())
     private var discoveryFailureStates: List<PluginState> = emptyList()
+    private val pendingVerification = mutableMapOf<String, InspectedPluginJar>()
 
     /** Observable list of all loaded plugins with their current state. */
     val plugins: StateFlow<List<PluginState>> = _plugins.asStateFlow()
@@ -147,7 +151,17 @@ class PluginManager(
             val disabledPluginIds = settingsRepository.loadDisabledPluginIds()
             val loader = PluginLoader(loggerFactory.getLogger("PluginLoader"))
 
-            val rawPlugins = loader.loadPluginsFromDirectory(pluginsDir)
+            val approved = mutableListOf<InspectedPluginJar>()
+            loader.inspectPluginsFromDirectory(pluginsDir).forEach { inspected ->
+                if (bundledPluginTrustPolicy.requiresUserVerification(
+                        inspected.manifest.id, knownFingerprints[inspected.manifest.id], inspected.jarHash
+                    )) {
+                    handleReplacedPlugin(inspected)
+                } else {
+                    approved += inspected
+                }
+            }
+            val rawPlugins = approved.mapNotNull(loader::loadInspectedPlugin)
             val loadResult = registry.validateAndFilter(rawPlugins)
             val discoveryErrors = loader.loadFailures + loadResult.failed + loadResult.skipped
             discoveryFailureStates = discoveryErrors.mapIndexed(::toFailedPluginState)
@@ -157,32 +171,12 @@ class PluginManager(
             supervisorScope {
                 loadResult.successful.map { result ->
                     async {
-                        val savedHash = knownFingerprints[result.manifest.id]
-                        if (bundledPluginTrustPolicy.requiresUserVerification(
-                                pluginId = result.manifest.id,
-                                savedHash = savedHash,
-                                currentHash = result.jarHash
-                            )
-                        ) {
-                            handleReplacedPlugin(result)
-                        } else {
-                            if (bundledPluginTrustPolicy.isTrustedBundledUpdate(
-                                    pluginId = result.manifest.id,
-                                    savedHash = savedHash,
-                                    currentHash = result.jarHash
-                                )
-                            ) {
-                                logger.info(
-                                    "Trusted bundled update accepted for plugin '${result.manifest.id}'."
-                                )
-                            }
-                            initializePlugin(result, disabledPluginIds)
-                        }
+                        initializePlugin(result, disabledPluginIds)
                     }
                 }.joinAll()
             }
 
-            val allPlugins = registry.mutex.withLock { registry.getAll() }
+            val allPlugins = registry.mutex.withLock { registry.getAll().toList() }
             val enabled = allPlugins.count { it.status == PluginStatus.ENABLED }
             logger.info(
                 "Plugin loading complete: ${allPlugins.size} total, $enabled enabled."
@@ -202,18 +196,19 @@ class PluginManager(
             }
 
             // Plugins that loaded but are paused pending user confirmation
-            allPlugins.filter { it.status == PluginStatus.AWAITING_VERIFICATION }.forEach { container ->
+            val awaiting = registry.mutex.withLock { pendingVerification.values.toList() }
+            awaiting.forEach { inspected ->
                 notificationBus.post(
                     AppNotification(
                         type           = com.github.ahatem.qtranslate.api.plugin.NotificationType.WARNING,
-                        code           = NotificationCode.Custom("Plugin update detected", "${container.id}: JAR has changed — open Plugin Manager to verify."),
-                        sourcePluginId = container.id
+                        code = NotificationCode.Custom("Обновление плагина", inspected.manifest.id + ": JAR изменился; требуется подтверждение."),
+                        sourcePluginId = inspected.manifest.id
                     )
                 )
             }
 
             // First-run / no plugins: guide the user
-            if (allPlugins.isEmpty()) {
+            if (allPlugins.isEmpty() && awaiting.isEmpty()) {
                 notificationBus.post(
                     AppNotification(
                         type = com.github.ahatem.qtranslate.api.plugin.NotificationType.WARNING,
@@ -268,26 +263,43 @@ class PluginManager(
     suspend fun installPlugin(sourceJar: File): Result<Unit, String> =
         installer.installPlugin(sourceJar).also { updateFlows() }
 
-    suspend fun uninstallPlugin(pluginId: String) {
+    suspend fun uninstallPlugin(pluginId: String): Result<Unit, String> {
         val discoveryFailure = discoveryFailureStates.firstOrNull { it.id == pluginId }
         if (discoveryFailure != null) {
-            withContext(Dispatchers.IO) { File(discoveryFailure.jarPath).delete() }
+            try {
+                withContext(Dispatchers.IO) { java.nio.file.Files.deleteIfExists(File(discoveryFailure.jarPath).toPath()) }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                return Err("Не удалось удалить JAR: " + error.javaClass.simpleName)
+            }
             discoveryFailureStates = discoveryFailureStates.filterNot { it.id == pluginId }
             updateFlows()
-            return
+            return Ok(Unit)
         }
-        installer.uninstallPlugin(pluginId)
+        val pending = registry.mutex.withLock { pendingVerification[pluginId] }
+        val result = if (pending != null) installer.removeUnloadedPlugin(pending) else installer.uninstallPlugin(pluginId)
+        if (result.isOk) {
+            registry.mutex.withLock { pendingVerification.remove(pluginId) }
+            settingsManager.forget(pluginId)
+        }
         updateFlows()
+        return result
     }
 
-    suspend fun resolveAsUpdate(pluginId: String) {
-        installer.resolveAsUpdate(pluginId)
-        updateFlows()
-    }
+    suspend fun resolveAsUpdate(pluginId: String): Result<Unit, String> = resolvePending(pluginId, false)
 
-    suspend fun resolveAsCleanInstall(pluginId: String) {
-        installer.resolveAsCleanInstall(pluginId)
+    suspend fun resolveAsCleanInstall(pluginId: String): Result<Unit, String> = resolvePending(pluginId, true)
+
+    private suspend fun resolvePending(pluginId: String, cleanInstall: Boolean): Result<Unit, String> {
+        val pending = registry.mutex.withLock { pendingVerification[pluginId] } ?: return Ok(Unit)
+        val result = installer.activateVerifiedPlugin(pending, cleanInstall)
+        if (result.isOk) {
+            registry.mutex.withLock { pendingVerification.remove(pluginId) }
+            settingsManager.forget(pluginId)
+        }
         updateFlows()
+        return result
     }
 
     // -------------------------------------------------------------------------
@@ -395,7 +407,7 @@ class PluginManager(
             lifecycleHandler.shutdown(container)
         }
 
-        registry.mutex.withLock { registry.clear() }
+        registry.mutex.withLock { registry.clear(); pendingVerification.clear() }
         discoveryFailureStates = emptyList()
         updateFlows()
 
@@ -438,22 +450,9 @@ class PluginManager(
         }
     }
 
-    private suspend fun handleReplacedPlugin(result: LoadedPluginResult) {
-        logger.warn(
-            "Plugin '${result.manifest.id}' JAR has changed since last run. " +
-                    "Pausing until user confirms the change."
-        )
-        val context = lifecycleHandler.createContext(result)
-        val container = PluginContainer(
-            plugin = result.plugin,
-            manifest = result.manifest,
-            context = context,
-            jarFile = result.jarFile,
-            jarHash = result.jarHash,
-            classLoader = result.classLoader,
-            status = PluginStatus.AWAITING_VERIFICATION
-        )
-        registry.mutex.withLock { registry.put(container) }
+    private suspend fun handleReplacedPlugin(inspected: InspectedPluginJar) {
+        logger.warn("JAR плагина " + inspected.manifest.id + " ожидает подтверждения; классы не загружены.")
+        registry.mutex.withLock { pendingVerification[inspected.manifest.id] = inspected }
     }
 
     private suspend fun saveRegistryOnShutdown() {
@@ -516,7 +515,9 @@ class PluginManager(
      */
     private suspend fun updateFlows() {
         registry.mutex.withLock {
-            _plugins.value = registry.snapshot() + discoveryFailureStates
+            _plugins.value = registry.snapshot() + pendingVerification.values.map {
+                PluginState(it.manifest, PluginStatus.AWAITING_VERIFICATION, it.jarFile.absolutePath)
+            } + discoveryFailureStates
             _activeServices.value = registry.activeServices()
         }
     }

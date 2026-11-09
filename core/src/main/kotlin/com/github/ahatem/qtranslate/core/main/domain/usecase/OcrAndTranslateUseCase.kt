@@ -5,6 +5,7 @@ import com.github.ahatem.qtranslate.api.ocr.ImageData
 import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.ocr.LocalOCR
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
@@ -15,6 +16,10 @@ import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.fold
 import kotlinx.coroutines.withTimeoutOrNull
 import com.github.ahatem.qtranslate.core.shared.util.shortSummary
+import kotlinx.coroutines.CancellationException
+
+/** Пустой успешный кадр отличается от отказа, который нужно повторить. */
+internal data class OcrTextResult(val text: String, val successful: Boolean)
 
 class OcrAndTranslateUseCase(
     private val activeServiceManager: ActiveServiceManager,
@@ -36,35 +41,56 @@ class OcrAndTranslateUseCase(
     suspend operator fun invoke(
         image: ImageData,
         currentState: MainState,
-        onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit
-    ): String {
+        onStatusUpdate: suspend (code: StatusCode, type: NotificationType, isTemporary: Boolean) -> Unit,
+        preferLocal: Boolean = false
+    ): String = recognize(image, currentState, onStatusUpdate, preferLocal).text
+
+    internal suspend fun recognize(
+        image: ImageData,
+        currentState: MainState,
+        onStatusUpdate: suspend (StatusCode, NotificationType, Boolean) -> Unit,
+        preferLocal: Boolean = false
+    ): OcrTextResult {
         val preferred = activeServiceManager.getActive<OCR>(ServiceRole.OCR)
-        val services = buildList {
+        val available = buildList {
             preferred?.let(::add)
             activeServiceManager.getAvailable<OCR>(ServiceRole.OCR)
                 .filterNot { candidate -> candidate.id == preferred?.id }
                 .forEach(::add)
         }
+        val services = if (preferLocal) {
+            available.sortedBy { active -> if (active.service is LocalOCR) 0 else 1 }
+        } else {
+            available
+        }
         if (services.isEmpty()) {
             logger.warn("No OCR service available")
             onStatusUpdate(StatusCode.NoOcrServiceActive, NotificationType.ERROR, true)
-            return ""
+            return OcrTextResult("", false)
         }
 
         onStatusUpdate(StatusCode.RecognizingText, NotificationType.INFO, false)
         val request = OCRRequest(image, language = currentState.sourceLanguage)
         logger.debug("OCR request: language=${currentState.sourceLanguage}")
 
+        var sawEmptySuccess = false
         services.forEachIndexed { index, active ->
             logger.info("Starting OCR with '${active.service.name}'")
-            val result = withTimeoutOrNull(OCR_TIMEOUT_MS) {
-                active.service.extractText(request)
+            val result = try {
+                withTimeoutOrNull(OCR_TIMEOUT_MS) { active.service.extractText(request) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logger.warn("Сервис OCR завершился с исключением: ${error.javaClass.simpleName}")
+                if (index < services.lastIndex) return@forEachIndexed
+                onStatusUpdate(StatusCode.OcrFailed(error.shortSummary()), NotificationType.ERROR, true)
+                return OcrTextResult("", sawEmptySuccess)
             }
             if (result == null) {
                 logger.warn("OCR '${active.service.name}' timed out after ${OCR_TIMEOUT_MS}ms")
                 if (index < services.lastIndex) return@forEachIndexed
                 onStatusUpdate(StatusCode.OcrTimeout, NotificationType.ERROR, true)
-                return ""
+                return OcrTextResult("", sawEmptySuccess)
             }
 
             var response: OCRResponse? = null
@@ -85,23 +111,24 @@ class OcrAndTranslateUseCase(
                     NotificationType.ERROR,
                     true
                 )
-                return ""
+                return OcrTextResult("", sawEmptySuccess)
             }
 
             val recognizedText = response?.text.orEmpty()
             if (recognizedText.isBlank()) {
+                sawEmptySuccess = true
                 logger.warn("No text detected in image by '${active.service.name}'")
                 if (index < services.lastIndex) return@forEachIndexed
                 onStatusUpdate(StatusCode.NoTextInImage, NotificationType.WARNING, true)
-                return ""
+                return OcrTextResult("", true)
             }
 
             logger.info(
                 "OCR successful with '${active.service.name}': detected ${recognizedText.length} characters"
             )
             onStatusUpdate(StatusCode.OcrComplete, NotificationType.SUCCESS, true)
-            return recognizedText
+            return OcrTextResult(recognizedText, true)
         }
-        return ""
+        return OcrTextResult("", sawEmptySuccess)
     }
 }

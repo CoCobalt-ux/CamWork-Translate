@@ -15,6 +15,7 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.FetchInlineDefiniti
 import com.github.ahatem.qtranslate.core.main.domain.usecase.RewriteUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SummarizeUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateStringUseCase
+import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateImageUseCase
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslateTextUseCase
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
@@ -41,6 +42,8 @@ import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CoroutineExceptionHandler
+import com.github.ahatem.qtranslate.core.shared.logging.recordFailure
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -107,7 +110,10 @@ suspend fun buildDependencies(
     // ---- 1. Coroutine scope ----
 
     val appScope = CoroutineScope(
-        SupervisorJob() + Dispatchers.Default + CoroutineName("AppScope")
+        SupervisorJob() + Dispatchers.Default + CoroutineName("AppScope") +
+            CoroutineExceptionHandler { _, failure ->
+                loggerFactory.getLogger("AppScope").recordFailure("фоновые задачи", failure)
+            }
     )
 
     // ---- 2. Shared HTTP client ----
@@ -280,6 +286,7 @@ suspend fun buildDependencies(
         translateTextUseCase       = translateUseCase,
         swapLanguagesUseCase       = SwapLanguagesUseCase(),
         ocrAndTranslateUseCase     = OcrAndTranslateUseCase(activeServiceManager, loggerFactory),
+        translateImageUseCase      = TranslateImageUseCase(activeServiceManager, loggerFactory),
         summarizeUseCase           = summarizeUseCase,
         rewriteUseCase             = rewriteUseCase,
         lookupWordUseCase          = lookupWordUseCase,

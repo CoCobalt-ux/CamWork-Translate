@@ -41,7 +41,8 @@ class SwapLanguagesUseCase {
             )
         ) return
         val effectiveTarget = when (context) {
-            SwapLanguagesContext.MAIN -> currentState.targetLanguage
+            SwapLanguagesContext.MAIN -> currentState.translatedTargetLanguage
+                .takeIf { currentState.translatedText.isNotBlank() } ?: currentState.targetLanguage
             SwapLanguagesContext.QUICK_TRANSLATE ->
                 currentState.quickTranslateTargetLanguageOverride ?: currentState.targetLanguage
         }
@@ -69,6 +70,8 @@ class SwapLanguagesUseCase {
                 targetLanguage         = effectiveSource,
                 inputText              = nextInputText,
                 translatedText         = "",
+                translatedTargetLanguage = null,
+                translationHistoryId   = null,
                 extraOutputText        = "",
                 detectedSourceLanguage = null,
                 quickTranslateSourceLanguageOverride = if (

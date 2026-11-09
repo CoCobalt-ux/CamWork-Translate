@@ -9,6 +9,8 @@ import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.plugins.common.ApiConfig
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.onFailure
+import kotlinx.coroutines.launch
 
 /**
  * A plugin that provides translation, spell-checking, and TTS services
@@ -26,7 +28,7 @@ class BingPlugin : Plugin<PluginSettings.None> {
     private val apiConfig = ApiConfig()
 
     override suspend fun initialize(context: PluginContext): Result<Unit, ServiceError> {
-        this.pluginContext = context
+        this.pluginContext = context
         this.authManager = BingAuthManager(context, httpClient, apiConfig)
 
         pluginContext.logger.info("Bing Plugin initialized")
@@ -40,6 +42,17 @@ class BingPlugin : Plugin<PluginSettings.None> {
             BingSpellCheckerService(pluginContext, httpClient, authManager, languageMapper, apiConfig),
             BingTTSService(pluginContext, httpClient, authManager, languageMapper, apiConfig)
         )
+        // Токен живёт час и до первого запроса не запрашивается вовсе — значит именно тогда,
+        // когда Bing нужен как аварийный фолбэк после отказа Google, пользователь ждал бы ещё и
+        // ~6 секунд получения токена поверх уже потраченного времени на сам отказ. Прогреваем в
+        // фоне сразу при включении плагина, чтобы к моменту первого реального запроса токен уже
+        // был готов. Неудача не критична: обычный вызов просто получит токен как раньше.
+        pluginContext.scope.launch {
+            authManager.getAuth()
+                .onFailure { error ->
+                    pluginContext.logger.debug("Bing auth warm-up skipped: ${error::class.simpleName}")
+                }
+        }
         return Ok(Unit)
     }
 
@@ -49,7 +62,7 @@ class BingPlugin : Plugin<PluginSettings.None> {
     }
 
     override suspend fun shutdown() {
-        pluginContext.logger.info("Bing Plugin shutting down")
+        pluginContext.logger.info("Bing Plugin shutting down")
     }
 
     override fun getServices(): List<Service> = activeServices

@@ -4,6 +4,8 @@ import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.core.shared.arch.UiEvent
 import java.io.File
+import com.github.ahatem.qtranslate.core.main.domain.usecase.ImageTranslationFailureKind
+import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslatedImageRegion
 
 /**
  * One-shot events emitted by [MainStore] to be consumed exactly once by the UI.
@@ -47,6 +49,33 @@ sealed interface MainEvent : UiEvent {
     data class LiveLensTranslationFinished(
         val requestId: Long,
         val failure: com.github.ahatem.qtranslate.core.main.domain.usecase.TranslationFailureKind? = null
+    ) : MainEvent
+
+    /** Локальный OCR распознал текст в графическом кадре LIVE-рамки. */
+    data class LiveLensFrameRecognized(
+        val requestId: Long,
+        val text: String
+    ) : MainEvent
+
+    /** Распознавание кадра завершилось без пригодного текста. */
+    data class LiveLensFrameRecognitionFinished(val requestId: Long) : MainEvent
+
+    data class ImageInPlaceTranslationProgress(
+        val requestId: Long,
+        val completed: Int,
+        val total: Int
+    ) : MainEvent
+
+    data class ImageInPlaceTranslationCompleted(
+        val requestId: Long,
+        val regions: List<TranslatedImageRegion>,
+        val failedRegions: Int,
+        val providers: Set<String>
+    ) : MainEvent
+
+    data class ImageInPlaceTranslationFailed(
+        val requestId: Long,
+        val kind: ImageTranslationFailureKind
     ) : MainEvent
 
     data class ShowUpdateDialog(

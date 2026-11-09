@@ -33,6 +33,11 @@ class TranslatorSelector(
     }
 
     private var state = TranslatorSelectorState(emptyList(), null, false)
+    private var hasRendered = false
+    private var classicServices: List<ServiceInfo>? = null
+    private var classicAppearance: ServiceSelectorAppearance? = null
+    private val serviceButtons = linkedMapOf<String, JToggleButton>()
+    private var classicGroup = ButtonGroup()
     private val classicButtons = JPanel(FlowLayout(FlowLayout.LEADING, 2, 0)).apply { isOpaque = false }
     private val classicScroll = JScrollPane(classicButtons).apply {
         clearBorder(); isOpaque = false; viewport.isOpaque = false
@@ -46,7 +51,8 @@ class TranslatorSelector(
     private val scrollForward = createScrollButton(Icons.NAV_FORWARD, 96, "More services")
     private val configureActive = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
         putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
-        toolTipText = "Configure active translation service"; isFocusable = false
+        toolTipText = "Configure active translation service"
+        accessibleContext.accessibleName = toolTipText
         addActionListener { state.selectedTranslatorId?.let(onConfigureService) }
     }
     private val classicControls = JPanel(FlowLayout(FlowLayout.TRAILING, 0, 0)).apply {
@@ -72,7 +78,7 @@ class TranslatorSelector(
     private val configureEnhanced = JButton(iconManager.getIcon(Icons.SETTINGS, 16, 16)).apply {
         putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
         toolTipText = "Configure active translation service"
-        isFocusable = false
+        accessibleContext.accessibleName = toolTipText
         addActionListener { (enhancedCombo.selectedItem as? ServiceInfo)?.id?.let(onConfigureService) }
     }
     private val enhanced = JPanel(
@@ -89,15 +95,26 @@ class TranslatorSelector(
     }
 
     override fun render(state: TranslatorSelectorState) {
+        if (hasRendered && this.state == state) return
         this.state = state
-        if (state.style == ServiceSelectorStyle.CLASSIC) rebuildClassic() else renderEnhanced()
+        hasRendered = true
+        if (state.style == ServiceSelectorStyle.CLASSIC) {
+            if (classicServices != state.availableTranslators || classicAppearance != state.appearance) {
+                rebuildClassic()
+            } else {
+                updateClassicSelection()
+            }
+        } else {
+            renderEnhanced()
+        }
         (layout as CardLayout).show(this, if (state.style == ServiceSelectorStyle.CLASSIC) CLASSIC else ENHANCED)
         revalidate(); repaint()
     }
 
     private fun rebuildClassic() {
         classicButtons.removeAll()
-        val group = ButtonGroup()
+        serviceButtons.clear()
+        classicGroup = ButtonGroup()
         var selectedButton: JToggleButton? = null
         state.availableTranslators.forEach { service ->
             val serviceIcon = loadIcon(service)
@@ -114,7 +131,8 @@ class TranslatorSelector(
                     else -> shortName
                 }
                 toolTipText = fullName; isSelected = service.id == state.selectedTranslatorId
-                isEnabled = !state.isLoading; isFocusable = false; isOpaque = false
+                accessibleContext.accessibleName = fullName
+                isEnabled = !state.isLoading; isOpaque = false
                 putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
                 margin = Insets(4, 6, 4, 6)
                 addActionListener { onServiceSelected(MAIN_SELECTOR_ROLES.single(), service.id) }
@@ -123,14 +141,26 @@ class TranslatorSelector(
                 })
             }
             if (button.isSelected) selectedButton = button
-            group.add(button); classicButtons.add(button)
+            serviceButtons[service.id] = button
+            classicGroup.add(button); classicButtons.add(button)
         }
         configureActive.isEnabled = !state.isLoading && state.selectedTranslatorId != null
+        classicServices = state.availableTranslators.toList()
+        classicAppearance = state.appearance
         classicButtons.revalidate()
         SwingUtilities.invokeLater {
             selectedButton?.let { it.scrollRectToVisible(it.bounds) }
             updateClassicOverflowControls()
         }
+    }
+
+    private fun updateClassicSelection() {
+        val selected = serviceButtons[state.selectedTranslatorId]
+        if (selected == null) classicGroup.clearSelection() else selected.isSelected = true
+        serviceButtons.values.forEach { it.isEnabled = !state.isLoading }
+        configureActive.isEnabled = !state.isLoading && state.selectedTranslatorId != null
+        serviceButtons[state.selectedTranslatorId]?.let { it.scrollRectToVisible(it.bounds) }
+        updateClassicOverflowControls()
     }
 
     private fun renderEnhanced() {
@@ -150,7 +180,8 @@ class TranslatorSelector(
     private fun createScrollButton(iconPath: String, amount: Int, tooltip: String) =
         JButton(iconManager.getIcon(iconPath, 16, 16)).apply {
             putClientProperty(FlatClientProperties.BUTTON_TYPE, "toolBarButton")
-            toolTipText = tooltip; isFocusable = false
+            toolTipText = tooltip
+            accessibleContext.accessibleName = tooltip
             addActionListener { scrollClassic(amount) }
         }
 

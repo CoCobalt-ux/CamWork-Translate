@@ -28,8 +28,8 @@ class GoogleOCRService(
 ) : OCR {
 
 
-    override val key: String = "google-ocr"
-    override val name: String = "Google OCR"
+    override val key: String = "google-vision-ocr"
+    override val name: String = "Google Vision OCR"
     override val version: String = "1.0.0"
     override val iconPath: String = "assets/google-translate-icon.svg"
 

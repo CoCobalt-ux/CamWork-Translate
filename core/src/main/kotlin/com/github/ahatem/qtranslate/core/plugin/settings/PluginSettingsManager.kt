@@ -9,6 +9,9 @@ import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Result
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.withLock
 
 /**
@@ -31,6 +34,8 @@ internal class PluginSettingsManager(
 
     private val cache = mutableMapOf<String, PluginSettingsModel?>()
     private val cacheMutex = Mutex()
+
+    suspend fun forget(pluginId: String) = cacheMutex.withLock { cache.remove(pluginId); Unit }
 
     /**
      * Returns the [PluginSettingsModel] for [plugin], building and caching it on first access.
@@ -91,6 +96,9 @@ internal class PluginSettingsManager(
             }
 
             result
+        } catch (cancelled: CancellationException) {
+            currentCoroutineContext().ensureActive()
+            Err(ServiceError.UnknownError("Плагин отменил сохранение настроек."))
         } catch (e: Exception) {
             logger.error("Unexpected exception applying settings for plugin '$pluginId'", e)
             Err(ServiceError.UnknownError(e.message ?: "Unknown error applying settings", e))

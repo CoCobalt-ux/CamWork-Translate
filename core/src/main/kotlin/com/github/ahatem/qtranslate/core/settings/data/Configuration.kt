@@ -309,6 +309,16 @@ data class Configuration(
     val shiftTapTranslationMode: ShiftTapTranslationMode = ShiftTapTranslationMode.BIDIRECTIONAL,
     /** Язык, на котором модель пишет исходящие сообщения. */
     val modelLanguage: String = "ru",
+    /**
+     * Язык, на который переводится входящий чужой текст. Пустая строка — следовать
+     * [modelLanguage].
+     *
+     * Отдельно от [modelLanguage] и [preferredTargetLanguage], потому что вход и выход — разные
+     * направления: собеседник пишет по-английски, модель отвечает по-русски. Выбор языка в
+     * окошке входящего перевода сохраняется сюда и поэтому не может подменить то, куда Shift
+     * переводит исходящий ответ.
+     */
+    val incomingTargetLanguage: String = "",
     /** Автоматически показывает пассивный перевод иностранного выделения мышью. */
     val isAutoSelectionTranslateEnabled: Boolean = true,
     val isSelectionIconEnabled: Boolean = false,

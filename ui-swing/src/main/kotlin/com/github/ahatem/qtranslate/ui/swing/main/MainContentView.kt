@@ -132,8 +132,8 @@ class MainContentView(
         onTextChanged = { text -> dispatch(MainIntent.UpdateInputText(text)) },
         onListen = { text -> dispatch(MainIntent.ListenToText(TextSource.Input, text)) },
         onTranslateRequest = { text -> dispatch(MainIntent.Translate(text)) },
-        onCorrectionApplied = { original, suggestion ->
-            dispatch(MainIntent.ApplyCorrection(original, suggestion))
+        onCorrectionApplied = { original, suggestion, startIndex, endIndex, expectedInputText ->
+            dispatch(MainIntent.ApplyCorrection(original, suggestion, startIndex, endIndex, expectedInputText))
         },
         onImageDropped = { image -> dispatch(MainIntent.OcrAndTranslateImage(image.toImageData("png"))) },
         onDocumentPasted = { file -> onOpenDocumentTranslation(file) },
@@ -453,13 +453,13 @@ class MainContentView(
 
     private fun renderComponents(mainState: MainState, config: Configuration) {
         isTranslating = mainState.isLoading
-        currentTargetLanguage = mainState.targetLanguage
+        currentTargetLanguage = mainState.translatedTargetLanguage ?: mainState.targetLanguage
 
         // BackwardTranslate output is in the source language; all other extra output types are in target.
         currentExtraOutputLanguage = if (config.extraOutputType == ExtraOutputType.BackwardTranslate) {
             currentLookupLanguage
         } else {
-            mainState.targetLanguage
+            currentTargetLanguage
         }
 
         val allLanguages = mainState.availableLanguages

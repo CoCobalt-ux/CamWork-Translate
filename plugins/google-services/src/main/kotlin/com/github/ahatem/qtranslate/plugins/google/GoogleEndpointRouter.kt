@@ -170,7 +170,8 @@ internal class GoogleEndpointRouter(
             is ServiceError.InvalidResponseError,
             is ServiceError.AuthenticationError -> {
                 consecutiveTransientFailures.remove(route)
-                blockedUntilMillis[route] = clockMillis() + circuitOpenMillis
+                // Временная HTML-страница или сбой сессии не должны выключать перевод на 15 минут.
+                blockedUntilMillis[route] = clockMillis() + transientCircuitOpenMillis
             }
             is ServiceError.TimeoutError,
             is ServiceError.NetworkError,

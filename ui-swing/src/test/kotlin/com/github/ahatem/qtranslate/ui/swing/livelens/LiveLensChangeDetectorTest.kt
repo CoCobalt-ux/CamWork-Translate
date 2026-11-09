@@ -7,55 +7,86 @@ import kotlin.test.assertTrue
 
 class LiveLensChangeDetectorTest {
     @Test
-    fun `первый снимок запускает калибровку`() {
+    fun `первый снимок сразу возвращает текущие сообщения`() {
         val detector = LiveLensChangeDetector()
 
-        assertTrue(detector.accept(listOf(block("Hello"))).isEmpty())
-        assertTrue(!detector.isCalibrated)
-    }
+        val added = detector.accept(listOf(block("Hello"), block("How are you?", y = 160)))
 
-    @Test
-    fun `второй устойчивый снимок возвращает текущие сообщения`() {
-        val detector = LiveLensChangeDetector()
-        detector.accept(listOf(block("Hello")))
-
-        val calibrated = detector.accept(listOf(block("Hello")))
-
-        assertEquals(listOf("Hello"), calibrated.map(LiveLensTextBlock::text))
+        assertEquals(listOf("Hello", "How are you?"), added.map(LiveLensTextBlock::text))
         assertTrue(detector.isCalibrated)
     }
 
     @Test
-    fun `подтвержденное сообщение не отправляется повторно после краткого мерцания`() {
+    fun `повторный снимок не переотправляет старые сообщения`() {
         val detector = LiveLensChangeDetector()
         detector.accept(listOf(block("Hello")))
-        detector.accept(listOf(block("Hello")), nowMillis = 700)
-        detector.accept(emptyList(), nowMillis = 1_400)
 
-        val added = detector.accept(listOf(block("Hello")), nowMillis = 2_100)
+        val added = detector.accept(listOf(block("Hello")))
 
         assertTrue(added.isEmpty())
     }
 
     @Test
-    fun `новое сообщение требует двух наблюдений`() {
+    fun `пустой кадр не сбрасывает уже зафиксированный снимок`() {
         val detector = LiveLensChangeDetector()
         detector.accept(listOf(block("Hello")))
-        detector.accept(listOf(block("Hello")), nowMillis = 700)
+        detector.accept(emptyList())
 
-        assertTrue(
-            detector.accept(
-                listOf(block("Hello"), block("What is your name?", y = 160)),
-                nowMillis = 1_400
-            ).isEmpty()
+        val added = detector.accept(listOf(block("Hello")))
+
+        assertTrue(added.isEmpty())
+    }
+
+    @Test
+    fun `прокрутка оставляет старые строки и возвращает только новый хвост`() {
+        val detector = LiveLensChangeDetector()
+        detector.accept(
+            listOf(
+                block("First", y = 80),
+                block("Second", y = 120),
+                block("Third", y = 160)
+            )
         )
         val added = detector.accept(
-            listOf(block("Hello"), block("What is your name?", y = 160)),
-            nowMillis = 2_100
+            listOf(
+                block("Second", y = 80),
+                block("Third", y = 120),
+                block("Fourth", y = 160)
+            )
         )
+
+        assertEquals(listOf("Fourth"), added.map(LiveLensTextBlock::text))
+    }
+
+    @Test
+    fun `одинаковая новая реплика после старой считается отдельным сообщением`() {
+        val detector = LiveLensChangeDetector()
+        detector.accept(listOf(block("Hello")))
+
+        val added = detector.accept(listOf(block("Hello"), block("Hello", y = 160)))
 
         assertEquals(1, added.size)
         assertEquals(160, added.single().anchor.y)
+    }
+
+    @Test
+    fun `изменение одной пунктуации OCR не создает новый перевод`() {
+        val detector = LiveLensChangeDetector()
+        detector.accept(listOf(block("How are you?")))
+
+        val added = detector.accept(listOf(block("How are you!")))
+
+        assertTrue(added.isEmpty())
+    }
+
+    @Test
+    fun `при полном скачке страницы берется только нижняя свежая строка`() {
+        val detector = LiveLensChangeDetector()
+        detector.accept(listOf(block("Old one"), block("Old two", y = 160)))
+
+        val added = detector.accept(listOf(block("Fresh one"), block("Fresh two", y = 160)))
+
+        assertEquals(listOf("Fresh two"), added.map(LiveLensTextBlock::text))
     }
 
     private fun block(text: String, y: Int = 100): LiveLensTextBlock =

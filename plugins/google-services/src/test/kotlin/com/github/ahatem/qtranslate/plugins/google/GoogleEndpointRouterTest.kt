@@ -21,6 +21,35 @@ import kotlin.test.assertTrue
 class GoogleEndpointRouterTest {
 
     @Test
+    fun malformedResponsesRecoverWithoutRecreatingRouter() = runTest {
+        var now = 1_000L
+        val http = ScriptedHttpClient().apply {
+            enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("<html>Временная ошибка</html>"))
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok("<html>Временная ошибка</html>"))
+        }
+        val router = router(http, clockMillis = { now })
+        assertIs<ServiceError.InvalidResponseError>(router.translate("Привет", "auto", "en").failure())
+        assertTrue(router.translate("Повтор", "auto", "en").isErr)
+        assertEquals(2, http.calls.size)
+        now += 30_001L
+        http.enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Recovered", "ru"]]"""))
+        assertEquals("Recovered", router.translate("Снова", "auto", "en").success().translatedText)
+        assertEquals(3, http.calls.size)
+    }
+
+    @Test
+    fun cancelledRequestDoesNotBlockNextTranslation() = runTest {
+        val http = ScriptedHttpClient().apply {
+            enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Recovered", "ru"]]"""))
+            setDelay(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, 5_000L)
+        }
+        val router = router(http, clockMillis = { testScheduler.currentTime })
+        kotlin.test.assertNull(kotlinx.coroutines.withTimeoutOrNull(50) { router.translate("Отмена", "auto", "en") })
+        http.setDelay(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, 0L)
+        assertEquals("Recovered", router.translate("Повтор", "auto", "en").success().translatedText)
+    }
+
+    @Test
     fun `первый быстрый маршрут используется без лишних запросов`() = runBlocking {
         val http = ScriptedHttpClient().apply {
             enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Ok("""[["Hello", "ru"]]"""))

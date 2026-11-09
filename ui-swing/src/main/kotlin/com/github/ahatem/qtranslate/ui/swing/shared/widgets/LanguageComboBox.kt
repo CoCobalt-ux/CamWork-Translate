@@ -11,6 +11,7 @@ import java.awt.Dimension
 import java.awt.event.ActionListener
 import java.awt.event.KeyAdapter
 import java.awt.event.KeyEvent
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.*
 import javax.swing.event.PopupMenuEvent
 import javax.swing.event.PopupMenuListener
@@ -29,6 +30,7 @@ class LanguageComboBox(
 ) : JComboBox<LanguageCode>() {
 
     private var isRendering = false
+    private val renderSequence = AtomicLong()
     private var currentLanguages: List<LanguageCode> = emptyList()
     private var compactMode: Boolean = compact
     private val languageRenderer = LanguageRenderer(this, localizer) { compactMode }
@@ -133,25 +135,29 @@ class LanguageComboBox(
         autoDetectedLanguage: LanguageCode?,
         isEnabled: Boolean
     ) {
-        SwingUtilities.invokeLater {
+        val sequence = renderSequence.incrementAndGet()
+        val renderOnUi = renderOnUi@{
+            if (sequence != renderSequence.get()) return@renderOnUi
             isRendering = true
-            putClientProperty("autoDetectedLanguage", autoDetectedLanguage)
-
-            if (currentLanguages != availableLanguages) {
-                model = DefaultComboBoxModel(availableLanguages.toTypedArray())
-                currentLanguages = availableLanguages
-            }
-
-            // Only update the selection when the language is actually present in the current model.
-            // If the model is still empty (plugins not yet loaded) or the language was filtered out
-            // by pinnedLanguages, leave the current selection untouched so we don't silently
-            // display the wrong language or trigger a spurious onLanguageSelected callback.
-            if (selectedLanguage != null && selectedLanguage in availableLanguages) {
+            try {
+                putClientProperty("autoDetectedLanguage", autoDetectedLanguage)
+                // Фильтр избранных и временная недоступность сервиса не меняют выбор пользователя.
+                val visibleLanguages = if (selectedLanguage != null && selectedLanguage !in availableLanguages) {
+                    availableLanguages + selectedLanguage
+                } else {
+                    availableLanguages
+                }
+                if (currentLanguages != visibleLanguages) {
+                    model = DefaultComboBoxModel(visibleLanguages.toTypedArray())
+                    currentLanguages = visibleLanguages
+                }
                 this.selectedItem = selectedLanguage
+                this.isEnabled = isEnabled
+            } finally {
+                isRendering = false
             }
-            this.isEnabled = isEnabled
-            isRendering = false
         }
+        if (SwingUtilities.isEventDispatchThread()) renderOnUi() else SwingUtilities.invokeLater(renderOnUi)
     }
 
     private class LanguageRenderer(

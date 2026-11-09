@@ -93,3 +93,45 @@ public data class OCRResponse(
         }
     }
 }
+
+/** OCR, который помимо текста возвращает расположение видимых строк на изображении. */
+public interface PositionedOCR : OCR {
+    public suspend fun extractPositionedText(
+        request: OCRRequest
+    ): Result<PositionedOCRResponse, ServiceError>
+}
+
+/** Прямоугольник OCR в пикселях исходного изображения. */
+public data class OCRBounds(
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int
+) {
+    init {
+        require(x >= 0 && y >= 0) { "OCR bounds origin must be non-negative." }
+        require(width > 0 && height > 0) { "OCR bounds size must be positive." }
+    }
+}
+
+/** Одна распознанная строка и её точное положение в кадре. */
+public data class OCRTextRegion(
+    val text: String,
+    val bounds: OCRBounds,
+    val confidence: Float? = null
+) {
+    init {
+        require(confidence == null || confidence in 0f..1f) {
+            "OCR confidence score must be in [0.0, 1.0], but was $confidence."
+        }
+    }
+}
+
+/** Результат пространственного OCR, сохраняющий порядок строк чтения. */
+public data class PositionedOCRResponse(
+    val regions: List<OCRTextRegion>,
+    val detectedLanguage: LanguageCode? = null
+)
+
+/** Маркер системного OCR, который работает локально и не требует сетевого API-ключа. */
+public interface LocalOCR : OCR

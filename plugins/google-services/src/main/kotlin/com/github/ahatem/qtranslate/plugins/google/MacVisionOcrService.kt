@@ -1,8 +1,8 @@
 package com.github.ahatem.qtranslate.plugins.google
 
-import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
+import com.github.ahatem.qtranslate.api.ocr.LocalOCR
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.michaelbull.result.Err
@@ -26,7 +26,7 @@ import java.util.concurrent.TimeUnit
  * распознанные строки в stdout; stdout и stderr не объединяются, поэтому в отличие от Windows
  * маркер-разделитель не нужен.
  */
-internal class MacVisionOcrService(private val helperPath: String) : OCR {
+internal class MacVisionOcrService(private val helperPath: String) : LocalOCR {
     override val key: String = "google-ocr"
     override val name: String = "Vision OCR (локальный)"
     override val version: String = "1.0.0"

@@ -54,11 +54,12 @@ class GooglePlugin : Plugin<GoogleSettings> {
 
     private fun buildServices() {
         activeServices = buildList {
-            // Облачный Vision используется только с ключом; на Windows и macOS его заменяет
-            // локальный OCR системы.
+            // Облачный Vision остаётся отдельной опцией. Локальный OCR нужен независимо от ключа:
+            // только он гарантирует быстрый офлайн-fallback и координаты текста на Windows.
             if (settings.visionApiKey.isNotBlank()) {
                 add(GoogleOCRService(pluginContext, settings, httpClient, languageMapper, apiConfig))
-            } else if (WindowsOcrService.isSupported()) {
+            }
+            if (WindowsOcrService.isSupported()) {
                 add(WindowsOcrService())
             } else {
                 MacVisionOcrService.createIfSupported()?.let(::add)

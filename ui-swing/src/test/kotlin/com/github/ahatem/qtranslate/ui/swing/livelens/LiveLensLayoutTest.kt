@@ -2,44 +2,45 @@ package com.github.ahatem.qtranslate.ui.swing.livelens
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
 class LiveLensLayoutTest {
     @Test
-    fun `перевод располагается на высоте исходного сообщения`() {
+    fun `готовые сообщения прижимаются к низу в исходном порядке`() {
         assertEquals(
-            202,
-            calculateLiveLensCardY(
-                anchorY = 220,
-                occupiedBottom = 44,
+            listOf(
+                LiveLensCardPlacement(0, 238),
+                LiveLensCardPlacement(1, 323),
+                LiveLensCardPlacement(2, 408)
+            ),
+            calculateLiveLensFeedPlacements(
+                cardHeights = listOf(80, 80, 80),
                 panelHeight = 500,
-                cardHeight = 80
             )
         )
     }
 
     @Test
-    fun `следующий перевод не перекрывает предыдущий`() {
+    fun `новое сообщение появляется снизу и выталкивает старое вверх`() {
         assertEquals(
-            205,
-            calculateLiveLensCardY(
-                anchorY = 150,
-                occupiedBottom = 200,
-                panelHeight = 500,
-                cardHeight = 80
+            listOf(
+                LiveLensCardPlacement(2, 53),
+                LiveLensCardPlacement(3, 108)
+            ),
+            calculateLiveLensFeedPlacements(
+                cardHeights = listOf(50, 50, 50, 50),
+                panelHeight = 170
             )
         )
     }
 
     @Test
-    fun `карточка исчезает после ухода исходного текста`() {
-        assertFalse(shouldRemoveLiveLensCard(now = 10_000, lastSeenAt = 0))
-        assertTrue(shouldRemoveLiveLensCard(now = 10_001, lastSeenAt = 0))
-    }
-
-    @Test
-    fun `видимая карточка не исчезает по возрасту`() {
-        assertFalse(shouldRemoveLiveLensCard(now = 120_000, lastSeenAt = 119_000))
+    fun `слишком высокая старая карточка не скрывает свежий перевод`() {
+        assertEquals(
+            listOf(LiveLensCardPlacement(2, 128)),
+            calculateLiveLensFeedPlacements(
+                cardHeights = listOf(200, 200, 80),
+                panelHeight = 220
+            )
+        )
     }
 }

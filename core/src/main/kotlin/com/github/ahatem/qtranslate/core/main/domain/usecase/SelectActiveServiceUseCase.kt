@@ -19,6 +19,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.update
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Observes available services and the languages supported by the active translator.
@@ -58,6 +62,7 @@ class SelectActiveServiceUseCase(
     // Cache for Dynamic language results, keyed by service ID.
     // MutableStateFlow so that combine() re-emits when the cache updates.
     private val dynamicLanguageCache = MutableStateFlow<Map<String, List<LanguageCode>>>(emptyMap())
+    private val dynamicLanguageRequests = ConcurrentHashMap.newKeySet<String>()
 
     // -------------------------------------------------------------------------
     // Public API
@@ -85,14 +90,9 @@ class SelectActiveServiceUseCase(
                     }
             }
 
-            val activePreset = config.getActivePreset() ?: config.servicePresets.firstOrNull()
-            val selectedTranslatorId = activePreset?.selectedServices?.get(ServiceRole.TRANSLATOR)
-            val translator = selectedTranslatorId
-                ?.takeUnless { config.isServiceDisabled(it, ServiceRole.TRANSLATOR) }
-                ?.let { services[it] as? Translator }
-
-            val languages = if (translator != null) {
-                resolveLanguages(selectedTranslatorId, translator, langCache)
+            val activeTranslator = activeServiceManager.getActive<Translator>(ServiceRole.TRANSLATOR)
+            val languages = if (activeTranslator != null) {
+                resolveLanguages(activeTranslator.id, activeTranslator.service, langCache)
             } else {
                 emptyList()
             }
@@ -150,7 +150,7 @@ class SelectActiveServiceUseCase(
                     // Once the fetch completes, dynamicLanguageCache updates and
                     // combine() re-emits with the real list.
                     fetchAndCacheDynamicLanguages(serviceId, translator)
-                    emptyList()
+                    LanguageCode.commonLanguages()
                 }
             }
         }
@@ -166,32 +166,33 @@ class SelectActiveServiceUseCase(
             is SupportedLanguages.All      -> LanguageCode.commonLanguages()
             is SupportedLanguages.Specific -> supported.languages.toList()
             is SupportedLanguages.Dynamic  -> {
-                dynamicLanguageCache.value[serviceId]
-                    ?: translator.fetchSupportedLanguages()
-                        .getOr(emptySet())
-                        .toList()
-                        .also { languages ->
-                            dynamicLanguageCache.value += (serviceId to languages)
-                        }
+                dynamicLanguageCache.value[serviceId] ?: fetchLanguages(translator).also { languages ->
+                    if (languages.isNotEmpty()) dynamicLanguageCache.update { it + (serviceId to languages) }
+                }.ifEmpty { LanguageCode.commonLanguages() }
             }
         }
 
     private fun fetchAndCacheDynamicLanguages(serviceId: String, translator: Translator) {
         // Guard: don't re-fetch if already in flight or cached
-        if (dynamicLanguageCache.value.containsKey(serviceId)) return
-
-        // Put an empty list as a sentinel so concurrent calls don't double-fetch
-        dynamicLanguageCache.value += (serviceId to emptyList())
+        if (dynamicLanguageCache.value.containsKey(serviceId) || !dynamicLanguageRequests.add(serviceId)) return
 
         scope.launch {
-            logger.debug("Fetching dynamic language list for '${translator.name}'")
-            val languages = translator.fetchSupportedLanguages()
-                .getOr(emptySet())
-                .toList()
-
-            dynamicLanguageCache.value += (serviceId to languages)
-            logger.debug("Cached ${languages.size} languages for '${translator.name}'")
+            try {
+                val languages = fetchLanguages(translator)
+                if (languages.isNotEmpty()) dynamicLanguageCache.update { it + (serviceId to languages) }
+            } finally {
+                dynamicLanguageRequests.remove(serviceId)
+            }
         }
+    }
+
+    private suspend fun fetchLanguages(translator: Translator): List<LanguageCode> = try {
+        withTimeoutOrNull(5_000) { translator.fetchSupportedLanguages().getOr(emptySet()).toList() }.orEmpty()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        logger.warn("Не удалось получить языки сервиса: ${error.javaClass.simpleName}")
+        emptyList()
     }
 }
 

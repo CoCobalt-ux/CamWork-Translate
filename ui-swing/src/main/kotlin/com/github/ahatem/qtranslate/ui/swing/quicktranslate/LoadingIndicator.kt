@@ -222,8 +222,16 @@ class LoadingIndicator(owner: Frame) : JWindow(), Renderable<LoadingIndicatorSta
         )
     }
 
-    fun dismiss() {
-        render(LoadingIndicatorState(isVisible = false))
+    /**
+     * Скрывает индикатор. Обычное завершение сохраняет минимальное время показа,
+     * а явная отмена по новому клику убирает уже неактуальную загрузку сразу.
+     */
+    fun dismiss(immediately: Boolean = false) {
+        if (immediately) {
+            hideNow()
+        } else {
+            render(LoadingIndicatorState(isVisible = false))
+        }
     }
 
     override fun render(state: LoadingIndicatorState) {

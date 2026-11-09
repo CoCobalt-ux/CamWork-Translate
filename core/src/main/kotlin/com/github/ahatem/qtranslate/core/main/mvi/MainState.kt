@@ -48,6 +48,10 @@ data class MainState(
     val sourceLanguage: LanguageCode = LanguageCode.AUTO,
     val detectedSourceLanguage: LanguageCode? = null,
     val targetLanguage: LanguageCode = LanguageCode.ENGLISH,
+    /** Фактический язык показанного результата; правила не меняют пользовательскую языковую пару. */
+    val translatedTargetLanguage: LanguageCode? = null,
+    /** Запись показанного результата для адресного дополнения истории. */
+    val translationHistoryId: String? = null,
     val availableServices: List<ServiceInfo> = emptyList(),
     val availableLanguages: List<LanguageCode> = emptyList(),
     /**
@@ -132,16 +136,13 @@ data class MainState(
      * озвучивания приоритет имеет временный язык оверлея.
      */
     val resolvedQuickTranslateTargetLanguage: LanguageCode
-        get() = quickTranslateTargetLanguageOverride ?: targetLanguage
+        get() = quickTranslateTargetLanguageOverride ?: translatedTargetLanguage ?: targetLanguage
 
     /** `true` when there is a previous history entry to restore. */
     val canUndo: Boolean
         get() = historyIndex > 0
 
-    /**
-     * `true` when there is a more recent history entry to move forward to,
-     * including the implicit "blank" state past the last snapshot.
-     */
+    /** Есть более новая запись; historyIndex — позиция непосредственно после показанного ID. */
     val canRedo: Boolean
         get() = historyIndex < history.size
 

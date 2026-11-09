@@ -8,6 +8,8 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyBinding
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyScope
+import com.github.ahatem.qtranslate.core.settings.data.normalizeScope
+import com.github.ahatem.qtranslate.core.settings.data.requiredScope
 import com.github.ahatem.qtranslate.core.settings.data.ShiftTapTranslationMode
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
@@ -270,7 +272,7 @@ class KeyboardPanel(
             saveBinding(current.copy(isDoubleCtrlEnabled = !current.isDoubleCtrlEnabled))
             return
         }
-        if (action in nonScopeToggleActions) return
+        if (action in nonScopeToggleActions || action.requiredScope != null) return
         val current = store.state.value.workingConfiguration.hotkeys.find { it.action == action }
             ?: return
         val newScope = if (current.scope == HotkeyScope.GLOBAL) HotkeyScope.LOCAL else HotkeyScope.GLOBAL
@@ -290,11 +292,7 @@ class KeyboardPanel(
     }
 
     private fun saveBinding(binding: HotkeyBinding) {
-        val normalized = if (binding.action == HotkeyAction.REPLACE_WITH_TRANSLATION) {
-            binding.copy(scope = HotkeyScope.GLOBAL)
-        } else {
-            binding
-        }
+        val normalized = binding.normalizeScope()
         store.dispatch(SettingsIntent.ToggleSetting { config ->
             val updated = config.hotkeys.map { b ->
                 if (b.action == normalized.action) normalized else b
@@ -561,7 +559,7 @@ class KeyboardPanel(
             }
 
             val label = value as? String ?: ""
-            if (action in nonScopeToggleActions) {
+            if (action in nonScopeToggleActions || action?.requiredScope != null) {
                 text        = label
                 foreground  = UIManager.getColor("Label.disabledForeground")
                 font        = font.deriveFont(Font.ITALIC)
@@ -635,6 +633,15 @@ object HotkeyRecorderDialog {
         var modifierOnlyCandidate: Int? = null
         var isErrorState      = false
         var errorKeyCode      = 0
+        /**
+         * True while [keyPressed] found no usable code and is waiting for [keyTyped] to supply
+         * one. Windows hands AWT no VK_ constant on keyPressed for some layout-specific keys —
+         * the Cyrillic Ё is one — because their character only comes out of the layout's dead-key
+         * state machine once the key event reaches keyTyped. Failing the key on keyPressed alone
+         * made those keys permanently unrecordable even though a real character was one event away.
+         */
+        var awaitingTypedResolution = false
+        var pendingModifiers   = 0
 
         // ── dialog ──────────────────────────────────────────────────────────
         val dialog = JDialog(
@@ -845,12 +852,11 @@ object HotkeyRecorderDialog {
             override fun keyPressed(e: KeyEvent) {
                 e.consume()
                 isErrorState = false
+                awaitingTypedResolution = false
 
                 val resolvedKeyCode = when {
                     e.keyCode != KeyEvent.VK_UNDEFINED -> e.keyCode
                     e.extendedKeyCode != KeyEvent.VK_UNDEFINED -> e.extendedKeyCode
-                    e.keyChar != KeyEvent.CHAR_UNDEFINED && !Character.isISOControl(e.keyChar) ->
-                        KeyEvent.getExtendedKeyCodeForChar(e.keyChar.code)
                     else -> KeyEvent.VK_UNDEFINED
                 }
 
@@ -885,6 +891,16 @@ object HotkeyRecorderDialog {
                                 liveModifiers == modifierMask(it)
                         }
                         updateUI()
+                        return
+                    }
+
+                    resolvedKeyCode == KeyEvent.VK_UNDEFINED -> {
+                        // No VK_ code at all yet — a layout-specific key (Ё and similar) whose
+                        // character only becomes available on keyTyped. Wait for it there instead
+                        // of failing the key outright; keyTyped resolves or shows the error.
+                        modifierOnlyCandidate = null
+                        awaitingTypedResolution = true
+                        pendingModifiers = e.modifiersEx
                         return
                     }
 
@@ -929,7 +945,32 @@ object HotkeyRecorderDialog {
                 }
             }
 
-            override fun keyTyped(e: KeyEvent) { e.consume() }
+            override fun keyTyped(e: KeyEvent) {
+                e.consume()
+                if (!awaitingTypedResolution) return
+                awaitingTypedResolution = false
+
+                val resolvedKeyCode = if (!Character.isISOControl(e.keyChar) && e.keyChar != KeyEvent.CHAR_UNDEFINED) {
+                    KeyEvent.getExtendedKeyCodeForChar(e.keyChar.code)
+                } else {
+                    KeyEvent.VK_UNDEFINED
+                }
+
+                if (resolvedKeyCode == KeyEvent.VK_UNDEFINED || resolvedKeyCode in UNUSABLE_MAIN_KEYS) {
+                    errorKeyCode       = resolvedKeyCode
+                    isErrorState       = true
+                    okButton.isEnabled = false
+                    updateUI()
+                    return
+                }
+
+                modifierOnlyCandidate = null
+                capturedKeyCode   = resolvedKeyCode
+                capturedModifiers = pendingModifiers
+                liveModifiers     = 0
+                isCaptureDone     = true
+                updateUI()
+            }
         })
 
         // ── layout ───────────────────────────────────────────────────────────

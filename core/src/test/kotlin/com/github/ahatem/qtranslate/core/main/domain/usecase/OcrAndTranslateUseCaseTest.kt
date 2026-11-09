@@ -2,10 +2,12 @@ package com.github.ahatem.qtranslate.core.main.domain.usecase
 
 import com.github.ahatem.qtranslate.api.core.Logger
 import com.github.ahatem.qtranslate.api.ocr.ImageData
+import com.github.ahatem.qtranslate.api.ocr.LocalOCR
 import com.github.ahatem.qtranslate.api.ocr.OCR
 import com.github.ahatem.qtranslate.api.ocr.OCRRequest
 import com.github.ahatem.qtranslate.api.ocr.OCRResponse
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.api.plugin.Service
 import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
@@ -21,8 +23,62 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 
 class OcrAndTranslateUseCaseTest {
+    @Test
+    fun `пустой успешный кадр отличается от ошибки OCR`() = runTest {
+        val services = MutableStateFlow<Map<String, Service>>(
+            mapOf("audit" to FakeOcr("Пустой OCR", Ok(OCRResponse(""))))
+        )
+        val useCase = OcrAndTranslateUseCase(ActiveServiceManager(services, MutableStateFlow(Configuration.DEFAULT)), SilentLoggerFactory)
+        val image = ImageData(byteArrayOf(1), "png", 1, 1)
+        assertTrue(useCase.recognize(image, MainState(), { _, _, _ -> }).successful)
+        services.value = mapOf("audit" to FakeOcr("Отказ OCR", Err(ServiceError.NetworkError("Управляемый отказ"))))
+        assertFalse(useCase.recognize(image, MainState(), { _, _, _ -> }).successful)
+    }
+
+    @Test
+    fun `исключение OCR не прекращает следующие распознавания`() = runTest {
+        val services = MutableStateFlow<Map<String, Service>>(
+            mapOf("audit" to FakeOcr("Сбой OCR", Ok(OCRResponse("")), IllegalStateException("Управляемый отказ")))
+        )
+        val useCase = OcrAndTranslateUseCase(ActiveServiceManager(services, MutableStateFlow(Configuration.DEFAULT)), SilentLoggerFactory)
+        val image = ImageData(byteArrayOf(1), "png", 1, 1)
+        assertFalse(useCase.recognize(image, MainState(), { _, _, _ -> }).successful)
+        services.value = mapOf("audit" to FakeOcr("Рабочий OCR", Ok(OCRResponse("Восстановлено"))))
+        assertEquals("Восстановлено", useCase.recognize(image, MainState(), { _, _, _ -> }).text)
+    }
+
+    @Test
+    fun `LIVE кадр выбирает локальный OCR раньше настроенного облачного`() = runTest {
+        val cloudId = "ai-plugin:default:ai-ocr"
+        val localId = "google-services:default:google-ocr"
+        val defaultConfig = Configuration.DEFAULT
+        val preset = requireNotNull(defaultConfig.getActivePreset()).copy(
+            selectedServices = defaultConfig.getActivePreset()!!.selectedServices +
+                (ServiceRole.OCR to cloudId)
+        )
+        val manager = ActiveServiceManager(
+            activeServices = MutableStateFlow(
+                linkedMapOf(
+                    cloudId to FakeOcr("Cloud OCR", Ok(OCRResponse("cloud"))),
+                    localId to FakeLocalOcr("Windows OCR", Ok(OCRResponse("local")))
+                )
+            ),
+            configuration = MutableStateFlow(defaultConfig.copy(servicePresets = listOf(preset)))
+        )
+
+        val text = OcrAndTranslateUseCase(manager, SilentLoggerFactory).invoke(
+            image = ImageData(byteArrayOf(1), "png", 1, 1),
+            currentState = MainState(),
+            onStatusUpdate = { _, _, _ -> },
+            preferLocal = true
+        )
+
+        assertEquals("local", text)
+    }
+
     @Test
     fun `при ошибке выбранного OCR использует локальный резерв`() = runTest {
         val preferredId = "ai-plugin:default:ai-ocr"
@@ -62,9 +118,24 @@ class OcrAndTranslateUseCaseTest {
 
     private class FakeOcr(
         override val name: String,
-        private val result: Result<OCRResponse, ServiceError>
+        private val result: Result<OCRResponse, ServiceError>,
+        private val throwable: Exception? = null
     ) : OCR {
         override val key: String = "ocr"
+        override val version: String = "1.0.0"
+        override val supportedLanguages: SupportedLanguages = SupportedLanguages.All
+
+        override suspend fun extractText(request: OCRRequest): Result<OCRResponse, ServiceError> {
+            throwable?.let { throw it }
+            return result
+        }
+    }
+
+    private class FakeLocalOcr(
+        override val name: String,
+        private val result: Result<OCRResponse, ServiceError>
+    ) : LocalOCR {
+        override val key: String = "local-ocr"
         override val version: String = "1.0.0"
         override val supportedLanguages: SupportedLanguages = SupportedLanguages.All
 

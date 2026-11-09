@@ -157,10 +157,10 @@ class HandleTextToSpeechUseCase(
     private fun determineLanguage(state: MainState, source: TextSource): LanguageCode? =
         when (source) {
             TextSource.Input -> if (state.sourceLanguage == LanguageCode.AUTO) state.detectedSourceLanguage else state.sourceLanguage
-            TextSource.Output -> state.targetLanguage
+            TextSource.Output -> state.translatedTargetLanguage ?: state.targetLanguage
             TextSource.ExtraOutput -> when (settingsState.value.extraOutputSource) {
                 ExtraOutputSource.Input -> if (state.sourceLanguage == LanguageCode.AUTO) state.detectedSourceLanguage else state.sourceLanguage
-                ExtraOutputSource.Output -> state.targetLanguage
+                ExtraOutputSource.Output -> state.translatedTargetLanguage ?: state.targetLanguage
             }
         }
 

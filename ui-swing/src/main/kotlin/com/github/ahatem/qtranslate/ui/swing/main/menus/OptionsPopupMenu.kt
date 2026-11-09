@@ -20,6 +20,7 @@ data class MenuStrings(
     val imageSearch: String,
     val history: String,
     val textRecognition: String,
+    val gameSubtitles: String,
     val liveLens: String,
     val translateDocument: String,
     val settings: String,
@@ -45,6 +46,7 @@ data class MenuActions(
     val onShowImageSearch: () -> Unit,
     val onShowHistory: () -> Unit,
     val onRecognizeText: () -> Unit,
+    val onShowGameSubtitles: () -> Unit,
     val onShowLiveLens: () -> Unit,
     val onTranslateDocument: () -> Unit,
     val onShowSettings: () -> Unit,
@@ -149,6 +151,9 @@ class MainMenuPopup(
         })
         add(JMenuItem(strings.textRecognition).apply {
             addActionListener { actions.onRecognizeText() }
+        })
+        add(JMenuItem(strings.gameSubtitles).apply {
+            addActionListener { actions.onShowGameSubtitles() }
         })
         add(JMenuItem(strings.liveLens).apply {
             addActionListener { actions.onShowLiveLens() }
