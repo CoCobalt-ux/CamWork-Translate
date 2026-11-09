@@ -387,12 +387,8 @@ class MainAppFrame(
         availableLanguages = { mainStore.state.value.availableLanguages },
         translateString = translateString,
         appSecrets = appSecrets,
-        pauseGlobalHotkeys  = { globalKeyListener.setHotkeysEnabled(false) },
-        resumeGlobalHotkeys = {
-            globalKeyListener.setHotkeysEnabled(
-                settingsStore.state.value.workingConfiguration.isGlobalHotkeysEnabled
-            )
-        },
+        pauseGlobalHotkeys = globalKeyListener::suspendHotkeys,
+        resumeGlobalHotkeys = globalKeyListener::resumeHotkeys,
     )
 
     private val mainContentView: MainContentView = MainContentView(
@@ -658,21 +654,7 @@ class MainAppFrame(
     )
 
     init {
-        globalKeyListener.updateBindings(
-            settingsStore.state.value.originalConfiguration.hotkeys
-        )
-        globalKeyListener.setSelectionIconEnabled(
-            settingsStore.state.value.originalConfiguration.isSelectionIconEnabled
-        )
-        globalKeyListener.setAutoSelectionTranslateEnabled(
-            settingsStore.state.value.originalConfiguration.isAutoSelectionTranslateEnabled
-        )
-        globalKeyListener.setShiftTapTranslateEnabled(
-            settingsStore.state.value.originalConfiguration.let {
-                it.isShiftTapTranslateEnabled &&
-                    it.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
-            }
-        )
+        globalKeyListener.applyConfiguration(settingsStore.state.value.originalConfiguration)
 
         SwingUtilities.invokeLater {
             contentPane.add(mainContentView, BorderLayout.CENTER)
@@ -741,32 +723,6 @@ class MainAppFrame(
         }
     }
 
-    /**
-     * Установщик пишет ту же запись автозапуска раньше, чем в сохранённой конфигурации появляется
-     * соответствующая настройка. Слепое применение сохранённого "выключено" стирало бы эту запись
-     * при каждом запуске, поэтому реестр читается первым: своя запись переходит в настройку, а
-     * включённая настройка заново записывает путь (переезд папки не ломает автозапуск).
-     */
-    private fun reconcileSystemStartupAtLaunch() {
-        val saved = settingsStore.state.value.originalConfiguration.launchOnSystemStartup
-        when {
-            saved -> applySystemStartupSetting(true)
-            SystemStartupRegistration.isRegisteredForThisLauncher() -> settingsStore.dispatch(
-                SettingsIntent.ToggleSetting { it.copy(launchOnSystemStartup = true) }
-            )
-        }
-    }
-
-    private fun applySystemStartupSetting(enabled: Boolean) {
-        when (val failure = SystemStartupRegistration.apply(enabled)) {
-            null -> logger.info("System startup registration updated: enabled=$enabled")
-            SystemStartupRegistration.Failure.NO_LAUNCHER -> logger.info(
-                "System startup not applied: this build runs without its own launcher"
-            )
-            else -> logger.warn("System startup not applied: reason=$failure")
-        }
-    }
-
     private fun observeStateAndEvents() {
         val handler = CoroutineExceptionHandler { _, throwable ->
             logger.recordFailure("наблюдатель интерфейса", throwable)
@@ -804,23 +760,6 @@ class MainAppFrame(
                         }
                     }
                 }
-        }
-
-        // "Запускать при старте системы" до сих пор только сохранялась в настройках: ни одна
-        // строка кода её не читала, поэтому галка стояла, а Windows о приложении не знала.
-        // Запись в реестр идёт по сохранённому состоянию, а не по черновику, чтобы отменённые
-        // настройки не оставляли за собой автозапуск.
-        //
-        // Первое значение потока намеренно пропускается: при запуске состояние приводится в
-        // порядок отдельно, через reconcileSystemStartupAtLaunch, а не слепым применением
-        // сохранённого "выключено".
-        appScope.launch(handler) {
-            reconcileSystemStartupAtLaunch()
-            settingsStore.state
-                .map { it.originalConfiguration.launchOnSystemStartup }
-                .distinctUntilChanged()
-                .drop(1)
-                .collect { enabled -> applySystemStartupSetting(enabled) }
         }
 
         // OS dark/light mode watcher — polls every 10 s; re-applies theme when "os_default" is active
@@ -980,23 +919,9 @@ class MainAppFrame(
                         )
                 }
                 .distinctUntilChanged()
-                .collect { (configured, effective) ->
-                    globalKeyListener.setAutoSelectionTranslateEnabled(configured)
+                .collectWithRecovery(logger, "индикатор перевода выделения") { (_, effective) ->
                     withContext(Dispatchers.Swing) { updateTrayIcon(effective) }
                 }
-        }
-
-        // Настройка безопасного Shift-жеста применяется сразу после сохранения.
-        appScope.launch(handler) {
-            settingsStore.state
-                .map {
-                    it.originalConfiguration.let { config ->
-                        config.isShiftTapTranslateEnabled &&
-                            config.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
-                    }
-                }
-                .distinctUntilChanged()
-                .collect(globalKeyListener::setShiftTapTranslateEnabled)
         }
 
         appScope.launch(handler) {
@@ -1133,20 +1058,13 @@ class MainAppFrame(
             }
         }
 
-        // Hotkey binding и master-switch отслеживаются вместе: изменение только master-switch
-        // раньше не доходило до native listener, если список сочетаний оставался прежним.
+        // Весь сохранённый снимок применяется атомарно, независимо от черновика и пауз recorder.
         appScope.launch(handler) {
             settingsStore.state
-                .map {
-                    it.originalConfiguration.let { config ->
-                        config.hotkeys to config.isGlobalHotkeysEnabled
-                    }
-                }
+                .map { it.originalConfiguration }
                 .distinctUntilChanged()
-                .drop(1)
-                .collectWithRecovery(logger, "настройка горячих клавиш") { (bindings, isGlobalHotkeysEnabled) ->
-                    globalKeyListener.updateBindings(bindings)
-                    globalKeyListener.setHotkeysEnabled(isGlobalHotkeysEnabled)
+                .collectWithRecovery(logger, "настройка глобального ввода") { config ->
+                    globalKeyListener.applyConfiguration(config)
                     withContext(Dispatchers.Swing) { registerLocalHotkeys() }
                 }
         }
@@ -1787,23 +1705,13 @@ class MainAppFrame(
         )
         pendingTraySingleClick = javax.swing.Timer(delayMs) {
             pendingTraySingleClick = null
-            val currentConfig = settingsStore.state.value.workingConfiguration
-            val toggledState = TrayInteractionPolicy.toggledAutoSelectionState(
-                currentConfig.isAutoSelectionTranslateEnabled
-            )
-            // Runtime меняется в тот же тик, что и зелёная иконка. Сохранение настроек идёт
-            // асинхронно и больше не оставляет listener в прежнем состоянии.
-            globalKeyListener.setAutoSelectionTranslateEnabled(toggledState)
+            // Состояние обработчиков и значка применяется после подтверждённого сохранения.
             settingsStore.dispatch(
                 SettingsIntent.ToggleSetting { config ->
-                    config.copy(isAutoSelectionTranslateEnabled = toggledState)
+                    config.copy(isAutoSelectionTranslateEnabled = TrayInteractionPolicy.toggledAutoSelectionState(
+                        config.isAutoSelectionTranslateEnabled
+                    ))
                 }
-            )
-            updateTrayIcon(
-                TrayInteractionPolicy.isAutoSelectionEffective(
-                    currentConfig.isGlobalHotkeysEnabled,
-                    toggledState
-                )
             )
         }.apply {
             isRepeats = false
@@ -2091,11 +1999,7 @@ class MainAppFrame(
     }
 
     private fun mapToQuickTranslateState(mainState: MainState, config: Configuration): QuickTranslateDialogState {
-        val displaySourceLanguage = mainState.quickTranslateDetectedLanguageOverride
-            ?: mainState.quickTranslateSourceLanguageOverride
-            ?: mainState.detectedSourceLanguage
-            ?: mainState.sourceLanguage
-        val displayTargetLanguage = mainState.resolvedQuickTranslateTargetLanguage
+        val languages = mainState.toQuickTranslateLanguages()
 
         val activePreset = config.getActivePreset()
         val selectedTranslatorId = activePreset?.selectedServices?.get(ServiceRole.TRANSLATOR)
@@ -2111,11 +2015,10 @@ class MainAppFrame(
             isTtsPlaying = mainState.isTtsPlaying,
             definition = mainState.inlineDefinition,
 
-            sourceLanguage = displaySourceLanguage,
-            targetLanguage = displayTargetLanguage,
+            sourceLanguage = languages.sourceLanguage,
+            targetLanguage = languages.targetLanguage,
             availableLanguages = mainState.availableLanguages,
-            detectedSourceLanguage = mainState.quickTranslateDetectedLanguageOverride
-                ?: mainState.detectedSourceLanguage,
+            detectedSourceLanguage = languages.detectedSourceLanguage,
 
             translatorSelectorState = QuickTranslateSelectorState(
                 availableTranslators = mainState.getAvailableServicesFor(ServiceRole.TRANSLATOR),
@@ -2196,17 +2099,8 @@ class MainAppFrame(
     private fun setupGlobalHotkeys() {
         addWindowListener(object : WindowAdapter() {
             override fun windowOpened(e: WindowEvent?) {
+                globalKeyListener.applyConfiguration(settingsStore.state.value.originalConfiguration)
                 globalKeyListener.initialize()
-                val config = settingsStore.state.value.workingConfiguration
-                globalKeyListener.setHotkeysEnabled(config.isGlobalHotkeysEnabled)
-                globalKeyListener.setSelectionIconEnabled(config.isSelectionIconEnabled)
-                globalKeyListener.setAutoSelectionTranslateEnabled(
-                    config.isAutoSelectionTranslateEnabled
-                )
-                globalKeyListener.setShiftTapTranslateEnabled(
-                    config.isShiftTapTranslateEnabled &&
-                        config.shiftTapTranslationMode != ShiftTapTranslationMode.DISABLED
-                )
                 registerLocalHotkeys()
             }
 

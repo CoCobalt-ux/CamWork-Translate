@@ -129,12 +129,20 @@ data class MainState(
             ?: detectedSourceLanguage
             ?: LanguageCode.ENGLISH
 
-    /**
-     * Язык результата, который сейчас показан в окне быстрого перевода.
-     *
-     * Автоматический перевод выделения не меняет основную языковую пару, поэтому для его
-     * озвучивания приоритет имеет временный язык оверлея.
-     */
+    /** Источник, выбранный для popup: новый пассивный перевод начинается с AUTO. */
+    val resolvedQuickTranslateSourceLanguage: LanguageCode
+        get() = quickTranslateSourceLanguageOverride
+            ?: if (isQuickTranslateDialogPassive) LanguageCode.AUTO else sourceLanguage
+
+    /** Определение относится к тому же popup; старые метаданные главного окна не наследуются. */
+    val resolvedQuickTranslateDetectedSourceLanguage: LanguageCode?
+        get() = if (resolvedQuickTranslateSourceLanguage != LanguageCode.AUTO) null else {
+            if (isQuickTranslateDialogPassive || quickTranslateSourceLanguageOverride != null) {
+                quickTranslateDetectedLanguageOverride
+            } else detectedSourceLanguage
+        }
+
+    /** Фактический язык показанного результата; временный target оверлея имеет приоритет. */
     val resolvedQuickTranslateTargetLanguage: LanguageCode
         get() = quickTranslateTargetLanguageOverride ?: translatedTargetLanguage ?: targetLanguage
 

@@ -20,6 +20,8 @@ import com.github.ahatem.qtranslate.core.history.HistoryRepository
 import com.github.ahatem.qtranslate.core.history.HistorySnapshot
 import com.github.ahatem.qtranslate.core.main.domain.usecase.*
 import com.github.ahatem.qtranslate.core.settings.data.*
+import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
+import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
@@ -43,6 +45,115 @@ import kotlinx.coroutines.sync.withLock
 import kotlin.test.*
 
 class MainStoreRecoveryTest {
+    @Test
+    fun `смена только источника popup сохраняет показанный target при сброшенном override`() = runBlocking {
+        withFixture { fixture ->
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.GERMAN))
+            fixture.store.dispatch(MainIntent.AutoTranslateSelection("Hello there", requestId = 93_000))
+            fixture.translator.next().succeed("Привет", LanguageCode.ENGLISH)
+            fixture.awaitState { it.isQuickTranslateDialogPassive && it.translatedText == "Привет" }
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.ENGLISH))
+            assertEquals(null, fixture.store.state.value.quickTranslateTargetLanguageOverride)
+            assertEquals(LanguageCode.RUSSIAN, fixture.store.state.value.resolvedQuickTranslateTargetLanguage)
+            fixture.store.dispatch(MainIntent.SelectQuickTranslatePassiveSourceLanguage(LanguageCode.AUTO))
+            val changedSource = fixture.translator.next()
+            assertEquals(LanguageCode.AUTO, changedSource.request.sourceLanguage)
+            assertEquals(LanguageCode.RUSSIAN, changedSource.request.targetLanguage)
+            changedSource.succeed("Повторный перевод", LanguageCode.ENGLISH)
+            fixture.awaitState { it.translatedText == "Повторный перевод" && !it.isLoading }
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+            assertEquals(LanguageCode.ENGLISH, fixture.store.state.value.targetLanguage)
+        }
+    }
+
+    @Test
+    fun `AUTO сохраняется между разными определениями и перезагрузкой сервисов`() = runBlocking {
+        withFixture { fixture ->
+            listOf(LanguageCode.ENGLISH, LanguageCode.GERMAN, LanguageCode.UKRAINIAN).forEachIndexed { index, detected ->
+                fixture.translate("Исходный текст $index")
+                val pending = fixture.translator.next()
+                assertEquals(LanguageCode.AUTO, pending.request.sourceLanguage)
+                pending.succeed("Результат $index", detected)
+                fixture.awaitState { it.translatedText == "Результат $index" }
+                assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+                assertEquals(detected, fixture.store.state.value.detectedSourceLanguage)
+            }
+            fixture.services.value = emptyMap()
+            fixture.awaitState { it.availableServices.isEmpty() }
+            fixture.translator.languages = SupportedLanguages.Specific(setOf(LanguageCode.ENGLISH, LanguageCode.GERMAN))
+            fixture.services.value = mapOf("audit" to fixture.translator)
+            fixture.awaitState { it.availableLanguages.size == 2 }
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+        }
+    }
+
+    @Test
+    fun `стрелки пассивного popup не превращают AUTO основного окна в определённый язык`() = runBlocking {
+        withFixture { fixture ->
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.GERMAN))
+            fixture.store.dispatch(MainIntent.AutoTranslateSelection("Hello there", requestId = 91_000))
+            fixture.translator.next().succeed("Привет", LanguageCode.ENGLISH)
+            fixture.awaitState { it.isQuickTranslateDialogPassive && it.translatedText == "Привет" }
+            fixture.store.dispatch(MainIntent.SwapQuickTranslateLanguages)
+            val swapped = fixture.translator.next()
+            assertEquals("Привет", swapped.request.text)
+            assertEquals(LanguageCode.RUSSIAN, swapped.request.sourceLanguage)
+            assertEquals(LanguageCode.ENGLISH, swapped.request.targetLanguage)
+            swapped.succeed("Hello there", LanguageCode.RUSSIAN)
+            fixture.awaitState { it.translatedText == "Hello there" && !it.isLoading }
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+            assertEquals(LanguageCode.GERMAN, fixture.store.state.value.targetLanguage)
+            assertEquals(LanguageCode.RUSSIAN, fixture.store.state.value.quickTranslateSourceLanguageOverride)
+            assertEquals(LanguageCode.ENGLISH, fixture.store.state.value.quickTranslateTargetLanguageOverride)
+        }
+    }
+
+    @Test
+    fun `повторный выбор AUTO в пассивном popup публикует новое определение отдельно от выбора`() = runBlocking {
+        withFixture { fixture ->
+            fixture.translate("Текст основного окна")
+            fixture.translator.next().succeed("Основной перевод", LanguageCode.UKRAINIAN)
+            fixture.awaitState { it.translatedText == "Основной перевод" }
+            fixture.store.dispatch(MainIntent.AutoTranslateSelection("Hello there", requestId = 92_000))
+            fixture.translator.next().succeed("Привет", LanguageCode.ENGLISH)
+            fixture.awaitState { it.isQuickTranslateDialogPassive && it.translatedText == "Привет" }
+            fixture.store.dispatch(MainIntent.SelectQuickTranslatePassiveSourceLanguage(LanguageCode.AUTO))
+            val selected = fixture.translator.next()
+            assertEquals(LanguageCode.AUTO, selected.request.sourceLanguage)
+            selected.succeed("Повторный перевод", LanguageCode.GERMAN)
+            fixture.awaitState { it.translatedText == "Повторный перевод" && !it.isLoading }
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.quickTranslateSourceLanguageOverride)
+            assertEquals(LanguageCode.GERMAN, fixture.store.state.value.quickTranslateDetectedLanguageOverride)
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+        }
+    }
+
+    @Test
+    fun `выбор AUTO сохраняется в реальном DataStore после других настроек и повторного чтения`() = runBlocking {
+        withFixture { fixture ->
+            val json = Json { ignoreUnknownKeys = true }
+            val directory = File(fixture.directory, "language-settings").apply { mkdirs() }
+            val repository = SettingsRepository(directory, json, RecoveryLogger)
+            val initial = Configuration.DEFAULT.copy(preferredSourceLanguage = "de")
+            assertTrue(repository.updateConfiguration(initial).isOk)
+            val settings = SettingsStore(repository, RecoveryLogger, fixture.scope, initial)
+            fixture.store.dispatch(MainIntent.SelectSourceLanguage(LanguageCode.AUTO))
+            settings.dispatch(SettingsIntent.ToggleSetting { it.copy(preferredSourceLanguage = "auto") })
+            assertTrue(settings.saveChanges().isOk)
+            fixture.translate("Hello there")
+            fixture.translator.next().succeed("Перевод", LanguageCode.ENGLISH)
+            fixture.awaitState { it.translatedText == "Перевод" }
+            settings.dispatch(SettingsIntent.ToggleSetting { it.copy(uiScale = 125) })
+            assertTrue(settings.saveChanges().isOk)
+            val copied = File(fixture.directory, "language-settings-restart/datastore").apply { mkdirs() }
+            File(directory, "datastore/app_settings.preferences_pb").copyTo(File(copied, "app_settings.preferences_pb"))
+            val restored = SettingsRepository(copied.parentFile, json, RecoveryLogger).loadInitialConfiguration()
+            assertEquals("auto", restored.preferredSourceLanguage)
+            assertEquals(125, restored.uiScale)
+            assertEquals(LanguageCode.AUTO, fixture.store.state.value.sourceLanguage)
+        }
+    }
+
     @Test
     fun `ошибка физической очистки видна пользователю а повтор после восстановления подтверждён`() = runBlocking {
         val storage = HangingHistoryStore(hangWriteNumber = 2)

@@ -27,7 +27,9 @@ internal suspend fun runPackagedSmokeTest() {
         autoCheckForUpdates = false,
         isHistoryEnabled = false
     )
-    val dependencies = buildDependencies(appData, loggerFactory, settingsRepository, configuration)
+    val dependencies = buildDependencies(
+        appData, loggerFactory, settingsRepository, configuration, manageSystemStartup = false
+    )
 
     try {
         dependencies.pluginManager.loadAndProcessPlugins()

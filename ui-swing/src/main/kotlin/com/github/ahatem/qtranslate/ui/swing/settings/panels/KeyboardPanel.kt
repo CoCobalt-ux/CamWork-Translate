@@ -1006,9 +1006,9 @@ object HotkeyRecorderDialog {
 
         // Disable global hotkeys while the dialog is open so a shortcut being recorded
         // (e.g. Ctrl+D for dictionary) doesn't also fire its currently assigned action.
-        pauseGlobalHotkeys?.invoke()
-        dialog.isVisible = true   // ← blocks on EDT until the dialog is closed
-        resumeGlobalHotkeys?.invoke()
+        withHotkeysSuspended(pauseGlobalHotkeys, resumeGlobalHotkeys) {
+            dialog.isVisible = true
+        }
 
         if (!confirmed) return null
 

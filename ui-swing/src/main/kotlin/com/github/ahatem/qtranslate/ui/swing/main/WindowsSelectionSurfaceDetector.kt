@@ -53,6 +53,26 @@ internal class WindowsSelectionSurfaceDetector {
         )
     }
 
+    /** Win32 и clipboard остаются доступны, пока UI Automation чужого процесса зависла. */
+    fun inspectFallback(
+        point: Point,
+        clipboard: ClipboardSelectionEvidence? = null
+    ): SelectionSurfaceDetection {
+        if (!isWindows()) {
+            return SelectionSurfaceDetection(classifyPortableSelectionSurface(clipboard), null, null, clipboard)
+        }
+        val result = runCatching { readWin32Snapshot(point) }
+        val win32 = result.getOrNull()
+        return SelectionSurfaceDetection(
+            surface = classifySelectionSurface(null, win32, clipboard),
+            accessibility = null,
+            win32 = win32,
+            clipboard = clipboard,
+            accessibilityError = "UIA временно недоступна",
+            win32Error = result.exceptionOrNull()?.diagnosticMessage()
+        )
+    }
+
     private fun readAccessibilitySnapshot(point: Point): AccessibilitySelectionSnapshot? {
         val initializeResult = Ole32.INSTANCE.CoInitializeEx(null, Ole32.COINIT_MULTITHREADED)
         val initializedHere = initializeResult.toInt() >= 0

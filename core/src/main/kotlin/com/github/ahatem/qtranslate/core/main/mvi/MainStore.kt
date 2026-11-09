@@ -784,14 +784,35 @@ class MainStore(
     // Synchronous handlers
     // -------------------------------------------------------------------------
 
-    private fun swapLanguages(context: SwapLanguagesContext) {
-        invalidateMainTranslation()
+    private suspend fun swapLanguages(context: SwapLanguagesContext) {
+        val passive = context == SwapLanguagesContext.QUICK_TRANSLATE && _state.value.isQuickTranslateDialogPassive
+        if (!passive) invalidateMainTranslation()
+        var translateNeeded = false
         swapLanguagesUseCase(
             currentState     = _state.value,
             context          = context,
-            onStateUpdate    = { newState -> _state.value = newState },
-            onTranslateNeeded = { dispatch(MainIntent.Translate()) }
+            onStateUpdate    = { newState -> _state.update {
+                it.copy(
+                    sourceLanguage = newState.sourceLanguage,
+                    targetLanguage = newState.targetLanguage,
+                    inputText = newState.inputText,
+                    translatedText = newState.translatedText,
+                    translatedTargetLanguage = newState.translatedTargetLanguage,
+                    translationHistoryId = newState.translationHistoryId,
+                    extraOutputText = newState.extraOutputText,
+                    detectedSourceLanguage = newState.detectedSourceLanguage,
+                    quickTranslateSourceLanguageOverride = newState.quickTranslateSourceLanguageOverride,
+                    quickTranslateTargetLanguageOverride = newState.quickTranslateTargetLanguageOverride,
+                    quickTranslateDetectedLanguageOverride = newState.quickTranslateDetectedLanguageOverride,
+                    spellCheckCorrections = newState.spellCheckCorrections
+                )
+            } },
+            onTranslateNeeded = { translateNeeded = true }
         )
+        if (translateNeeded) {
+            if (passive) handleQuickTranslatePassiveLanguageChange(null, null)
+            else dispatch(MainIntent.Translate())
+        }
     }
 
     private fun handleUndo() {
@@ -968,12 +989,9 @@ class MainStore(
         val revision = passiveTranslationRevision.incrementAndGet()
 
         val resolvedSource = sourceLanguage
-            ?: current.quickTranslateSourceLanguageOverride
-            ?: current.detectedSourceLanguage
-            ?: current.sourceLanguage
+            ?: current.resolvedQuickTranslateSourceLanguage
         val resolvedTarget = targetLanguage
-            ?: current.quickTranslateTargetLanguageOverride
-            ?: current.targetLanguage
+            ?: current.resolvedQuickTranslateTargetLanguage
 
         _state.update {
             it.copy(
@@ -1006,7 +1024,12 @@ class MainStore(
         ) {
             is TranslationRunResult.Success -> _state.update {
                 if (passiveTranslationRevision.get() == revision && it.inputText == sourceText) {
-                    it.copy(translatedText = result.translatedText, translatedTargetLanguage = resolvedTarget, isLoading = false)
+                    it.copy(
+                        translatedText = result.translatedText,
+                        translatedTargetLanguage = resolvedTarget,
+                        quickTranslateDetectedLanguageOverride = backgroundState.detectedSourceLanguage,
+                        isLoading = false
+                    )
                 } else it
             }
             is TranslationRunResult.Failure -> _state.update {

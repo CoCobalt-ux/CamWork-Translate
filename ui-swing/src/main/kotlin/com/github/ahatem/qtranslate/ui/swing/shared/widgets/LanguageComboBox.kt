@@ -180,17 +180,14 @@ class LanguageComboBox(
 
                 val fullName: String =
                     if (isClosedControl && autoDetectedLanguage != null && value == LanguageCode.AUTO) {
-                        "${autoDetectedLanguage.getDisplayName()} ($autoDetectLabel)"
+                        "$autoDetectLabel (${autoDetectedLanguage.getDisplayName()})"
                     } else {
                         value.getDisplayName(autoDetectLabel = autoDetectLabel)
                     }
 
                 if (isCompact() && isClosedControl) {
-                    // The code of whatever is actually in use. With Auto resolved, that is the
-                    // detected language rather than the word "auto", which is the more useful of
-                    // the two in four characters.
-                    val effective = if (value == LanguageCode.AUTO) autoDetectedLanguage ?: value else value
-                    text = effective.tag.uppercase()
+                    // AUTO — выбранный режим; результат определения раскрывается отдельно в подсказке.
+                    text = value.tag.uppercase()
                     // The name the code stands for, since the code alone is not always obvious.
                     toolTipText = fullName
                     comboBox.toolTipText = fullName

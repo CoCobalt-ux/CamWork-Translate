@@ -4,6 +4,7 @@ import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsState
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.core.shared.AppConstants
+import com.github.ahatem.qtranslate.ui.swing.main.SystemStartupRegistration
 import javax.swing.JCheckBox
 
 /**
@@ -21,6 +22,7 @@ class GeneralPanel(
     private lateinit var updatesCheckbox: JCheckBox
     private lateinit var historyCheckbox: JCheckBox
     private lateinit var clearCheckbox:   JCheckBox
+    private val startupUnavailable = SystemStartupRegistration.availabilityFailure()
 
     init { buildUI() }
 
@@ -31,8 +33,15 @@ class GeneralPanel(
         launchCheckbox = addCheckbox(
             text = localizationManager.getString("settings_general.launch_on_startup"),
             selected = false,
+            enabled = startupUnavailable == null,
             onChange = { enabled -> applyDraft(store) { it.copy(launchOnSystemStartup = enabled) } }
         )
+        if (startupUnavailable != null) {
+            launchCheckbox.toolTipText = startupUnavailable.message
+            addHint(startupUnavailable.message)
+        } else {
+            addHint("Автозапуск выполняется при входе в Windows. Если он отключён в Диспетчере задач, включите CamWork Translate в «Параметры → Приложения → Автозагрузка».")
+        }
         updatesCheckbox = addCheckbox(
             text = localizationManager.getString("settings_general.auto_check_updates"),
             selected = false,
@@ -65,7 +74,7 @@ class GeneralPanel(
         val c = state.workingConfiguration
 
         withoutTrigger {
-            launchCheckbox.isSelected  = c.launchOnSystemStartup
+            launchCheckbox.isSelected  = startupUnavailable == null && c.launchOnSystemStartup
             updatesCheckbox.isSelected = AppConstants.APP_UPDATES_AVAILABLE && c.autoCheckForUpdates
             updatesCheckbox.isEnabled = AppConstants.APP_UPDATES_AVAILABLE
             historyCheckbox.isSelected = c.isHistoryEnabled
