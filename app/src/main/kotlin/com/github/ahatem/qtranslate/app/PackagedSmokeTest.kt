@@ -5,6 +5,7 @@ import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslationRequestC
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.plugin.PluginStatus
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
+import com.github.ahatem.qtranslate.ui.swing.shared.util.NativeRuntimeCheck
 import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -13,6 +14,7 @@ import java.security.MessageDigest
 /** Быстрая headless-проверка уже упакованного приложения перед публикацией. */
 internal suspend fun runPackagedSmokeTest() {
     System.setProperty("java.awt.headless", "true")
+    val nativeRuntime = NativeRuntimeCheck.verify()
     val appData = AppDataDirectory.resolve()
     System.setProperty("logDir", File(appData, "logs").absolutePath)
     val loggerFactory = ConsoleLoggerFactory(ConsoleLoggerFactory.LogLevel.INFO)
@@ -60,7 +62,7 @@ internal suspend fun runPackagedSmokeTest() {
         val successMarker =
             "CAMWORK_PACKAGED_SMOKE_OK version=${com.github.ahatem.qtranslate.core.shared.AppConstants.APP_VERSION} " +
                 "plugins=${plugins.size} primary=${MANAGED_TRANSLATION_PLUGIN_IDS.sorted().joinToString(",")} " +
-                "translatedBy=${translation.translatorId}"
+                "translatedBy=${translation.translatorId} native=$nativeRuntime"
         File(appData, "logs/packaged-smoke-ok.txt").apply {
             parentFile.mkdirs()
             writeText(successMarker + "\n", Charsets.UTF_8)
