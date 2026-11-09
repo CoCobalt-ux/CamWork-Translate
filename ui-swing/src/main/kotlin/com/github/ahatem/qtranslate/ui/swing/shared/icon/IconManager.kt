@@ -3,8 +3,9 @@ package com.github.ahatem.qtranslate.ui.swing.shared.icon
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.formdev.flatlaf.util.ScaledImageIcon
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
-import java.io.ByteArrayInputStream
 import java.net.URL
+import java.net.URLConnection
+import java.net.URLStreamHandler
 import javax.swing.Icon
 import javax.swing.ImageIcon
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconSet
@@ -53,15 +54,11 @@ class IconManager(private val pluginManager: PluginManager) {
             val icon = IconSet.load(path, width, height)
             return if (icon.iconWidth > 0) icon else getMissingIcon(width, height)
         }
-        val icon = if (loader === this::class.java.classLoader) {
-            FlatSVGIcon(path, width, height, loader)
-        } else {
-            val bytes = readPluginResource(path, loader) ?: return getMissingIcon(width, height)
-            runCatching {
-                ByteArrayInputStream(bytes).use { FlatSVGIcon(it).derive(width, height) }
-            }.getOrElse { return getMissingIcon(width, height) }
-        }
-        return if (icon.iconWidth > 0) icon else getMissingIcon(width, height)
+        val resourceLoader = if (loader === this::class.java.classLoader) loader else UncachedPluginResources(loader)
+        val icon = FlatSVGIcon(path, width, height, resourceLoader)
+        // Размер из конструктора не запускает разбор: сохраняем SVG в памяти до возможного удаления JAR.
+        val found = loader === this::class.java.classLoader || icon.hasFound()
+        return if (found && icon.iconWidth > 0) icon else getMissingIcon(width, height)
     }
 
     private fun loadRasterIcon(path: String, width: Int, height: Int, loader: ClassLoader): Icon {
@@ -82,8 +79,7 @@ class IconManager(private val pluginManager: PluginManager) {
 
     /** URL-кэш открывает отдельный JarFile: одного закрытия ClassLoader недостаточно для удаления JAR в Windows. */
     private fun readPluginResource(path: String, loader: ClassLoader): ByteArray? = runCatching {
-        loader.getResource(path)?.openConnection()?.apply { useCaches = false }
-            ?.getInputStream()?.use { it.readBytes() }
+        UncachedPluginResources(loader).getResource(path)?.openStream()?.use { it.readBytes() }
     }.getOrNull()
 
     private fun getMissingIcon(width: Int, height: Int): Icon {
@@ -100,5 +96,14 @@ class IconManager(private val pluginManager: PluginManager) {
     private companion object {
         /** Only paths under this belong to the application's own icon sets. */
         const val APP_ICON_PREFIX = "icons/"
+    }
+}
+
+/** Сохраняет имя, выбор _dark и исходный URI SVG, отключая только кэш открытого ресурса. */
+private class UncachedPluginResources(private val resources: ClassLoader) : ClassLoader(resources) {
+    override fun getResource(name: String): URL? = resources.getResource(name)?.let { resource ->
+        URL(null, resource.toExternalForm(), object : URLStreamHandler() {
+            override fun openConnection(url: URL): URLConnection = resource.openConnection().apply { useCaches = false }
+        })
     }
 }
