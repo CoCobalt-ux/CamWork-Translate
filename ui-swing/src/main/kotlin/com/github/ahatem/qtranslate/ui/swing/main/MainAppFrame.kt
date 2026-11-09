@@ -17,12 +17,15 @@ import com.github.ahatem.qtranslate.core.main.mvi.SelectionTranslationFailureRea
 import com.github.ahatem.qtranslate.core.main.domain.usecase.canSwapLanguages
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SwapLanguagesContext
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
+import com.github.ahatem.qtranslate.core.plugin.ServiceValidation
+import com.github.michaelbull.result.fold
 import com.github.ahatem.qtranslate.core.plugin.storage.AppSecretStore
 import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
 import com.github.ahatem.qtranslate.core.settings.data.*
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsIntent
 import com.github.ahatem.qtranslate.core.settings.mvi.SettingsStore
 import com.github.ahatem.qtranslate.core.shared.AppConstants
+import com.github.ahatem.qtranslate.core.shared.logging.recordFailure
 import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.core.shared.notification.AppNotification
@@ -119,7 +122,10 @@ class MainAppFrame(
     private val appSecrets: AppSecretStore? = null
 ) : JFrame(AppConstants.APP_NAME) {
 
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("MainAppFrame"))
+    private val appScope = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default + CoroutineName("MainAppFrame") +
+            CoroutineExceptionHandler { _, failure -> logger.recordFailure("интерфейс", failure) }
+    )
 
     private var trayIcon: TrayIcon? = null
     private var trayIconImages: TrayIconImages? = null
@@ -332,22 +338,38 @@ class MainAppFrame(
                 )
             },
             onPinToggled = { mainStore.dispatch(MainIntent.ToggleQuickTranslateDialogPin) },
-            // Changing either language re-runs the translation, which is the only reason anyone
-            // changes it here. The same intents the main window's own picker dispatches, so the
-            // two stay in step and the choice is remembered the same way.
+            // Пассивное окошко (авто-перевод входящего чужого текста) — отдельная, изолированная
+            // пара языков: клиент пишет по-английски, модель отвечает по-русски, это два разных
+            // направления. Смена языка здесь идёт через SelectQuickTranslatePassive*Language и
+            // не трогает sourceLanguage/targetLanguage, которые читает исходящий Shift — иначе
+            // выбор в этом окошке незаметно подменял бы то, куда Shift переводит другой текст.
+            // Непассивный вызов (например, из главного окна) остаётся на общей паре, как раньше.
             onSourceLanguageSelected = { language ->
-                mainStore.dispatch(MainIntent.SelectSourceLanguage(language))
-                settingsStore.dispatch(
-                    SettingsIntent.ToggleSetting { it.copy(preferredSourceLanguage = language.tag) }
-                )
-                mainStore.dispatch(MainIntent.Translate())
+                if (mainStore.state.value.isQuickTranslateDialogPassive) {
+                    mainStore.dispatch(MainIntent.SelectQuickTranslatePassiveSourceLanguage(language))
+                } else {
+                    mainStore.dispatch(MainIntent.SelectSourceLanguage(language))
+                    settingsStore.dispatch(
+                        SettingsIntent.ToggleSetting { it.copy(preferredSourceLanguage = language.tag) }
+                    )
+                    mainStore.dispatch(MainIntent.Translate())
+                }
             },
             onTargetLanguageSelected = { language ->
-                mainStore.dispatch(MainIntent.SelectTargetLanguage(language))
-                settingsStore.dispatch(
-                    SettingsIntent.ToggleSetting { it.copy(preferredTargetLanguage = language.tag) }
-                )
-                mainStore.dispatch(MainIntent.Translate())
+                if (mainStore.state.value.isQuickTranslateDialogPassive) {
+                    mainStore.dispatch(MainIntent.SelectQuickTranslatePassiveTargetLanguage(language))
+                    // Выбор запоминается для следующих входящих переводов — в собственную
+                    // настройку, а не в preferredTargetLanguage, которую читает исходящий Shift.
+                    settingsStore.dispatch(
+                        SettingsIntent.ToggleSetting { it.copy(incomingTargetLanguage = language.tag) }
+                    )
+                } else {
+                    mainStore.dispatch(MainIntent.SelectTargetLanguage(language))
+                    settingsStore.dispatch(
+                        SettingsIntent.ToggleSetting { it.copy(preferredTargetLanguage = language.tag) }
+                    )
+                    mainStore.dispatch(MainIntent.Translate())
+                }
             },
             onSwapLanguages = {
                 mainStore.dispatch(MainIntent.SwapQuickTranslateLanguages)
@@ -447,12 +469,14 @@ class MainAppFrame(
                     localizationManager = localizer,
                     settingsModel = model,
                     settingsInstance = instance,
-                    onSave = { values -> appScope.launch { pluginManager.applySettingsFromMap(plugin.id, values) } },
+                    onSave = { values -> pluginManager.applySettingsFromMap(plugin.id, values) },
                     onTestConnection = if (!canTest) null else { values ->
                         // Applied first so the test uses what is on screen, not what was saved
                         // last time — testing a key you have just typed is the whole point.
-                        pluginManager.applySettingsFromMap(plugin.id, values)
-                        pluginManager.validateServices(plugin.id)
+                        pluginManager.applySettingsFromMap(plugin.id, values).fold(
+                            success = { pluginManager.validateServices(plugin.id) },
+                            failure = { listOf(ServiceValidation(plugin.id, plugin.manifest.name, it)) }
+                        )
                     }
                 ).isVisible = true
             }
@@ -517,14 +541,18 @@ class MainAppFrame(
         onTranslate = { mainStore.dispatch(MainIntent.Translate()) },
         onSelectionDetected = { text, location ->
             runOnUi {
-                // Матрица уже решила, что нужна кнопка; здесь остаётся лишь
-                // не дублировать её внутри самого CamWork Translate.
-                if (!isActive) selectionTranslateButton.showAt(location, text)
+                // Матрица уже решила, что нужна кнопка; здесь остаётся лишь не дублировать её
+                // внутри самого CamWork Translate. Раньше это проверялось через isActive окна
+                // CamWork — но окно может оставаться активным, пока пользователь выделяет текст
+                // в другом приложении рядом (второй монитор, недавний клик по истории), и тогда
+                // кнопка не появлялась вовсе. Проверяем действительно то же самое: находится ли
+                // выделение внутри окна CamWork, а не то, в фокусе ли оно сейчас.
+                if (!isForegroundWindowOwnedByThisProcess()) selectionTranslateButton.showAt(location, text)
             }
         },
         onAutoTranslateSelection = { text, requestId ->
             // Внутри CamWork уже есть обычная кнопка Translate; auto-overlay нужен внешним окнам.
-            if (!isActive) {
+            if (!isForegroundWindowOwnedByThisProcess()) {
                 runOnUi {
                     loadingIndicator.showTranslating(
                         message = localizer.getString("shift_overlay.translating"),
@@ -537,9 +565,21 @@ class MainAppFrame(
             }
         },
         onPointerPressed = { location ->
-            invalidatePendingSelectionReplacement()
             runOnUi {
+                val pressedSelectionButton = selectionTranslateButton.isVisible &&
+                    selectionTranslateButton.bounds.contains(location)
+                // Иначе нажатие НА САМУ кнопку отменяло перевод, который эта же кнопка через
+                // миг запускала. MainGlobalKeyListener видит press раньше, чем Swing успевает
+                // обработать click по кнопке (два независимых потока — глобальный хук и EDT), и
+                // отправленная здесь отмена может обогнать ещё не созданный тикет коллектора,
+                // либо прийти сразу после его создания. Во втором случае canDeliver() в MainStore
+                // находит тикет уже не текущим и тихо не доставляет готовый перевод — снаружи это
+                // выглядело как «первый клик не работает, только второй».
+                if (!pressedSelectionButton) invalidatePendingSelectionReplacement()
                 selectionTranslateButton.dismissIfOutside(location)
+                if (!pressedSelectionButton && loadingIndicatorDelegate.isInitialized()) {
+                    loadingIndicator.dismiss(immediately = true)
+                }
                 dismissPopupsPressedOutside(location)
             }
         },
@@ -579,7 +619,14 @@ class MainAppFrame(
         if (!settingsStore.state.value.workingConfiguration.closePopupsOnClickOutside) return
         val state = mainStore.state.value
 
-        fun pressedOutside(dialog: java.awt.Window) = dialog.isVisible && !dialog.bounds.contains(screenPoint)
+        // Выпадающий список (JComboBox) открывается как отдельное heavyweight-окно, которым
+        // владеет сам диалог — оно не входит в dialog.bounds. Без этой проверки клик по языку в
+        // открытом списке читался как клик мимо попапа, и выбор языка просто закрывал окно вместо
+        // того, чтобы применить его.
+        fun pressedOutside(dialog: java.awt.Window): Boolean {
+            if (!dialog.isVisible || dialog.bounds.contains(screenPoint)) return false
+            return dialog.ownedWindows.none { owned -> owned.isVisible && owned.bounds.contains(screenPoint) }
+        }
 
         if (state.isQuickTranslateDialogVisible && !state.isQuickTranslateDialogPinned &&
             pressedOutside(quickTranslateDialog)
@@ -665,10 +712,8 @@ class MainAppFrame(
             // the window actually ended up with.
             restorePosition(config.mainWindowPosition)
 
-            // Enforce Input → Output → Extra (→ Input) Tab cycle across all layouts.
-            // In Compact layout the policy also switches tabs so hidden panes become
-            // visible before Swing calls requestFocusInWindow() on them.
-            focusTraversalPolicy = TextPaneCycleFocusPolicy(mainContentView)
+            // Tab обходит все элементы; Alt+1/2/3 сохраняют быстрый переход между текстами.
+            focusTraversalPolicy = LayoutFocusTraversalPolicy()
 
             setupWindowListeners()
             setupMenuBar()
@@ -696,9 +741,35 @@ class MainAppFrame(
         }
     }
 
+    /**
+     * Установщик пишет ту же запись автозапуска раньше, чем в сохранённой конфигурации появляется
+     * соответствующая настройка. Слепое применение сохранённого "выключено" стирало бы эту запись
+     * при каждом запуске, поэтому реестр читается первым: своя запись переходит в настройку, а
+     * включённая настройка заново записывает путь (переезд папки не ломает автозапуск).
+     */
+    private fun reconcileSystemStartupAtLaunch() {
+        val saved = settingsStore.state.value.originalConfiguration.launchOnSystemStartup
+        when {
+            saved -> applySystemStartupSetting(true)
+            SystemStartupRegistration.isRegisteredForThisLauncher() -> settingsStore.dispatch(
+                SettingsIntent.ToggleSetting { it.copy(launchOnSystemStartup = true) }
+            )
+        }
+    }
+
+    private fun applySystemStartupSetting(enabled: Boolean) {
+        when (val failure = SystemStartupRegistration.apply(enabled)) {
+            null -> logger.info("System startup registration updated: enabled=$enabled")
+            SystemStartupRegistration.Failure.NO_LAUNCHER -> logger.info(
+                "System startup not applied: this build runs without its own launcher"
+            )
+            else -> logger.warn("System startup not applied: reason=$failure")
+        }
+    }
+
     private fun observeStateAndEvents() {
         val handler = CoroutineExceptionHandler { _, throwable ->
-            logger.error("Unhandled exception in a MainAppFrame coroutine", throwable)
+            logger.recordFailure("наблюдатель интерфейса", throwable)
         }
 
         // Theme and font updates — observe originalConfiguration (saved state only).
@@ -733,6 +804,23 @@ class MainAppFrame(
                         }
                     }
                 }
+        }
+
+        // "Запускать при старте системы" до сих пор только сохранялась в настройках: ни одна
+        // строка кода её не читала, поэтому галка стояла, а Windows о приложении не знала.
+        // Запись в реестр идёт по сохранённому состоянию, а не по черновику, чтобы отменённые
+        // настройки не оставляли за собой автозапуск.
+        //
+        // Первое значение потока намеренно пропускается: при запуске состояние приводится в
+        // порядок отдельно, через reconcileSystemStartupAtLaunch, а не слепым применением
+        // сохранённого "выключено".
+        appScope.launch(handler) {
+            reconcileSystemStartupAtLaunch()
+            settingsStore.state
+                .map { it.originalConfiguration.launchOnSystemStartup }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { enabled -> applySystemStartupSetting(enabled) }
         }
 
         // OS dark/light mode watcher — polls every 10 s; re-applies theme when "os_default" is active
@@ -925,7 +1013,7 @@ class MainAppFrame(
         // Single collector for all MainEvents — avoids channel-race where two separate
         // filterIsInstance collectors compete and one silently drops events it doesn't match.
         appScope.launch(handler) {
-            mainStore.events.collect { event ->
+            mainStore.events.collectWithRecovery(logger, "события переводчика") { event ->
                 when (event) {
                     is MainEvent.UpdateStatusBar -> withContext(Dispatchers.Swing) {
                         statusBarController.handleEvent(event)
@@ -1035,7 +1123,7 @@ class MainAppFrame(
 
         // Background/system notifications — UpdateAvailable → dialog; everything else → popover
         appScope.launch(handler) {
-            notificationBus.notifications.collect { notification ->
+            notificationBus.notifications.collectWithRecovery(logger, "уведомления") { notification ->
                 withContext(Dispatchers.Swing) {
                     when (val code = notification.code) {
                         is NotificationCode.UpdateAvailable -> showUpdateDialog(code)
@@ -1056,7 +1144,7 @@ class MainAppFrame(
                 }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { (bindings, isGlobalHotkeysEnabled) ->
+                .collectWithRecovery(logger, "настройка горячих клавиш") { (bindings, isGlobalHotkeysEnabled) ->
                     globalKeyListener.updateBindings(bindings)
                     globalKeyListener.setHotkeysEnabled(isGlobalHotkeysEnabled)
                     withContext(Dispatchers.Swing) { registerLocalHotkeys() }
@@ -1069,7 +1157,7 @@ class MainAppFrame(
                 .map { it.originalConfiguration.interfaceLanguage }
                 .distinctUntilChanged()
                 .drop(1)
-                .collect { languageCode ->
+                .collectWithRecovery(logger, "язык интерфейса") { languageCode ->
                     withContext(Dispatchers.IO) {
                         localizer.loadLanguage(
                             LanguageCode(languageCode)
@@ -1102,7 +1190,7 @@ class MainAppFrame(
                         isLoading      = m.isLoading,
                         inputText      = m.inputText.trim(),
                         translatedText = m.translatedText.trim(),
-                        targetLang     = m.targetLanguage,
+                        targetLang     = m.translatedTargetLanguage ?: m.targetLanguage,
                         resolvedSourceLang = m.resolvedSourceLanguage,
                         autoSource     = s.workingConfiguration.dictionaryAutoSource,
                         mainVisible    = isVisible,
@@ -1369,6 +1457,10 @@ class MainAppFrame(
                 val pasteModifier = if (
                     System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
                 ) KeyEvent.VK_META else KeyEvent.VK_CONTROL
+                if (!selectionInteractionGuard.isCurrent(expectedInteractionGeneration) ||
+                    System.currentTimeMillis() > expiresAtMillis ||
+                    globalKeyListener.isSystemScreenCaptureSuppressed()
+                ) return@launch
                 robot.sendShortcutSafely(pasteModifier, KeyEvent.VK_V)
                 robot.waitForIdle()
                 pasteSent = true
@@ -2647,54 +2739,6 @@ class MainAppFrame(
         }
 
     }
-}
-
-/**
- * Custom focus-traversal policy for the main application window.
- *
- * When Tab/Shift+Tab is pressed inside any of the three text panes (input, output, extra),
- * focus moves directly to the next/previous pane in the cycle — skipping toolbar buttons,
- * scrollbars, and other intermediate components.  For Compact (tabbed) layout the policy
- * also selects the target tab so the pane is visible before Swing calls requestFocusInWindow().
- *
- * When Tab is pressed from any component that is NOT one of the managed text panes the
- * standard [LayoutFocusTraversalPolicy] takes over, preserving normal keyboard navigation
- * for dialogs, settings panels, and anything else displayed in the same window.
- */
-private class TextPaneCycleFocusPolicy(
-    private val contentView: MainContentView,
-    private val fallback: FocusTraversalPolicy = LayoutFocusTraversalPolicy()
-) : FocusTraversalPolicy() {
-
-    /** All visible text panes in traversal order. Re-evaluated on every Tab press. */
-    private fun panes(): List<JComponent> = contentView.orderedTextPanes()
-
-    override fun getComponentAfter(aContainer: Container, aComponent: Component): Component {
-        val all = panes()
-        val idx = all.indexOfFirst { it === aComponent }
-        if (idx < 0) return fallback.getComponentAfter(aContainer, aComponent)
-        val nextIdx = (idx + 1) % all.size
-        contentView.ensureCompactTabVisible(nextIdx)
-        return all[nextIdx]
-    }
-
-    override fun getComponentBefore(aContainer: Container, aComponent: Component): Component {
-        val all = panes()
-        val idx = all.indexOfFirst { it === aComponent }
-        if (idx < 0) return fallback.getComponentBefore(aContainer, aComponent)
-        val prevIdx = (idx - 1 + all.size) % all.size
-        contentView.ensureCompactTabVisible(prevIdx)
-        return all[prevIdx]
-    }
-
-    override fun getFirstComponent(aContainer: Container): Component =
-        panes().firstOrNull() ?: fallback.getFirstComponent(aContainer)
-
-    override fun getLastComponent(aContainer: Container): Component =
-        panes().lastOrNull() ?: fallback.getLastComponent(aContainer)
-
-    override fun getDefaultComponent(aContainer: Container): Component =
-        panes().firstOrNull() ?: fallback.getDefaultComponent(aContainer)
 }
 
 /** Snapshot used to deduplicate auto-lookup triggers. */

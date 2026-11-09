@@ -14,6 +14,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 /**
  * Fetches a one-line definition to sit under a single-word translation.
@@ -58,11 +60,12 @@ class FetchInlineDefinitionUseCase(
             // usually English, which is the language dictionaries actually cover.
             for ((candidate, candidateLanguage) in candidates) {
                 val summary = summarise(dictionary, candidate, candidateLanguage) ?: continue
-                logger.debug("Inline definition ready for '$candidate' (${candidateLanguage.tag})")
+                currentCoroutineContext().ensureActive()
+                logger.debug("Определение получено: символов=${candidate.length}, язык=${candidateLanguage.tag}")
                 updateState { copy(inlineDefinition = summary) }
                 return@launch
             }
-            logger.debug("No inline definition for ${candidates.joinToString { it.first }}")
+            logger.debug("Определение не найдено: вариантов=${candidates.size}")
         }
     }
 
@@ -71,13 +74,17 @@ class FetchInlineDefinitionUseCase(
         word: String,
         language: LanguageCode
     ): String? {
-        val response = runCatching {
+        val response = try {
             // Shorter than a normal lookup's patience. This is a detail beside the translation;
             // if it has not arrived by now the reader has already moved on.
             withTimeoutOrNull(TIMEOUT_MS) {
                 dictionary.lookup(DictionaryRequest(word, language)).get()
             }
-        }.getOrNull() ?: return null
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } ?: return null
 
         val entry = response.entries.firstOrNull() ?: return null
         val meanings = entry.definitions

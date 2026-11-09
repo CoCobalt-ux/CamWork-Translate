@@ -678,8 +678,9 @@ class MainGlobalKeyListener(
                             delay(backoffMs)
                             continue
                         }
+                        val generationAfterSentinel = currentSystemClipboardGeneration()
                         ownedClipboardText = sentinel.takeIf { sentinelWritten }
-                        ownedClipboardGeneration = currentSystemClipboardGeneration()
+                        ownedClipboardGeneration = generationAfterSentinel
 
                         if (!simulateCopy()) {
                             logger.warn(
@@ -691,10 +692,28 @@ class MainGlobalKeyListener(
                         }
                         delay(backoffMs)
 
+                        val generationAfterCopy = currentSystemClipboardGeneration()
                         val candidate = readClipboardText(clipboard)
                         if (!candidate.isNullOrEmpty() && candidate != sentinel) {
-                            ownedClipboardText = candidate
-                            ownedClipboardGeneration = currentSystemClipboardGeneration()
+                            // Exactly one write should have landed since the sentinel: the copy
+                            // this code synthesized. More than one means the user pressed Ctrl+C
+                            // themselves while the clipboard was borrowed, and their text is what
+                            // is on it now. Comparing the text cannot tell the two apart — copying
+                            // the same selection by hand produces the identical string — so the
+                            // ownership claim is dropped instead, which leaves the `finally` below
+                            // with nothing to restore and their copy intact. Restoring the earlier
+                            // snapshot over it is what handed them back stale text on paste.
+                            val onlyOurCopyLanded = generationAfterSentinel == null ||
+                                generationAfterCopy == null ||
+                                generationAfterCopy == generationAfterSentinel + 1
+                            if (!onlyOurCopyLanded) {
+                                logger.debug(
+                                    "Clipboard restore skipped: requestId=$requestId, " +
+                                        "origin=$origin, reason=foreign_write"
+                                )
+                            }
+                            ownedClipboardText = candidate.takeIf { onlyOurCopyLanded }
+                            ownedClipboardGeneration = generationAfterCopy.takeIf { onlyOurCopyLanded }
                             text = candidate.trim()
                             clipboardEvidence = inspectClipboardSelectionEvidence(
                                 runCatching { clipboard.getContents(null) }.getOrNull()

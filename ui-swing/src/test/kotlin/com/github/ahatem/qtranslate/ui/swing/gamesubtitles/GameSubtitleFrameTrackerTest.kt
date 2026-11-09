@@ -102,4 +102,48 @@ class GameSubtitleFrameTrackerTest {
         assertEquals("Wait for me", decision.sourceText)
         assertTrue(decision.replaceLatest)
     }
+
+    @Test
+    fun `изменение числа не считается шумом распознавания`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("You have 10 lives remaining")
+        assertEquals("You have 11 lives remaining", assertIs<GameSubtitleFrameDecision.Translate>(
+            tracker.observe("You have 11 lives remaining")
+        ).sourceText)
+    }
+
+    @Test
+    fun `смена знака числа не теряется при нормализации пунктуации`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("Your balance changed by +10 coins")
+        assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe("Your balance changed by -10 coins"))
+    }
+
+    @Test
+    fun `добавление и удаление отрицания немедленно меняют перевод`() {
+        val tracker = GameSubtitleFrameTracker()
+        val positive = "You should open the door now before the guard returns"
+        val negative = "You should not open the door now before the guard returns"
+        tracker.observe(positive)
+        assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe(negative))
+        assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe(positive))
+    }
+
+    @Test
+    fun `устойчивое близкое изменение слова не подавляется навсегда`() {
+        val tracker = GameSubtitleFrameTracker()
+        tracker.observe("You should wear a blue coat before leaving")
+        val changed = "You should wear a glue coat before leaving"
+        assertIs<GameSubtitleFrameDecision.Unchanged>(tracker.observe(changed))
+        assertEquals(changed, assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe(changed)).sourceText)
+    }
+
+    @Test
+    fun `долгая пустота очищает реплику даже при редких OCR кадрах`() {
+        val tracker = GameSubtitleFrameTracker(emptyFramesBeforeClear = 100, emptyDurationMillis = 4_000)
+        tracker.observe("The same subtitle returns later", 0)
+        assertIs<GameSubtitleFrameDecision.Unchanged>(tracker.observe("", 100))
+        assertIs<GameSubtitleFrameDecision.Clear>(tracker.observe("", 4_100))
+        assertIs<GameSubtitleFrameDecision.Translate>(tracker.observe("The same subtitle returns later", 4_200))
+    }
 }

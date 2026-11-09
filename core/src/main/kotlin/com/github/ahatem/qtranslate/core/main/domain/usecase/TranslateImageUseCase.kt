@@ -21,6 +21,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.CancellationException
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.max
 import kotlin.math.min
@@ -66,8 +67,14 @@ class TranslateImageUseCase(
         val request = OCRRequest(image = image, language = LanguageCode.AUTO)
         var recognized: List<OCRTextRegion>? = null
         for ((_, service) in positionedServices) {
-            val result = withTimeoutOrNull(OCR_TIMEOUT_MS) { service.extractPositionedText(request) }
-                ?: continue
+            val result = try {
+                withTimeoutOrNull(OCR_TIMEOUT_MS) { service.extractPositionedText(request) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logger.warn("Сбой пространственного OCR: ${error.javaClass.simpleName}")
+                null
+            } ?: continue
             result.fold(
                 success = { response ->
                     if (response.regions.isNotEmpty()) recognized = response.regions

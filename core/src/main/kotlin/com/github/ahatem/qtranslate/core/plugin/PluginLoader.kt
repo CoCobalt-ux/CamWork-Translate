@@ -11,6 +11,9 @@ import java.net.URLClassLoader
 import java.util.*
 import java.util.jar.JarFile
 
+/** Метаданные и отпечаток JAR, прочитанные без загрузки его классов. */
+data class InspectedPluginJar(val manifest: PluginManifest, val jarFile: File, val jarHash: String)
+
 /**
  * Handles scanning, loading, and inspecting plugin JAR files from the filesystem.
  *
@@ -39,32 +42,59 @@ class PluginLoader(
      * (hash-table order on Linux ext4, creation order on NTFS, etc.) which is not stable
      * between runs. Sorting filenames before loading ensures consistent processing order.
      */
-    fun loadPluginsFromDirectory(directory: File): List<LoadedPluginResult> {
+    fun inspectPluginsFromDirectory(directory: File): List<InspectedPluginJar> {
         _loadFailures.clear()
         if (!directory.isDirectory) {
             logger.warn("Plugin directory does not exist or is not a directory: ${directory.absolutePath}")
             return emptyList()
         }
-        return directory.listFiles { f -> f.extension == "jar" }
+        val inspected = directory.listFiles { f -> f.extension.equals("jar", ignoreCase = true) }
             .orEmpty()
             .sortedBy { it.name }
-            .mapNotNull { loadPluginFromFile(it) }
-            .sortedBy { it.manifest.id }
+            .mapNotNull(::inspectPluginJar)
+        return inspected.groupBy { it.manifest.id }.flatMap { (id, candidates) ->
+            if (candidates.size == 1) candidates else {
+                candidates.forEach { recordFailure(it.jarFile, "Несколько JAR используют идентификатор '$id'.", null, id) }
+                emptyList()
+            }
+        }.sortedBy { it.manifest.id }
+    }
+
+    /** Вызывающий использует этот путь только для уже доверенных архивов. */
+    fun loadPluginsFromDirectory(directory: File): List<LoadedPluginResult> =
+        inspectPluginsFromDirectory(directory).mapNotNull(::loadInspectedPlugin)
+
+    fun inspectPluginJar(jarFile: File): InspectedPluginJar? = try {
+        val manifest = getManifestFromJar(jarFile)
+            ?: error("В архиве отсутствует корректный plugin.json.")
+        require(manifest.id.length <= 160 && Regex("[a-zA-Z0-9][a-zA-Z0-9._-]*").matches(manifest.id)) {
+            "Недопустимый идентификатор плагина."
+        }
+        when (val compatibility = ApiVersion.isCompatible(manifest.minApiVersion)) {
+            is ApiVersion.CompatibilityResult.Compatible -> Unit
+            is ApiVersion.CompatibilityResult.Incompatible -> error("Несовместимый API: ${compatibility.reason}")
+        }
+        InspectedPluginJar(manifest, jarFile, Hashing.sha256(jarFile))
+    } catch (error: Exception) {
+        recordFailure(jarFile, "Проверка JAR не пройдена: ${error.message}", error)
+        null
     }
 
     /**
-     * Loads and inspects a single plugin JAR file.
-     *
-     * Steps:
-     * 1. Creates a [URLClassLoader] for the JAR.
-     * 2. Discovers the [Plugin] implementation via [ServiceLoader].
-     * 3. Reads and parses `plugin.json` from the JAR's resources.
-     * 4. Verifies API compatibility via [ApiVersion.isCompatible].
-     * 5. Computes a SHA-256 hash of the JAR for integrity tracking.
-     *
-     * @return A [LoadedPluginResult] on success, or `null` if any step fails.
+     * Проверяет архив до создания ClassLoader. Вызывающий уже должен доверять этому JAR.
+     * При запуске приложения менеджер сначала отдельно вызывает inspectPluginsFromDirectory,
+     * принимает решение о доверии и только затем вызывает loadInspectedPlugin.
      */
-    fun loadPluginFromFile(jarFile: File): LoadedPluginResult? {
+    fun loadPluginFromFile(jarFile: File): LoadedPluginResult? =
+        inspectPluginJar(jarFile)?.let(::loadInspectedPlugin)
+
+    fun loadInspectedPlugin(inspected: InspectedPluginJar): LoadedPluginResult? {
+        val jarFile = inspected.jarFile
+        val current = inspectPluginJar(jarFile) ?: return null
+        if (current.jarHash != inspected.jarHash || current.manifest != inspected.manifest) {
+            recordFailure(jarFile, "JAR изменился после проверки; требуется повторное подтверждение.", null)
+            return null
+        }
         val classLoader = runCatching {
             URLClassLoader(arrayOf(jarFile.toURI().toURL()), javaClass.classLoader)
         }.getOrElse { error ->
@@ -77,28 +107,7 @@ class PluginLoader(
                 ?: throw IllegalStateException("No Plugin implementation found via ServiceLoader in ${jarFile.name}. " +
                         "Ensure META-INF/services/com.github.ahatem.qtranslate.api.plugin.Plugin is present.")
 
-            val manifest = getManifestFromJar(jarFile)
-                ?: throw IllegalStateException("plugin.json is missing or could not be parsed in ${jarFile.name}")
-
-        // Delegate to ApiVersion — this checks both MAJOR and MINOR, not just MAJOR.
-            when (val compat = ApiVersion.isCompatible(manifest.minApiVersion)) {
-                is ApiVersion.CompatibilityResult.Compatible -> {
-                    logger.debug("Plugin '${manifest.id}' API version ${manifest.minApiVersion} is compatible.")
-                }
-                is ApiVersion.CompatibilityResult.Incompatible -> {
-                    recordFailure(
-                        jarFile,
-                        "Plugin '${manifest.id}' v${manifest.version} is incompatible: ${compat.reason}",
-                        null,
-                        manifest.id
-                    )
-                    classLoader.close()
-                    return null
-                }
-            }
-
-            val hash = Hashing.sha256(jarFile)
-            LoadedPluginResult(plugin, manifest, jarFile, hash, classLoader)
+            LoadedPluginResult(plugin, inspected.manifest, jarFile, inspected.jarHash, classLoader)
         } catch (error: Throwable) {
             runCatching { classLoader.close() }
             recordFailure(jarFile, "Failed to load plugin: ${error.message}", error)

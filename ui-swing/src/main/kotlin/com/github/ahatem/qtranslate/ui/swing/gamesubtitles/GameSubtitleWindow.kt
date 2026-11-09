@@ -52,7 +52,7 @@ internal class GameSubtitleWindow(
     private val onTogglePause: () -> Unit,
     private val onChangeArea: () -> Unit,
     private val onClose: () -> Unit
-) {
+) : GameSubtitleView {
     private val captionPanel = CaptionPanel(strings.translating)
     private val overlay = JWindow().apply {
         background = Color(0, 0, 0, 0)
@@ -76,9 +76,11 @@ internal class GameSubtitleWindow(
     }
 
     private var paused = false
-    private var captureExclusionEnabled = false
+    @Volatile private var captureExclusionEnabled = false
+    private var disposed = false
 
-    fun showAt(captureBounds: Rectangle) {
+    override fun showAt(captureBounds: Rectangle) {
+        disposed = false
         captionPanel.start()
         overlay.bounds = Rectangle(captureBounds)
         positionControl(captureBounds)
@@ -90,7 +92,7 @@ internal class GameSubtitleWindow(
         setMode(GameSubtitleWindowMode.SCANNING)
     }
 
-    fun setMode(mode: GameSubtitleWindowMode) {
+    override fun setMode(mode: GameSubtitleWindowMode) {
         paused = mode == GameSubtitleWindowMode.PAUSED
         pauseButton.text = if (paused) strings.resume else strings.pause
         statusLabel.text = when (mode) {
@@ -107,30 +109,39 @@ internal class GameSubtitleWindow(
         captionPanel.setLoading(mode == GameSubtitleWindowMode.TRANSLATING)
     }
 
-    fun showTranslation(text: String, replaceLatest: Boolean) {
+    override fun showTranslation(text: String, replaceLatest: Boolean) {
         captionPanel.appendCaption(text, replaceLatest)
     }
 
-    fun resetTranslations() {
+    override fun resetTranslations() {
         captionPanel.reset()
     }
 
     /** На старых Windows защита от захвата может отсутствовать; тогда окно скрывается только на время кадра. */
-    fun <T> captureWithoutOverlay(action: () -> T): T {
-        if (captureExclusionEnabled || !overlay.isVisible) return action()
-        onUiAndWait { overlay.isVisible = false }
+    override fun <T> captureWithoutOverlay(action: () -> T): T {
+        if (captureExclusionEnabled) return action()
+        var restoreVisibility = false
+        onUiAndWait {
+            if (!disposed && overlay.isVisible) {
+                restoreVisibility = true
+                overlay.isVisible = false
+            }
+        }
         Toolkit.getDefaultToolkit().sync()
         return try {
             action()
         } finally {
             onUiAndWait {
-                overlay.isVisible = true
-                WindowsClickThrough.setEnabled(overlay, true)
+                if (restoreVisibility && !disposed) {
+                    overlay.isVisible = true
+                    WindowsClickThrough.setEnabled(overlay, true)
+                }
             }
         }
     }
 
-    fun dispose() {
+    override fun dispose() {
+        disposed = true
         captionPanel.stop()
         WindowsClickThrough.setExcludedFromCapture(overlay, false)
         WindowsClickThrough.setExcludedFromCapture(control, false)
@@ -211,6 +222,32 @@ private data class CaptionRenderLayout(
     val targetY: Int
 )
 
+internal data class GameSubtitleVerticalPlacement(
+    val lineIndex: Int,
+    val y: Int
+)
+
+/** Отделяет реплики на фиксированный интервал и всегда сохраняет новейшую снизу. */
+internal fun calculateGameSubtitleVerticalPlacements(
+    boxHeights: List<Int>,
+    panelHeight: Int,
+    topInset: Int,
+    bottomInset: Int,
+    gap: Int
+): List<GameSubtitleVerticalPlacement> {
+    var bottom = panelHeight - bottomInset
+    val result = mutableListOf<GameSubtitleVerticalPlacement>()
+    for (index in boxHeights.indices.reversed()) {
+        val boxHeight = boxHeights[index].coerceAtLeast(1)
+        val targetY = bottom - boxHeight
+        if (targetY < topInset && result.isNotEmpty()) break
+        val y = targetY.coerceAtLeast(topInset)
+        result += GameSubtitleVerticalPlacement(index, y)
+        bottom = y - gap.coerceAtLeast(0)
+    }
+    return result.asReversed()
+}
+
 private class CaptionPanel(private val loadingText: String) : JComponent() {
     private val timeline = GameSubtitleTimeline()
     private val renderedY = mutableMapOf<Long, Float>()
@@ -272,7 +309,7 @@ private class CaptionPanel(private val loadingText: String) : JComponent() {
         val visibleIds = visibleLines.mapTo(mutableSetOf()) { line -> line.id }
         renderedY.keys.retainAll(visibleIds)
 
-        layouts.asReversed().forEachIndexed { index, layout ->
+        layouts.forEachIndexed { index, layout ->
             val currentY = renderedY[layout.line.id] ?: layout.targetY.toFloat()
             val nextY = currentY + (layout.targetY - currentY) * MOVE_EASING
             renderedY[layout.line.id] = nextY
@@ -288,26 +325,30 @@ private class CaptionPanel(private val loadingText: String) : JComponent() {
         maxTextWidth: Int,
         lineHeight: Int
     ): List<CaptionRenderLayout> {
-        val result = mutableListOf<CaptionRenderLayout>()
-        var bottom = height - BOTTOM_INSET
-        lines.asReversed().forEach { line ->
+        val prepared = lines.mapNotNull { line ->
             val wrapped = wrapCaption(line.text, metrics, maxTextWidth, MAX_WRAPPED_LINES)
-            if (wrapped.isEmpty()) return@forEach
+            if (wrapped.isEmpty()) return@mapNotNull null
             val textWidth = wrapped.maxOfOrNull(metrics::stringWidth).orEmptyWidth()
             val boxWidth = (textWidth + HORIZONTAL_PADDING).coerceAtMost(width - 20)
             val boxHeight = lineHeight * wrapped.size + VERTICAL_PADDING
-            val targetY = bottom - boxHeight
-            if (targetY < TOP_INSET && result.isNotEmpty()) return@forEach
-            result += CaptionRenderLayout(
-                line = line,
-                wrappedLines = wrapped,
-                boxWidth = boxWidth,
-                boxHeight = boxHeight,
-                targetY = targetY.coerceAtLeast(TOP_INSET)
-            )
-            bottom = targetY - CAPTION_GAP
+            PreparedCaption(line, wrapped, boxWidth, boxHeight)
         }
-        return result
+        return calculateGameSubtitleVerticalPlacements(
+            boxHeights = prepared.map(PreparedCaption::boxHeight),
+            panelHeight = height,
+            topInset = TOP_INSET,
+            bottomInset = BOTTOM_INSET,
+            gap = GAME_SUBTITLE_CAPTION_GAP
+        ).map { placement ->
+            val caption = prepared[placement.lineIndex]
+            CaptionRenderLayout(
+                line = caption.line,
+                wrappedLines = caption.wrappedLines,
+                boxWidth = caption.boxWidth,
+                boxHeight = caption.boxHeight,
+                targetY = placement.y
+            )
+        }
     }
 
     private fun paintCaption(
@@ -368,10 +409,16 @@ private class CaptionPanel(private val loadingText: String) : JComponent() {
         const val MAX_WRAPPED_LINES = 2
         const val HORIZONTAL_PADDING = 36
         const val VERTICAL_PADDING = 22
-        const val CAPTION_GAP = 10
         const val TOP_INSET = 8
         const val BOTTOM_INSET = 14
     }
+
+    private data class PreparedCaption(
+        val line: GameSubtitleVisualLine,
+        val wrappedLines: List<String>,
+        val boxWidth: Int,
+        val boxHeight: Int
+    )
 }
 
 internal fun wrapCaption(
@@ -381,7 +428,7 @@ internal fun wrapCaption(
     maxLines: Int
 ): List<String> {
     if (value.isBlank()) return emptyList()
-    val words = value.trim().split(Regex("\\s+"))
+    val words = value.trim().split(GAME_SUBTITLE_WHITESPACE)
     val lines = mutableListOf<String>()
     var current = ""
     for (word in words) {
@@ -408,3 +455,5 @@ internal fun wrapCaption(
 }
 
 private fun Int?.orEmptyWidth(): Int = this ?: 0
+
+internal const val GAME_SUBTITLE_CAPTION_GAP = 18

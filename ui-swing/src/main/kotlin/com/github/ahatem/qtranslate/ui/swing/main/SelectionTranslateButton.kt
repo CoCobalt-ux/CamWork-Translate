@@ -119,9 +119,20 @@ internal class SelectionTranslateButton internal constructor(
         hideTimer.restart()
     }
 
-    /** Closes the button when the user presses the mouse anywhere outside it. */
+    /**
+     * Closes the button when the user presses the mouse anywhere outside it.
+     *
+     * The pointer's own hover state decides as well as the coordinates, because the two do not
+     * always agree. This is called from the global native hook, whose screen point crosses from
+     * the OS coordinate space into AWT's; on a scaled display the converted point can land just
+     * outside a button the user is demonstrably pressing. The hook runs before the click reaches
+     * Swing, so losing that comparison dismissed the button — clearing its payload — and the
+     * click that followed found nothing left to act on. That is the press that "did not register"
+     * and had to be repeated.
+     */
     fun dismissIfOutside(screenPoint: Point) {
         if (!isVisible) return
+        if (face.isPointerInside) return
         if (!bounds.contains(screenPoint)) dismiss()
     }
 
@@ -130,6 +141,9 @@ internal class SelectionTranslateButton internal constructor(
         fadeTimer?.stop()
         fadeTimer = null
         isVisible = false
+        // A hidden button has no pointer on it. Leaving the flag set would make the next
+        // dismissIfOutside refuse for a button the user never touched.
+        face.isPointerInside = false
         payload.clear()
     }
 
@@ -210,6 +224,9 @@ internal class SelectionTranslateButton internal constructor(
     // ── Painting ─────────────────────────────────────────────────────────────
 
     private inner class ButtonFace : JComponent() {
+        /** Set from enter/exit, which Swing reports against the component, not screen geometry. */
+        var isPointerInside = false
+
         var hoveredAction: ButtonAction? = null
             set(value) {
                 if (field != value) { field = value; repaint() }
@@ -220,6 +237,7 @@ internal class SelectionTranslateButton internal constructor(
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             val mouseHandler = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
+                    isPointerInside = true
                     hoveredAction = actionAt(e.point)
                     // Hold the button open while the pointer is on it — nothing is more
                     // annoying than a target that vanishes as you reach for it.
@@ -229,20 +247,29 @@ internal class SelectionTranslateButton internal constructor(
                 }
 
                 override fun mouseExited(e: MouseEvent) {
+                    isPointerInside = false
                     hoveredAction = null
                     if (isVisible) hideTimer.restart()
                 }
 
                 override fun mousePressed(e: MouseEvent) {
+                    isPointerInside = true
                     hoveredAction = actionAt(e.point)
                     repaint()
                 }
 
                 override fun mouseMoved(e: MouseEvent) {
+                    isPointerInside = true
                     hoveredAction = actionAt(e.point)
                 }
 
-                override fun mouseClicked(e: MouseEvent) {
+                /**
+                 * Acts on release rather than on the synthesized click. A click needs press and
+                 * release to pair up on the same component, and on a 26 px target a pointer that
+                 * drifts a pixel between them produces no click at all — another press that
+                 * looked ignored.
+                 */
+                override fun mouseReleased(e: MouseEvent) {
                     if (!SwingUtilities.isLeftMouseButton(e)) return
                     val action = actionAt(e.point) ?: return
                     val request = payload.consume() ?: return

@@ -27,7 +27,7 @@ internal class GameSubtitleTimeline(
     private var sequence = 0L
 
     fun append(text: String, nowMillis: Long, replaceLatest: Boolean = false) {
-        val normalized = text.replace(Regex("\\s+"), " ").trim()
+        val normalized = text.replace(GAME_SUBTITLE_WHITESPACE, " ").trim()
         if (normalized.isBlank()) return
         prune(nowMillis)
 

@@ -7,6 +7,11 @@ import com.github.ahatem.qtranslate.core.localization.LocalizationManager
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.core.plugin.ServiceValidation
 import com.github.ahatem.qtranslate.core.plugin.settings.*
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.fold
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -50,7 +55,7 @@ class DynamicPluginSettingsDialog(
     private val settingsModel: PluginSettingsModel,
     /** Live settings instance for @PluginAction invocation. May be null for plugins without actions. */
     private val settingsInstance: PluginSettings.Configurable? = null,
-    private val onSave: (Map<String, String>) -> Unit,
+    private val onSave: suspend (Map<String, String>) -> Result<Unit, ServiceError>,
     /**
      * Applies the values on screen and then asks each service whether it works, reporting one
      * line per service.
@@ -91,6 +96,8 @@ class DynamicPluginSettingsDialog(
 
     /** Cancelled with the dialog, so a slow check cannot outlive the window it reports into. */
     private val dialogScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var saveInProgress = false
+    private var testInProgress = false
 
     private var rowIndex = 0
     private var buttonBar: JPanel? = null
@@ -607,7 +614,7 @@ class DynamicPluginSettingsDialog(
             if (!valid) allValid = false
             applyValidationHighlight(comp.component, valid)
         }
-        saveButton.isEnabled = allValid
+        saveButton.isEnabled = allValid && !saveInProgress && !testInProgress
     }
 
     private fun validateField(value: String, setting: SettingSchema): Boolean {
@@ -719,26 +726,39 @@ class DynamicPluginSettingsDialog(
      * would take the field being corrected away with it.
      */
     private fun onTestClicked() {
+        if (saveInProgress || testInProgress) return
         val test = onTestConnection ?: return
         val values = components.mapValues { it.value.getValue() }
 
         testButton.isEnabled = false
+        testInProgress = true
+        revalidateAll()
         showTestStatus(localizationManager.getString("plugin_config.testing"), null)
 
         dialogScope.launch {
-            val results = runCatching { test(values) }.getOrElse { thrown ->
-                listOf(
-                    ServiceValidation(
-                        serviceId = "",
-                        serviceName = "",
-                        error = ServiceError.UnknownError(thrown.message ?: thrown::class.java.simpleName, thrown)
+            try {
+                val results = try {
+                    test(values)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (thrown: Exception) {
+                    listOf(
+                        ServiceValidation(
+                            serviceId = "",
+                            serviceName = "",
+                            error = ServiceError.UnknownError(thrown.message ?: thrown::class.java.simpleName, thrown)
+                        )
                     )
-                )
-            }
-
-            withContext(Dispatchers.Swing) {
-                testButton.isEnabled = true
-                reportTestResults(results)
+                }
+                withContext(Dispatchers.Swing) { reportTestResults(results) }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Swing) {
+                    testInProgress = false
+                    if (isDisplayable) {
+                        testButton.isEnabled = true
+                        revalidateAll()
+                    }
+                }
             }
         }
     }
@@ -796,6 +816,7 @@ class DynamicPluginSettingsDialog(
     }
 
     private fun onSaveClicked() {
+        if (saveInProgress || testInProgress) return
         val values = components.mapValues { it.value.getValue() }
         val missing = settingsModel.schema.filter { s ->
             s.isRequired && values[s.propertyName].isNullOrBlank()
@@ -817,8 +838,40 @@ class DynamicPluginSettingsDialog(
             return
         }
 
-        onSave(values)
-        dispose()
+        revalidateAll()
+        if (!saveButton.isEnabled) return
+        saveInProgress = true
+        saveButton.isEnabled = false
+        testButton.isEnabled = false
+        dialogScope.launch {
+            try {
+                val result = try {
+                    onSave(values)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    Err(ServiceError.UnknownError(error.message ?: "Не удалось сохранить настройки плагина", error))
+                }
+                withContext(Dispatchers.Swing) {
+                    result.fold(
+                        success = {
+                            if (values == components.mapValues { it.value.getValue() }) dispose()
+                        },
+                        failure = { error ->
+                            showTestStatus(error.message, UIManager.getColor("Actions.Red") ?: Color.RED)
+                        }
+                    )
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.Swing) {
+                    saveInProgress = false
+                    if (isDisplayable) {
+                        testButton.isEnabled = true
+                        revalidateAll()
+                    }
+                }
+            }
+        }
     }
 
     private fun applyErrorHighlight(comp: JComponent?) {

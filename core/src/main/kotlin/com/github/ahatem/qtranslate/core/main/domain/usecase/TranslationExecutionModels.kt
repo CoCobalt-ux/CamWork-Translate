@@ -7,7 +7,8 @@ enum class TranslationLane {
     MAIN,
     SELECTION_EXPLICIT,
     SELECTION_AUTO,
-    LIVE_LENS
+    LIVE_LENS,
+    QUICK_TRANSLATE_PASSIVE
 }
 
 /** Стабильная причина завершения, которую MVI может показать без разбора текста исключения. */

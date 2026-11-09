@@ -8,6 +8,7 @@ import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Ok
 import com.github.michaelbull.result.Result
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -76,7 +77,7 @@ class SettingsRepository(
     private val appDataDirectory: File,
     private val json: Json,
     private val logger: Logger
-) {
+) : ConfigurationPersistence {
     private object Keys {
         val CONFIG_JSON = stringPreferencesKey("configuration_json")
         val DISABLED_PLUGIN_IDS = stringSetPreferencesKey("disabled_plugin_ids")
@@ -102,7 +103,7 @@ class SettingsRepository(
      * [updateConfiguration] succeeds. Falls back to [Configuration.DEFAULT] on
      * deserialization errors or I/O failures rather than terminating the flow.
      */
-    val configuration: Flow<Configuration> = dataStore.data
+    override val configuration: Flow<Configuration> = dataStore.data
         .map { preferences ->
             preferences[Keys.CONFIG_JSON]?.let { stored ->
                 try {
@@ -227,12 +228,14 @@ class SettingsRepository(
      *
      * @return [Ok] on success, or an [Err] with a [SettingsError] describing the failure.
      */
-    suspend fun updateConfiguration(config: Configuration): Result<Unit, SettingsError> =
+    override suspend fun updateConfiguration(config: Configuration): Result<Unit, SettingsError> =
         try {
-            val jsonString = json.encodeToString(Configuration.serializer(), config)
+            val jsonString = json.encodeToString(Configuration.serializer(), config.normalizeHotkeyScopes())
             dataStore.edit { it[Keys.CONFIG_JSON] = jsonString }
             logger.info("Configuration saved successfully")
             Ok(Unit)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: SerializationException) {
             logger.error("Failed to serialize configuration", e)
             Err(SettingsError.SerializationError(e.message ?: "Serialization failed"))

@@ -23,7 +23,7 @@ class PluginLoaderTest {
             assertTrue(plugins.isEmpty())
             assertEquals(1, loader.loadFailures.size)
             assertEquals(jar.absolutePath, loader.loadFailures.single().jarPath)
-            assertTrue(loader.loadFailures.single().message.contains("Plugin implementation"))
+            assertTrue(loader.loadFailures.single().message.contains("plugin.json"))
         } finally {
             directory.deleteRecursively()
         }

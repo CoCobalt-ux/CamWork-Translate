@@ -9,6 +9,42 @@ permissions:
   contents: read
 
 jobs:
+  verify:
+    name: Проверка (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Подготовить Java 17
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Подготовить Gradle
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6
+      - name: Собрать и проверить Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./gradlew.bat build --no-daemon
+      - name: Собрать и проверить Linux или macOS
+        if: runner.os != 'Windows'
+        run: ./gradlew build --no-daemon
+      - name: Сохранить результаты проверки
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-tests-${{ matrix.os }}
+          path: |
+            **/build/reports/tests/
+            **/build/test-results/
+          retention-days: 7
+
   windows-package:
     name: Build Windows executable
     runs-on: windows-latest
@@ -317,8 +353,8 @@ jobs:
   release:
     name: Build & Publish Release
     runs-on: ubuntu-latest
-    needs: [windows-package, macos-package]
-    if: ${{ always() && needs.windows-package.result == 'success' && needs.macos-package.result == 'success' }}
+    needs: [verify, windows-package, macos-package]
+    if: ${{ always() && needs.verify.result == 'success' && needs.windows-package.result == 'success' && needs.macos-package.result == 'success' }}
     permissions:
       contents: write
 
@@ -521,7 +557,7 @@ jobs:
             build/release/SIZE_REPORT.md
             build/release/SHA256SUMS.txt
           fail_on_unmatched_files: true
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           draft: false
 
       - name: Create GitHub Release with signed macOS artifacts
@@ -548,5 +584,5 @@ jobs:
             build/release/SIZE_REPORT.md
             build/release/SHA256SUMS.txt
           fail_on_unmatched_files: true
-          prerelease: ${{ contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') || contains(github.ref_name, '-rc') }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
           draft: false

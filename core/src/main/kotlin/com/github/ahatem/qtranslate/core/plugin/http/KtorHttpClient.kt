@@ -72,19 +72,9 @@ internal class KtorHttpClient(
     private val ownsEngine: Boolean = true
 ) : HttpClient, Closeable {
 
-    private val client = KtorClient(engine) {
+    private val client = KtorClient(config.proxy?.let { ProxyAuthorizationEngine(engine, it.authorizationHeader()) } ?: engine) {
         install(ContentNegotiation) {
             json(json)
-        }
-        // Attached to every request, which is the only place it works. CIO's startTunnel copies
-        // Proxy-Authorization onto the CONNECT it sends for an HTTPS request, but only when the
-        // header is already on the request; it never derives one from the proxy address. A plain
-        // HTTP request goes to the proxy directly and carries the header in its ordinary place.
-        // One installation covers both.
-        config.proxy?.authorizationHeader()?.let { credentials ->
-            install(DefaultRequest) {
-                header(HttpHeaders.ProxyAuthorization, credentials)
-            }
         }
         install(ContentEncoding) {
             gzip()
@@ -483,16 +473,9 @@ data class HostTimeout(
 /**
  * An HTTP proxy to send through, and the credentials for it.
  *
- * ### Why the credentials are ours to send
- * Ktor's [io.ktor.client.engine.ProxyConfig] carries an address and nothing else, and CIO never
- * derives credentials from the proxy URL's userinfo. Its `startTunnel` forwards
- * `Proxy-Authorization` onto the CONNECT request only when that header is already on the request
- * being sent, so putting `user:pass@` in the proxy address authenticates nothing. The header has to
- * be attached to every request, which is what [KtorHttpClient] does with this.
- *
- * That covers both shapes at once: an HTTPS request tunnels through CONNECT and the header is
- * copied onto it, and a plain HTTP request goes to the proxy directly with the header already in
- * its normal place.
+ * Авторизация прокси отделена от заголовков приложения в [ProxyAuthorizationEngine].
+ * Для HTTP заголовок получает прокси; для HTTPS он доступен только CONNECT и исключён
+ * из сериализуемых заголовков конечного сервера. CIO не извлекает эти данные из userinfo URL.
  */
 data class ProxyConfiguration(
     /** The proxy's own address, for example `http://proxy.example:3128`. Credentials go below. */

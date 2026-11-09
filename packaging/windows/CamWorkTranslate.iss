@@ -69,6 +69,7 @@ Name: "ukrainian"; MessagesFile: "compiler:Languages\Ukrainian.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Создать ярлык на рабочем столе"; GroupDescription: "Дополнительные ярлыки:"; Flags: unchecked
+Name: "startupicon"; Description: "Запускать {#AppName} автоматически при входе в Windows"; GroupDescription: "Автозапуск:"
 
 [InstallDelete]
 ; Обновляются только внутренние каталоги программы. Пользовательские настройки, история,
@@ -82,6 +83,13 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs 
 [Icons]
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"
 Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon
+
+; HKCU, не HKLM — установщик работает без прав администратора (PrivilegesRequired=lowest),
+; и автозапуск должен включаться только для того пользователя Windows, который ставил
+; программу. Значение автоматически удаляется деинсталлятором Inno Setup при снятии Flags:
+; uninsdeletevalue, поэтому отдельная секция [UninstallRun] для этого не нужна.
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExeName}"""; Tasks: startupicon; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent

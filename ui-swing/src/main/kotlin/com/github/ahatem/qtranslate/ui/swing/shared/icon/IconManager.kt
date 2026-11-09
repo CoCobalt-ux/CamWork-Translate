@@ -3,6 +3,7 @@ package com.github.ahatem.qtranslate.ui.swing.shared.icon
 import com.formdev.flatlaf.extras.FlatSVGIcon
 import com.formdev.flatlaf.util.ScaledImageIcon
 import com.github.ahatem.qtranslate.core.plugin.PluginManager
+import java.io.ByteArrayInputStream
 import java.net.URL
 import javax.swing.Icon
 import javax.swing.ImageIcon
@@ -52,20 +53,38 @@ class IconManager(private val pluginManager: PluginManager) {
             val icon = IconSet.load(path, width, height)
             return if (icon.iconWidth > 0) icon else getMissingIcon(width, height)
         }
-        val icon = FlatSVGIcon(path, width, height, loader)
+        val icon = if (loader === this::class.java.classLoader) {
+            FlatSVGIcon(path, width, height, loader)
+        } else {
+            val bytes = readPluginResource(path, loader) ?: return getMissingIcon(width, height)
+            runCatching {
+                ByteArrayInputStream(bytes).use { FlatSVGIcon(it).derive(width, height) }
+            }.getOrElse { return getMissingIcon(width, height) }
+        }
         return if (icon.iconWidth > 0) icon else getMissingIcon(width, height)
     }
 
     private fun loadRasterIcon(path: String, width: Int, height: Int, loader: ClassLoader): Icon {
         val resource: URL? = loader.getResource(path)
         if (resource != null) {
-            val image = ImageIcon(resource)
+            val image = if (loader === this::class.java.classLoader) {
+                ImageIcon(resource)
+            } else {
+                val bytes = readPluginResource(path, loader) ?: return getMissingIcon(width, height)
+                ImageIcon(bytes)
+            }
             if (image.iconWidth > 0 && image.iconHeight > 0) {
                 return ScaledImageIcon(image, width, height)
             }
         }
         return getMissingIcon(width, height)
     }
+
+    /** URL-кэш открывает отдельный JarFile: одного закрытия ClassLoader недостаточно для удаления JAR в Windows. */
+    private fun readPluginResource(path: String, loader: ClassLoader): ByteArray? = runCatching {
+        loader.getResource(path)?.openConnection()?.apply { useCaches = false }
+            ?.getInputStream()?.use { it.readBytes() }
+    }.getOrNull()
 
     private fun getMissingIcon(width: Int, height: Int): Icon {
         val loader = this::class.java.classLoader

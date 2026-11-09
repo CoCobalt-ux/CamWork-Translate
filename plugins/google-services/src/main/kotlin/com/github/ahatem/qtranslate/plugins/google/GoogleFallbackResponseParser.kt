@@ -46,9 +46,15 @@ internal fun parseChromeTranslationResponse(response: String): GoogleFallbackTra
     runCatching {
         val root = fallbackJson.parseToJsonElement(response) as? JsonArray ?: return@runCatching null
         val sentences = root.getOrNull(0) as? JsonArray ?: return@runCatching null
-        val translatedText = sentences.mapNotNull { sentence ->
+        val translatedSegments = sentences.map { sentence ->
             ((sentence as? JsonArray)?.getOrNull(0) as? JsonPrimitive)?.contentOrNull
-        }.joinToString("").trim().takeIf(String::isNotEmpty) ?: return@runCatching null
+        }
+        // Одно предложение без ожидаемой формы не должно молча выпадать из результата: длинный
+        // текст с несколькими предложениями тогда возвращался бы обрезанным без единой ошибки.
+        // Провал парсинга целиком безопасно переводит запрос на следующего провайдера.
+        if (translatedSegments.any { it == null }) return@runCatching null
+        val translatedText = translatedSegments.joinToString("").trim().takeIf(String::isNotEmpty)
+            ?: return@runCatching null
         val detectedLanguage = (root.getOrNull(2) as? JsonPrimitive)
             ?.contentOrNull
             ?.takeIf(languageTagPattern::matches)
@@ -79,11 +85,23 @@ internal fun parseBatchExecuteTranslationResponse(response: String): GoogleFallb
 
         val result = inner.getOrNull(1) as? JsonArray ?: return@runCatching null
         val sentenceGroups = result.getOrNull(0) as? JsonArray ?: return@runCatching null
-        val translatedText = sentenceGroups.mapNotNull { group ->
+        // На реальном ответе (проверено вручную запросом к батчexecute) sentenceGroups почти
+        // всегда содержит ровно один элемент, а вариант index 5 внутри него — это МАССИВ из
+        // одной записи НА КАЖДОЕ исходное предложение, не альтернативные варианты одного перевода.
+        // Старый код брал только variants.firstOrNull() — то есть только первое предложение —
+        // и это было незаметно на однопредложенных тестах, но обрезало любой длинный текст до
+        // первой фразы. Здесь собираются все варианты каждой группы, а не только первый.
+        val translatedSegments = sentenceGroups.flatMap { group ->
             val variants = (group as? JsonArray)?.getOrNull(5) as? JsonArray
-            val preferred = variants?.firstOrNull() as? JsonArray
-            preferred?.stringAt(0)
-        }.joinToString("").trim().takeIf(String::isNotEmpty) ?: return@runCatching null
+                ?: return@flatMap listOf(null)
+            variants.map { variant -> (variant as? JsonArray)?.stringAt(0) }
+        }
+        // Сегмент без ожидаемой формы не должен молча выпадать из результата — длинный текст
+        // тогда возвращался бы обрезанным без единой ошибки. Провал парсинга целиком безопасно
+        // переводит запрос на следующего провайдера.
+        if (translatedSegments.any { it == null }) return@runCatching null
+        val translatedText = translatedSegments.joinToString("").trim().takeIf(String::isNotEmpty)
+            ?: return@runCatching null
 
         val detectedLanguage = result.stringAt(3)
             ?.takeIf(languageTagPattern::matches)

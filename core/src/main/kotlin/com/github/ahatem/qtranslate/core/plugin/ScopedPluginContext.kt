@@ -141,6 +141,7 @@ internal class ScopedPluginContext(
      * Called by the core before invoking `Plugin.onEnable()`.
      */
     internal fun resetScope() {
+        _scope.cancel("Предыдущий цикл плагина завершён")
         _scope = createFreshScope()
     }
 

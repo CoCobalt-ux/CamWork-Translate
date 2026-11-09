@@ -30,4 +30,5 @@ dependencies {
     implementation(libs.commonmark)
 
     testImplementation(kotlin("test"))
+    testImplementation(libs.kotlinxCoroutinesTest)
 }

@@ -42,4 +42,11 @@ internal class TranslationJobCoordinator(
             jobs.remove(lane)?.cancel(CancellationException(reason))
         }
     }
+
+    /** Проверка и публикация атомарны относительно старта/отмены следующей операции. */
+    fun runIfCurrent(lane: TranslationLane, job: Job, action: () -> Unit): Boolean = synchronized(lock) {
+        if (jobs[lane] !== job) return@synchronized false
+        action()
+        true
+    }
 }

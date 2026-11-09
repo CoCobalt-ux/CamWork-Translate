@@ -19,6 +19,8 @@ import com.github.ahatem.qtranslate.api.plugin.SettingsStore
  */
 private const val PLUGIN_WIDE = "_plugin"
 
+internal fun pluginSecretStoreId(pluginId: String): String = "$pluginId.secrets"
+
 private fun scopedKey(instanceId: String, serviceKey: String?, key: String): String =
     "$instanceId/${serviceKey ?: PLUGIN_WIDE}/$key"
 
@@ -95,7 +97,7 @@ internal class ScopedSecretStore(
 ) : SecretStore {
 
     // A distinct store id, which the backing implementation turns into its own file.
-    private val secretsId = "$pluginId.secrets"
+    private val secretsId = pluginSecretStoreId(pluginId)
 
     private fun key(key: String) = "$instanceId/$key"
 

@@ -116,12 +116,7 @@ class AIServiceClient(
             responseParser.parse(responseString)
         }.andThen { response ->
             response.error?.let { return@andThen Err(mapError(it)) }
-            response.choices.firstOrNull()?.message?.content
-                .toResultOr {
-                    ServiceError.InvalidResponseError(
-                        "AI service returned an empty response (no choices).", null
-                    )
-                }
+            completedContent(response)
         }
     }
 
@@ -212,12 +207,23 @@ class AIServiceClient(
             responseParser.parse(responseString)
         }.andThen { response ->
             response.error?.let { return@andThen Err(mapError(it)) }
-            response.choices.firstOrNull()?.message?.content
-                .toResultOr {
-                    ServiceError.InvalidResponseError(
-                        "AI vision service returned an empty response (no choices).", null
-                    )
-                }
+            completedContent(response)
+        }
+    }
+
+    private fun completedContent(response: ChatCompletionResponse): Result<String, ServiceError> {
+        val choice = response.choices.firstOrNull()
+            ?: return Err(ServiceError.InvalidResponseError("AI-сервис не вернул ответ."))
+        if (choice.finishReason != null && choice.finishReason != "stop") {
+            val message = if (choice.finishReason == "length") {
+                "AI-сервис обрезал ответ по лимиту токенов. Увеличьте лимит или сократите текст; замена отменена."
+            } else {
+                "AI-сервис не завершил ответ. Исходный текст сохранён; повторите запрос или выберите другую модель."
+            }
+            return Err(ServiceError.InvalidResponseError(message))
+        }
+        return choice.message.content.takeIf(String::isNotBlank).toResultOr {
+            ServiceError.InvalidResponseError("AI-сервис вернул пустой ответ.")
         }
     }
 

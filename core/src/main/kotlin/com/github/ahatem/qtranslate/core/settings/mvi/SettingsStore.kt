@@ -1,11 +1,17 @@
 package com.github.ahatem.qtranslate.core.settings.mvi
 
 import com.github.ahatem.qtranslate.api.core.Logger
-import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
+import com.github.ahatem.qtranslate.core.settings.data.ConfigurationPersistence
+import com.github.ahatem.qtranslate.core.settings.data.SettingsError
+import com.github.ahatem.qtranslate.core.settings.data.normalizeHotkeyScopes
 import com.github.ahatem.qtranslate.core.shared.arch.Store
+import com.github.michaelbull.result.Err
+import com.github.michaelbull.result.Ok
+import com.github.michaelbull.result.Result
 import com.github.michaelbull.result.fold
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -34,13 +40,13 @@ import kotlinx.coroutines.sync.withLock
  *   populate the initial [SettingsState].
  */
 class SettingsStore(
-    private val settingsRepository: SettingsRepository,
+    private val settingsRepository: ConfigurationPersistence,
     private val logger: Logger,
     private val scope: CoroutineScope,
     initialConfiguration: Configuration
 ) : Store<SettingsState, SettingsIntent, SettingsEvent> {
 
-    private val _state = MutableStateFlow(SettingsState.initial(initialConfiguration))
+    private val _state = MutableStateFlow(SettingsState.initial(initialConfiguration.normalizeHotkeyScopes()))
     override val state: StateFlow<SettingsState> = _state.asStateFlow()
 
     private val _eventChannel = Channel<SettingsEvent>(Channel.BUFFERED)
@@ -78,18 +84,19 @@ class SettingsStore(
             settingsRepository.configuration
                 .distinctUntilChanged()
                 .collect { persisted ->
+                    val normalized = persisted.normalizeHotkeyScopes()
                     _state.update { current ->
                         current.copy(
-                            originalConfiguration = persisted,
+                            originalConfiguration = normalized,
                             workingConfiguration = if (!current.isDirty) {
                                 logger.debug("Syncing working config from repository")
-                                persisted
+                                normalized
                             } else {
                                 logger.debug("Preserving working config — user has unsaved changes")
                                 current.workingConfiguration
                             },
                             isDirty = if (!current.isDirty) false
-                            else current.workingConfiguration != persisted
+                            else current.workingConfiguration != normalized
                         )
                     }
                 }
@@ -159,10 +166,11 @@ class SettingsStore(
     // -------------------------------------------------------------------------
 
     private fun handleUpdateDraft(newConfiguration: Configuration) {
+        val normalized = newConfiguration.normalizeHotkeyScopes()
         _state.update { current ->
             current.copy(
-                workingConfiguration = newConfiguration,
-                isDirty = newConfiguration != current.originalConfiguration
+                workingConfiguration = normalized,
+                isDirty = normalized != current.originalConfiguration
             ).also { logger.debug("Draft updated, isDirty=${it.isDirty}") }
         }
     }
@@ -192,10 +200,11 @@ class SettingsStore(
      * if it differs from the original. Called by both internal handlers and [PresetManager].
      */
     private fun applyWorkingUpdate(newConfig: Configuration) {
+        val normalized = newConfig.normalizeHotkeyScopes()
         _state.update { current ->
             current.copy(
-                workingConfiguration = newConfig,
-                isDirty = newConfig != current.originalConfiguration
+                workingConfiguration = normalized,
+                isDirty = normalized != current.originalConfiguration
             )
         }
     }
@@ -213,49 +222,37 @@ class SettingsStore(
      * the latest changes).
      */
     private fun launchSave() {
-        scope.launch {
-            saveMutex.withLock {
-                // Re-read state inside the coroutine and inside the lock —
-                // this is the fix for the stale-state race condition.
-                val current = _state.value
+        scope.launch { saveChanges() }
+    }
 
-                if (!current.isDirty) {
-                    logger.debug("Nothing to save — skipping")
-                    return@withLock
-                }
+    /** Возвращает результат именно этой записи, не забирая ответ предыдущего нажатия. */
+    suspend fun saveChanges(): Result<Unit, SettingsError> = saveMutex.withLock {
+        val current = _state.value
+        if (!current.isDirty) return@withLock Ok(Unit)
 
-                // Capture the config we intend to save while holding the lock
-                val configToSave = current.workingConfiguration
-
-                logger.info("Saving configuration...")
-                _state.update { it.copy(isSaving = true) }
-
-                settingsRepository.updateConfiguration(configToSave).fold(
-                    success = {
-                        logger.info("Configuration saved successfully")
-                        _state.update {
-                            it.copy(
-                                originalConfiguration = configToSave,
-                                isDirty = it.workingConfiguration != configToSave,
-                                isSaving = false
-                            )
-                        }
-                        _eventChannel.send(
-                            SettingsEvent.ShowMessage("Settings saved", NotificationType.SUCCESS)
-                        )
-                    },
-                    failure = { error ->
-                        logger.error("Failed to save configuration: ${error.message}")
-                        _state.update { it.copy(isSaving = false) }
-                        _eventChannel.send(
-                            SettingsEvent.ShowMessage(
-                                "Failed to save settings: ${error.message}",
-                                NotificationType.ERROR
-                            )
+        val configToSave = current.workingConfiguration.normalizeHotkeyScopes()
+        _state.update { it.copy(isSaving = true) }
+        try {
+            val result = settingsRepository.updateConfiguration(configToSave)
+            result.fold(
+                success = {
+                    _state.update {
+                        it.copy(
+                            originalConfiguration = configToSave,
+                            isDirty = it.workingConfiguration != configToSave
                         )
                     }
-                )
-            }
+                },
+                failure = { error -> logger.error("Не удалось сохранить настройки: ${error.message}") }
+            )
+            result
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            logger.error("Непредвиденная ошибка сохранения настроек", error)
+            Err(SettingsError.UnknownError(error.message ?: "Не удалось сохранить настройки"))
+        } finally {
+            _state.update { it.copy(isSaving = false) }
         }
     }
 }

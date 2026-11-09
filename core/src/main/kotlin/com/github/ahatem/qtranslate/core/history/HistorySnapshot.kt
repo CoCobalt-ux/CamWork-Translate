@@ -15,5 +15,7 @@ data class HistorySnapshot(
     /** Extra output text (backward translation, summary, or rewrite) at the time of translation. */
     val extraOutputText: String = "",
     /** Serialized [com.github.ahatem.qtranslate.core.settings.data.ExtraOutputType] name. */
-    val extraOutputType: String = "None"
+    val extraOutputType: String = "None",
+    /** Стабильный адрес записи: дополнительный вывод не должен изменять соседний перевод. */
+    val id: String = java.util.UUID.randomUUID().toString()
 )

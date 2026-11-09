@@ -18,7 +18,9 @@ class InputTextPanel(
     private val onTextChanged: (String) -> Unit,
     private val onListen: (String) -> Unit,
     private val onTranslateRequest: (String) -> Unit,
-    private val onCorrectionApplied: (original: String, suggestion: String) -> Unit,
+    private val onCorrectionApplied: (
+        original: String, suggestion: String, startIndex: Int, endIndex: Int, expectedInputText: String
+    ) -> Unit,
     private val onImageDropped: ((BufferedImage) -> Unit)? = null,
     private val onDocumentPasted: ((java.io.File) -> Unit)? = null,
     private val onFindInDictionary: ((String) -> Unit)? = null,
@@ -153,10 +155,13 @@ class InputTextPanel(
         currentState?.corrections?.find { offset >= it.startIndex && offset < it.endIndex }
 
     private fun buildSpellingMenu(correction: Correction): JMenu {
+        val expectedInputText = currentState?.text.orEmpty()
         return JMenu(localizationManager.getString("main_window_editor_context_menu.spelling_suggestions")).apply {
             correction.suggestions.forEach { suggestion ->
                 add(JMenuItem(suggestion)).addActionListener {
-                    onCorrectionApplied(correction.original, suggestion)
+                    onCorrectionApplied(
+                        correction.original, suggestion, correction.startIndex, correction.endIndex, expectedInputText
+                    )
                 }
             }
         }

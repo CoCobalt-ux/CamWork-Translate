@@ -19,10 +19,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
+import java.util.concurrent.atomic.AtomicLong
+import com.github.ahatem.qtranslate.core.shared.util.shortSummary
 
 /**
  * MVI store for the main translation screen.
@@ -68,11 +70,13 @@ class MainStore(
     private var documentTranslationGeneration = 0L
     private var liveLensRecognitionJob: Job? = null
     private var imageTranslationJob: Job? = null
+    private val backgroundJobLock = Any()
     private val instantTranslationCoordinator = InstantTranslationCoordinator()
-    private val userInputChanges = MutableSharedFlow<UserInputRevision>(
-        extraBufferCapacity = 64,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
+    private val userInputChanges = MutableStateFlow<UserInputRevision?>(null)
+    private val mainRevision = AtomicLong(0)
+    private val spellRevision = AtomicLong(0)
+    private val passiveTranslationRevision = AtomicLong(0)
+    private val legacyReplacementRevision = AtomicLong(0)
     private val selectionTranslationCoordinator = SelectionTranslationCoordinator()
     private val selectionRequestLock = Any()
     private val selectionTranslationJobs = mutableMapOf<SelectionTranslationTicket, Job>()
@@ -88,8 +92,10 @@ class MainStore(
     )
     override val state: StateFlow<MainState> = _state.asStateFlow()
 
-    private val _eventChannel = Channel<MainEvent>(Channel.BUFFERED)
-    override val events: Flow<MainEvent> = _eventChannel.receiveAsFlow()
+    // Завершение OCR/перевода не должно зависеть от скорости временно занятого UI-потребителя.
+    private val _eventChannel = Channel<MainEvent>(Channel.UNLIMITED)
+    private val statusEvents = Channel<MainEvent>(Channel.CONFLATED)
+    override val events: Flow<MainEvent> = merge(_eventChannel.receiveAsFlow(), statusEvents.receiveAsFlow())
 
     init {
         loadInitialHistory()
@@ -106,39 +112,40 @@ class MainStore(
 
     private fun loadInitialHistory() {
         scope.launch {
-            val history = historyRepository.loadHistory()
-            _state.update { it.copy(history = history, historyIndex = history.size) }
+            historyRepository.loadHistory()
+            historyRepository.entries.collect { history ->
+                _state.update {
+                    val activePosition = history.indexOfFirst { entry -> entry.id == it.translationHistoryId }
+                    it.copy(
+                        history = history,
+                        historyIndex = if (activePosition >= 0) activePosition + 1
+                            else if (it.historyIndex == it.history.size) history.size
+                            else it.historyIndex.coerceAtMost(history.size)
+                    )
+                }
+            }
         }
     }
 
     private fun observeAvailableServices() {
         scope.launch {
-            selectActiveServiceUseCase.observe().collect { selection ->
+            selectActiveServiceUseCase.observe().retryWhen { cause, _ ->
+                if (cause is CancellationException) false else {
+                    kotlinx.coroutines.delay(500)
+                    true
+                }
+            }.collect { selection ->
                 _state.update { current ->
                     val sortedLanguages = selection.availableLanguages.sortedWith(
                         compareBy<LanguageCode> { lc -> lc.tag != "auto" }
                             .thenBy { lc -> lc.getDisplayName() }
                     )
 
-                    // If the previously selected target language is not available in the new
-                    // list (e.g. because pinnedLanguages hides it, or the translator doesn't
-                    // support it), fall back to the saved preference then to the first available
-                    // non-auto language so the user is never silently translated to the wrong language.
-                    val targetLang = when {
-                        current.targetLanguage in sortedLanguages -> current.targetLanguage
-                        else -> {
-                            val preferred = LanguageCode(settingsState.value.preferredTargetLanguage)
-                            sortedLanguages.firstOrNull { it == preferred }
-                                ?: sortedLanguages.firstOrNull { it.tag != "auto" }
-                                ?: current.targetLanguage
-                        }
-                    }
-
+                    // Перезагрузка плагина или временно пустой список не меняют выбор пользователя.
                     current.copy(
                         availableServices  = selection.availableServices,
                         availableLanguages = sortedLanguages,
-                        serviceOptions     = selection.serviceOptions,
-                        targetLanguage     = targetLang
+                        serviceOptions     = selection.serviceOptions
                     )
                 }
             }
@@ -149,30 +156,13 @@ class MainStore(
     private fun observeInstantTranslation() {
         // Только пользовательский ввод попадает в поток. История, Shift-overlay и quick popup
         // меняют MainState программно и больше не порождают скрытый второй сетевой запрос.
-        scope.launch {
-            userInputChanges.collect { revision ->
-                val text = revision.text
-                if (!instantTranslationCoordinator.shouldAutoTranslate(revision)) return@collect
-                    if (settingsState.value.isInstantTranslationEnabled && text.isBlank()) {
-                        translateTextUseCase.cancel(TranslationLane.MAIN)
-                        _state.update {
-                            it.copy(
-                                translatedText = "",
-                                extraOutputText = "",
-                                detectedSourceLanguage = null,
-                                isLoading = false
-                            )
-                        }
-                    }
-            }
-        }
-
         // Debounced translation — only fires when there is enough text to translate.
         scope.launch {
             userInputChanges
+                .filterNotNull()
                 .debounce(AppConstants.INSTANT_TRANSLATION_DEBOUNCE_MS)
-                .collect { revision ->
-                    if (!instantTranslationCoordinator.shouldAutoTranslate(revision)) return@collect
+                .collectLatest { revision ->
+                    if (!instantTranslationCoordinator.shouldAutoTranslate(revision)) return@collectLatest
                     val text = revision.text
                     if (settingsState.value.isInstantTranslationEnabled
                         && text.length >= AppConstants.INSTANT_TRANSLATE_MIN_CHARS
@@ -203,11 +193,11 @@ class MainStore(
     private fun observeSpellChecking() {
         scope.launch {
             combine(
-                state.map { it.inputText }.distinctUntilChanged(),
+                state.map { it.inputText to it.sourceLanguage }.distinctUntilChanged(),
                 settingsState.map { it.isSpellCheckingEnabled }.distinctUntilChanged()
-            ) { text, isEnabled -> text to isEnabled }
+            ) { input, isEnabled -> input to isEnabled }
                 .debounce(AppConstants.SPELL_CHECK_DEBOUNCE_MS)
-                .collect { (text, isEnabled) -> handleSpellCheck(text, isEnabled) }
+                .collectLatest { (input, isEnabled) -> handleSpellCheck(input.first, isEnabled) }
         }
     }
 
@@ -232,36 +222,73 @@ class MainStore(
                 val cleaned = if (settingsState.value.isRemoveLineBreaksEnabled)
                     intent.text.replace("\n", " ").replace("\r", "").replace("  ", " ").trim()
                 else intent.text
-                _state.update { it.copy(inputText = cleaned, detectedSourceLanguage = null) }
+                invalidateMainTranslation()
+                spellRevision.incrementAndGet()
+                _state.update {
+                    it.copy(
+                        inputText = cleaned, detectedSourceLanguage = null, spellCheckCorrections = emptyList(),
+                        translatedText = if (cleaned.isBlank()) "" else it.translatedText,
+                        extraOutputText = if (cleaned.isBlank()) "" else it.extraOutputText,
+                        translatedTargetLanguage = if (cleaned.isBlank()) null else it.translatedTargetLanguage,
+                        translationHistoryId = if (cleaned.isBlank()) null else it.translationHistoryId
+                    )
+                }
                 userInputChanges.tryEmit(instantTranslationCoordinator.recordUserInput(cleaned))
-                // With instant translate enabled, cancel any in-flight translation immediately
-                // so the loading indicator clears and the debounce can queue the next request.
-                // Without this, the collect coroutine in observeInstantTranslation stays
-                // suspended at join() until the current translation finishes — the user's new
-                // text effectively waits in line behind the old result.
-                // Capture state once to avoid reading _state.value twice (TOCTOU race).
-                if (settingsState.value.isInstantTranslationEnabled && _state.value.isLoading) {
-                    translateTextUseCase.cancel(TranslationLane.MAIN)
-                    _state.update { s -> s.copy(isLoading = false) }
+            }
+
+            is MainIntent.SelectSourceLanguage -> {
+                invalidateMainTranslation()
+                spellRevision.incrementAndGet()
+                _state.update {
+                    it.copy(
+                        sourceLanguage = intent.language,
+                        detectedSourceLanguage = null, spellCheckCorrections = emptyList(),
+                        // Иначе выбор языка в открытом пассивном окошке (авто-перевод внешнего
+                        // текста) визуально ничего не менял: mapToQuickTranslateState в первую
+                        // очередь читает quickTranslateDetectedLanguageOverride, затем
+                        // quickTranslateSourceLanguageOverride, и только потом sourceLanguage —
+                        // без сброса обоих следующий рендер комбобокса тут же откатывал выбор
+                        // обратно на замороженную авто-определённую пару.
+                        quickTranslateDetectedLanguageOverride = null,
+                        quickTranslateSourceLanguageOverride = null
+                    )
                 }
             }
 
-            is MainIntent.SelectSourceLanguage ->
-                _state.update { it.copy(sourceLanguage = intent.language, detectedSourceLanguage = null) }
+            is MainIntent.SelectTargetLanguage -> {
+                invalidateMainTranslation()
+                _state.update {
+                    it.copy(
+                        targetLanguage = intent.language,
+                        quickTranslateTargetLanguageOverride = null
+                    )
+                }
+            }
 
-            is MainIntent.SelectTargetLanguage ->
-                _state.update { it.copy(targetLanguage = intent.language) }
+            is MainIntent.SelectQuickTranslatePassiveSourceLanguage -> scope.launch {
+                handleQuickTranslatePassiveLanguageChange(sourceLanguage = intent.language, targetLanguage = null)
+            }
+
+            is MainIntent.SelectQuickTranslatePassiveTargetLanguage -> scope.launch {
+                handleQuickTranslatePassiveLanguageChange(sourceLanguage = null, targetLanguage = intent.language)
+            }
 
             is MainIntent.ApplyCorrection -> {
-                val corrected = _state.value.inputText.replaceFirst(intent.original, intent.suggestion)
-                _state.update { it.copy(inputText = corrected) }
-                userInputChanges.tryEmit(instantTranslationCoordinator.recordUserInput(corrected))
+                val current = _state.value.inputText
+                if (current == intent.expectedInputText && intent.startIndex >= 0 &&
+                    intent.endIndex in intent.startIndex..current.length &&
+                    current.substring(intent.startIndex, intent.endIndex) == intent.original
+                ) {
+                    dispatch(MainIntent.UpdateInputText(current.replaceRange(intent.startIndex, intent.endIndex, intent.suggestion)))
+                }
             }
 
             // Closing clears the pin. A pin says "keep this one around", not "and every one
             // after it" — leaving it set meant the next popup opened wearing the pinned border
             // and then auto-hid anyway, which is the worst of both.
-            MainIntent.HideQuickTranslate ->
+            MainIntent.HideQuickTranslate -> {
+                passiveTranslationRevision.incrementAndGet()
+                translateTextUseCase.cancel(TranslationLane.QUICK_TRANSLATE_PASSIVE)
                 _state.update {
                     it.copy(
                         isQuickTranslateDialogVisible = false,
@@ -272,6 +299,7 @@ class MainStore(
                         quickTranslateDetectedLanguageOverride = null
                     )
                 }
+            }
 
             MainIntent.ToggleQuickTranslateDialogPin ->
                 // Use `it` from the update lambda — not _state.value — to avoid
@@ -298,7 +326,8 @@ class MainStore(
 
             is MainIntent.Translate -> {
                 instantTranslationCoordinator.markCurrentAsExplicit()
-                scope.launch { translateText(intent.text) }
+                val revision = mainRevision.get()
+                scope.launch { if (mainRevision.get() == revision) translateText(intent.text) }
             }
 
             MainIntent.RefreshExtraOutput -> scope.launch { refreshExtraOutput() }
@@ -376,26 +405,30 @@ class MainStore(
             }
 
             is MainIntent.RecognizeLiveLensFrame -> {
-                liveLensRecognitionJob?.cancel()
-                liveLensRecognitionJob = scope.launch {
+                launchBackgroundJob({ liveLensRecognitionJob }, { liveLensRecognitionJob = it }) {
                     handleLiveLensFrameRecognition(intent)
                 }
             }
 
             MainIntent.CancelLiveLensTranslation -> {
                 translateTextUseCase.cancel(TranslationLane.LIVE_LENS)
-                liveLensRecognitionJob?.cancel()
-                liveLensRecognitionJob = null
+                synchronized(backgroundJobLock) {
+                    liveLensRecognitionJob?.cancel()
+                    liveLensRecognitionJob = null
+                }
             }
 
             is MainIntent.TranslateImageInPlace -> {
-                imageTranslationJob?.cancel()
-                imageTranslationJob = scope.launch { handleImageInPlaceTranslation(intent) }
+                launchBackgroundJob({ imageTranslationJob }, { imageTranslationJob = it }) {
+                    handleImageInPlaceTranslation(intent)
+                }
             }
 
             MainIntent.CancelImageInPlaceTranslation -> {
-                imageTranslationJob?.cancel()
-                imageTranslationJob = null
+                synchronized(backgroundJobLock) {
+                    imageTranslationJob?.cancel()
+                    imageTranslationJob = null
+                }
             }
 
             is MainIntent.ListenToText -> scope.launch {
@@ -635,13 +668,28 @@ class MainStore(
         textOverride: String? = null,
         sameLanguageFallbackTarget: LanguageCode? = null
     ) {
-        translateTextUseCase(
+        val revision = mainRevision.get()
+        val requestState = _state.value
+        if (textOverride != null && textOverride != requestState.inputText) return
+        try {
+            translateTextUseCase(
             getState    = { _state.value },
             updateState = { transform -> _state.update(transform) },
             onStatusUpdate = ::updateStatusBar,
             textOverride = textOverride,
-            sameLanguageFallbackTarget = sameLanguageFallbackTarget
-        )
+            sameLanguageFallbackTarget = sameLanguageFallbackTarget,
+            isRequestCurrent = {
+                mainRevision.get() == revision && _state.value.inputText == requestState.inputText &&
+                    _state.value.sourceLanguage == requestState.sourceLanguage &&
+                    _state.value.targetLanguage == requestState.targetLanguage
+            }
+            )
+        } catch (cancelled: CancellationException) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelled
+        } catch (error: Exception) {
+            _state.update { it.copy(isLoading = false, isExtraOutputLoading = false) }
+            updateStatusBar(StatusCode.UnexpectedError(error.shortSummary()), NotificationType.ERROR, true)
+        }
     }
 
     /**
@@ -691,16 +739,45 @@ class MainStore(
     }
 
     private suspend fun handleSpellCheck(text: String, isEnabled: Boolean) {
-        val corrections = if (isEnabled && text.isNotBlank()) {
-            performSpellCheckUseCase(
-                currentState   = _state.value,
-                text           = text,
-                onStatusUpdate = ::updateStatusBar
-            )
-        } else {
+        val revision = spellRevision.incrementAndGet()
+        val source = _state.value.sourceLanguage
+        val corrections = try {
+            if (isEnabled && text.isNotBlank()) performSpellCheckUseCase(
+                currentState = _state.value, text = text, onStatusUpdate = ::updateStatusBar
+            ) else emptyList()
+        } catch (cancelled: CancellationException) {
+            if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelled
+            emptyList()
+        } catch (error: Exception) {
+            updateStatusBar(StatusCode.SpellCheckFailed(error.shortSummary()), NotificationType.WARNING, true)
             emptyList()
         }
-        _state.update { it.copy(spellCheckCorrections = corrections) }
+        if (spellRevision.get() == revision) _state.update {
+            if (it.inputText == text && it.sourceLanguage == source) it.copy(spellCheckCorrections = corrections) else it
+        }
+    }
+
+    /** Отзывает право запоздалого запроса изменять экран после ввода, выбора языка или истории. */
+    private fun invalidateMainTranslation() {
+        val wasBusy = _state.value.isLoading || _state.value.isExtraOutputLoading
+        mainRevision.incrementAndGet()
+        translateTextUseCase.cancel(TranslationLane.MAIN)
+        _state.update { it.copy(isLoading = false, isExtraOutputLoading = false) }
+        if (wasBusy) statusEvents.trySend(MainEvent.UpdateStatusBar(StatusCode.TranslationCancelled, NotificationType.INFO, true))
+    }
+
+    private fun launchBackgroundJob(
+        current: () -> Job?,
+        assign: (Job?) -> Unit,
+        action: suspend () -> Unit
+    ) = synchronized(backgroundJobLock) {
+        current()?.cancel()
+        val job = scope.launch(start = CoroutineStart.LAZY) { action() }
+        assign(job)
+        job.invokeOnCompletion {
+            synchronized(backgroundJobLock) { if (current() === job) assign(null) }
+        }
+        job.start()
     }
 
     // -------------------------------------------------------------------------
@@ -708,6 +785,7 @@ class MainStore(
     // -------------------------------------------------------------------------
 
     private fun swapLanguages(context: SwapLanguagesContext) {
+        invalidateMainTranslation()
         swapLanguagesUseCase(
             currentState     = _state.value,
             context          = context,
@@ -719,73 +797,38 @@ class MainStore(
     private fun handleUndo() {
         val current = _state.value
         if (!current.canUndo) return
+        invalidateMainTranslation()
 
-        val newIndex = current.historyIndex - 1
-        val snapshot = current.history[newIndex]
-
-        _state.update {
-            it.copy(
-                inputText              = snapshot.inputText,
-                translatedText         = snapshot.translatedText,
-                sourceLanguage         = LanguageCode(snapshot.sourceLanguage),
-                targetLanguage         = LanguageCode(snapshot.targetLanguage),
-                historyIndex           = newIndex,
-                isLoading              = false,
-                extraOutputText        = snapshot.extraOutputText,
-                detectedSourceLanguage = snapshot.detectedSourceLanguage?.let { tag -> LanguageCode(tag) },
-                spellCheckCorrections  = emptyList()
-            )
-        }
+        val activePosition = current.history.indexOfFirst { it.id == current.translationHistoryId }
+        val newIndex = if (activePosition >= 0) activePosition else current.historyIndex.coerceAtMost(current.history.size)
+        if (newIndex == 0) {
+            _state.update { it.copy(inputText = "", translatedText = "", extraOutputText = "",
+                translatedTargetLanguage = null, translationHistoryId = null, historyIndex = 0,
+                detectedSourceLanguage = null, spellCheckCorrections = emptyList()) }
+        } else handleRestoreHistoryEntry(MainIntent.RestoreHistoryEntry(current.history[newIndex - 1]))
     }
 
-    /**
-     * Moves forward in history. If [historyIndex] is already at the end of [MainState.history],
-     * moving "forward" clears the screen — the implicit state beyond the last snapshot is blank.
-     * This allows the user to return to an empty input after browsing history.
-     */
+    /** Движение от текущего ID, включая восстановление первой записи после пустого начала. */
     private fun handleRedo() {
         val current = _state.value
         if (!current.canRedo) return
+        invalidateMainTranslation()
 
-        val newIndex = current.historyIndex + 1
-
-        if (newIndex == current.history.size) {
-            // Past the last snapshot — restore blank state.
-            _state.update {
-                it.copy(
-                    inputText              = "",
-                    translatedText         = "",
-                    extraOutputText        = "",
-                    detectedSourceLanguage = null,
-                    spellCheckCorrections  = emptyList(),
-                    historyIndex           = newIndex
-                )
-            }
-        } else {
-            val snapshot = current.history[newIndex]
-            _state.update {
-                it.copy(
-                    inputText              = snapshot.inputText,
-                    translatedText         = snapshot.translatedText,
-                    sourceLanguage         = LanguageCode(snapshot.sourceLanguage),
-                    targetLanguage         = LanguageCode(snapshot.targetLanguage),
-                    historyIndex           = newIndex,
-                    isLoading              = false,
-                    extraOutputText        = snapshot.extraOutputText,
-                    detectedSourceLanguage = snapshot.detectedSourceLanguage?.let { tag -> LanguageCode(tag) },
-                    spellCheckCorrections  = emptyList()
-                )
-            }
-        }
+        val activePosition = current.history.indexOfFirst { it.id == current.translationHistoryId }
+        val nextPosition = if (activePosition >= 0) activePosition + 1 else current.historyIndex
+        current.history.getOrNull(nextPosition)?.let { handleRestoreHistoryEntry(MainIntent.RestoreHistoryEntry(it)) }
     }
 
     private fun handleRestoreHistoryEntry(intent: MainIntent.RestoreHistoryEntry) {
+        invalidateMainTranslation()
         val snapshot = intent.snapshot
-        val idx = _state.value.history.indexOf(snapshot)
+        val idx = _state.value.history.indexOfFirst { it.id == snapshot.id }
         _state.update {
             it.copy(
                 inputText              = snapshot.inputText,
                 translatedText         = snapshot.translatedText,
+                translatedTargetLanguage = LanguageCode(snapshot.targetLanguage),
+                translationHistoryId   = snapshot.id,
                 sourceLanguage         = LanguageCode(snapshot.sourceLanguage),
                 targetLanguage         = LanguageCode(snapshot.targetLanguage),
                 historyIndex           = if (idx >= 0) idx + 1 else it.historyIndex,
@@ -798,8 +841,13 @@ class MainStore(
     }
 
     private suspend fun handleClearHistory() {
-        historyRepository.clearHistory()
-        _state.update { it.copy(history = emptyList(), historyIndex = 0) }
+        if (!historyRepository.clearHistory()) {
+            updateStatusBar(
+                StatusCode.UnexpectedError("История скрыта из окна, но физическая очистка на диске не подтверждена. Повторите очистку после восстановления доступа к диску."),
+                NotificationType.ERROR,
+                true
+            )
+        }
     }
 
     /**
@@ -873,21 +921,97 @@ class MainStore(
 
     private suspend fun handleReplaceWithTranslation(selectedText: String) {
         if (selectedText.isBlank()) return
-        // isReplacingSelection=true tells the LoadingIndicator observer to show
-        // even when the main window is visible. focusableWindowState=false on
-        // LoadingIndicator means it never steals focus from the source app.
-        _state.update { it.copy(inputText = selectedText, isReplacingSelection = true) }
-        translateTextUseCase(
-            getState       = { _state.value },
-            updateState    = { transform -> _state.update(transform) },
-            onStatusUpdate = ::updateStatusBar,
-            textOverride   = selectedText,
-            lane = TranslationLane.SELECTION_EXPLICIT
+        val revision = legacyReplacementRevision.incrementAndGet()
+        var background = _state.value.copy(inputText = selectedText, translatedText = "")
+        _state.update { it.copy(isReplacingSelection = true) }
+        try {
+            val result = translateTextUseCase(
+                getState = { background },
+                updateState = { transform -> background = background.transform() },
+                onStatusUpdate = ::updateStatusBar,
+                textOverride = selectedText,
+                includeExtraOutput = false,
+                lane = TranslationLane.SELECTION_EXPLICIT
+            )
+            if (result is TranslationRunResult.Success && result.translatedText.isNotBlank() &&
+                legacyReplacementRevision.get() == revision
+            ) _eventChannel.send(MainEvent.PasteTranslation(result.translatedText))
+        } finally {
+            if (legacyReplacementRevision.get() == revision) _state.update { it.copy(isReplacingSelection = false) }
+        }
+    }
+
+    /**
+     * Меняет язык в пассивном окошке (авто-перевод входящего сообщения) на изолированном снимке
+     * состояния — не трогая sourceLanguage/targetLanguage, которые читает исходящий
+     * Shift-перевод. Входящее и исходящее направления — разные пары языков (клиент пишет на
+     * английском, модель отвечает по-русски), и смена одной не должна задевать другую.
+     * Один из параметров равен null, когда пользователь поменял только одну сторону пары.
+     */
+    /**
+     * Язык, выбранный пользователем для входящих переводов, или `null`, если выбора не было и
+     * направление следует языку модели.
+     */
+    private fun configuredIncomingTargetLanguage(): LanguageCode? {
+        val tag = settingsState.value.incomingTargetLanguage.takeIf { it.isNotBlank() }
+            ?: return null
+        return runCatching { LanguageCode(tag) }.getOrNull()
+    }
+
+    private suspend fun handleQuickTranslatePassiveLanguageChange(
+        sourceLanguage: LanguageCode?,
+        targetLanguage: LanguageCode?
+    ) {
+        val current = _state.value
+        val sourceText = current.inputText
+        if (sourceText.isBlank()) return
+        val revision = passiveTranslationRevision.incrementAndGet()
+
+        val resolvedSource = sourceLanguage
+            ?: current.quickTranslateSourceLanguageOverride
+            ?: current.detectedSourceLanguage
+            ?: current.sourceLanguage
+        val resolvedTarget = targetLanguage
+            ?: current.quickTranslateTargetLanguageOverride
+            ?: current.targetLanguage
+
+        _state.update {
+            it.copy(
+                quickTranslateSourceLanguageOverride = resolvedSource,
+                quickTranslateTargetLanguageOverride = resolvedTarget,
+                // Явный выбор перекрывает автоопределение — иначе оно снова оказалось бы
+                // приоритетнее нового выбора в mapToQuickTranslateState.
+                quickTranslateDetectedLanguageOverride = null,
+                isLoading = true
+            )
+        }
+
+        var backgroundState = current.copy(
+            inputText = sourceText,
+            sourceLanguage = resolvedSource,
+            targetLanguage = resolvedTarget
         )
-        val result = _state.value.translatedText
-        _state.update { it.copy(isReplacingSelection = false) }
-        if (result.isNotBlank()) {
-            _eventChannel.send(MainEvent.PasteTranslation(result))
+        when (
+            val result = translateTextUseCase(
+                getState = { backgroundState },
+                updateState = { transform -> backgroundState = backgroundState.transform() },
+                onStatusUpdate = { _, _, _ -> },
+                textOverride = sourceText,
+                includeExtraOutput = false,
+                applyTranslationRules = false,
+                recordHistory = false,
+                lane = TranslationLane.QUICK_TRANSLATE_PASSIVE,
+                isRequestCurrent = { passiveTranslationRevision.get() == revision }
+            )
+        ) {
+            is TranslationRunResult.Success -> _state.update {
+                if (passiveTranslationRevision.get() == revision && it.inputText == sourceText) {
+                    it.copy(translatedText = result.translatedText, translatedTargetLanguage = resolvedTarget, isLoading = false)
+                } else it
+            }
+            is TranslationRunResult.Failure -> _state.update {
+                if (passiveTranslationRevision.get() == revision) it.copy(isLoading = false) else it
+            }
         }
     }
 
@@ -963,23 +1087,22 @@ class MainStore(
 
     /** Распознаёт игровой/графический кадр без изменения состояния главного окна. */
     private suspend fun handleLiveLensFrameRecognition(intent: MainIntent.RecognizeLiveLensFrame) {
-        val extractedText = ocrAndTranslateUseCase(
+        val recognition = ocrAndTranslateUseCase.recognize(
             image = intent.image,
             currentState = _state.value,
             onStatusUpdate = { _, _, _ -> },
             preferLocal = true
         )
-        if (extractedText.isBlank()) {
+        if (!recognition.successful) {
             _eventChannel.send(MainEvent.LiveLensFrameRecognitionFinished(intent.requestId))
         } else {
             _eventChannel.send(
                 MainEvent.LiveLensFrameRecognized(
                     requestId = intent.requestId,
-                    text = extractedText
+                    text = recognition.text
                 )
             )
         }
-        liveLensRecognitionJob = null
     }
 
     private suspend fun handleImageInPlaceTranslation(intent: MainIntent.TranslateImageInPlace) {
@@ -1010,7 +1133,6 @@ class MainStore(
                 MainEvent.ImageInPlaceTranslationFailed(intent.requestId, result.kind)
             )
         }
-        imageTranslationJob = null
     }
 
     /**
@@ -1094,7 +1216,12 @@ class MainStore(
                 return
             }
         } else {
-            shiftTranslationMemory.reverseTargetFor(selectedText, modelLanguage)
+            val chosenIncoming = configuredIncomingTargetLanguage()
+            shiftTranslationMemory.reverseTargetFor(
+                selectedText = selectedText,
+                fallback = chosenIncoming ?: modelLanguage,
+                allowDetectionGuess = chosenIncoming == null
+            )
         }
 
         val wasRecentlyShown = !shouldReplace && shiftTranslationMemory.wasRecentlyShown(
@@ -1179,7 +1306,6 @@ class MainStore(
                 true
             },
             onReplace = { translatedText ->
-                publishShiftHistory(backgroundState)
                 // Память исходного RU/UK нужна только после исходящего перевода. Обратный
                 // EN→RU не должен перезаписать её определённым английским языком.
                 if (direction == ShiftSelectionDirection.MODEL_LANGUAGE) {
@@ -1203,11 +1329,12 @@ class MainStore(
                 )
             },
             onPassiveOverlay = { translatedText ->
-                publishShiftHistory(backgroundState)
+                passiveTranslationRevision.incrementAndGet()
                 _state.update {
                     it.copy(
                         inputText = selectedText,
                         translatedText = translatedText,
+                        translatedTargetLanguage = targetLanguage,
                         extraOutputText = "",
                         isLoading = false,
                         isExtraOutputLoading = false,
@@ -1243,16 +1370,6 @@ class MainStore(
         }
     }
 
-    /** История фонового use case публикуется только вместе с реально доставленным результатом. */
-    private fun publishShiftHistory(backgroundState: MainState) {
-        _state.update {
-            it.copy(
-                history = backgroundState.history,
-                historyIndex = backgroundState.historyIndex
-            )
-        }
-    }
-
     private suspend fun reportSelectionTranslationFailure(
         trigger: SelectionTranslationTrigger,
         reason: SelectionTranslationFailureReason,
@@ -1281,6 +1398,7 @@ class MainStore(
     private fun handleCycleTargetLanguage() {
         val languages = _state.value.availableLanguages.filter { it != LanguageCode.AUTO }
         if (languages.isEmpty()) return
+        invalidateMainTranslation()
         val current = _state.value.targetLanguage
         val currentIdx = languages.indexOf(current)
         val nextIdx = (currentIdx + 1) % languages.size
@@ -1307,7 +1425,8 @@ class MainStore(
         type: NotificationType,
         isTemporary: Boolean
     ) {
-        _eventChannel.send(MainEvent.UpdateStatusBar(code, type, isTemporary))
+        // Статусы заменяют друг друга; paste и завершения остаются в гарантированной очереди выше.
+        statusEvents.trySend(MainEvent.UpdateStatusBar(code, type, isTemporary))
     }
 }
 

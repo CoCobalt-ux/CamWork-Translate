@@ -45,7 +45,7 @@ object ConfigMigrator {
                 break
             }
         }
-        return current
+        return current.normalizeHotkeyScopes()
     }
 
     // -------------------------------------------------------------------------

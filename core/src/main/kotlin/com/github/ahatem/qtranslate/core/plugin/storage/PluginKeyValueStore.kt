@@ -7,6 +7,11 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import java.io.Closeable
 import java.io.File
 
 /**
@@ -18,14 +23,16 @@ import java.io.File
  * This is the backing store for [com.github.ahatem.qtranslate.core.plugin.ScopedPluginContext]'s
  * `storeValue` / `getValue` / `deleteValue` methods.
  */
-class PluginKeyValueStore(private val appDataDirectory: File) {
+class PluginKeyValueStore(private val appDataDirectory: File) : Closeable {
 
     private val dataStores = mutableMapOf<String, DataStore<Preferences>>()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Synchronized
     private fun getDataStore(pluginId: String): DataStore<Preferences> =
         dataStores.getOrPut(pluginId) {
             PreferenceDataStoreFactory.create(
+                scope = scope,
                 produceFile = { File(appDataDirectory, "datastore/plugin_$pluginId.preferences_pb") }
             )
         }
@@ -51,6 +58,8 @@ class PluginKeyValueStore(private val appDataDirectory: File) {
 
     suspend fun deleteAllData(pluginId: String) {
         getDataStore(pluginId).edit { it.clear() }
-        dataStores.remove(pluginId)
+        // Очистка не завершает DataStore: следующий доступ должен использовать тот же экземпляр.
     }
+
+    override fun close() = scope.cancel("Хранилища плагинов закрыты")
 }
