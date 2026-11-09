@@ -15,6 +15,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.awt.Frame
+import java.awt.GraphicsEnvironment
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.swing.JOptionPane
 import javax.swing.SwingUtilities
 
 fun main() = runBlocking {
@@ -25,26 +29,44 @@ fun main() = runBlocking {
     }
 
     var frame: MainAppFrame? = null
+    var frameReady = false
+    val pendingFocus = AtomicBoolean(false)
+    fun showExistingWindow() {
+        if (!frameReady) return
+        val current = frame ?: return
+        if (!pendingFocus.getAndSet(false)) return
+        current.extendedState = current.extendedState and Frame.ICONIFIED.inv()
+        current.isVisible = true
+        current.toFront()
+        current.requestFocus()
+    }
 
-    // Журнал здесь ещё не настроен — он требует каталога данных, — поэтому причина ухода пишется
-    // напрямую. Без неё запуск второй копии выглядел как приложение, которое молча не открывается.
-    if (!SingleInstanceGuard.tryLock(onFocusRequested = {
-            SwingUtilities.invokeLater {
-                frame?.apply {
-                    isVisible = true
-                    toFront()
-                    requestFocus()
+    val instanceGuard = SingleInstanceGuard()
+    when (val result = instanceGuard.acquire {
+        pendingFocus.set(true)
+        SwingUtilities.invokeLater { showExistingWindow() }
+    }) {
+        is InstanceStartResult.Acquired -> Unit
+        is InstanceStartResult.AlreadyRunning -> {
+            val focusStatus = if (result.focusRequested) "Отправлен запрос показа окна." else "Повторный запуск отменён."
+            System.err.println("${AppConstants.APP_NAME}: приложение уже запущено. $focusStatus")
+            return@runBlocking
+        }
+        is InstanceStartResult.Failed -> {
+            val message = "Не удалось получить блокировку экземпляра приложения. " +
+                "Запуск отменён для защиты настроек. Причина: ${result.error.javaClass.simpleName}."
+            System.err.println("${AppConstants.APP_NAME}: $message")
+            if (!GraphicsEnvironment.isHeadless()) runCatching {
+                SwingUtilities.invokeAndWait {
+                    JOptionPane.showMessageDialog(null, message, AppConstants.APP_NAME, JOptionPane.ERROR_MESSAGE)
                 }
             }
-        })) {
-        System.err.println(
-            "${AppConstants.APP_NAME}: приложение уже запущено; окно существующей копии выведено вперёд."
-        )
-        return@runBlocking
+            return@runBlocking
+        }
     }
 
     Runtime.getRuntime().addShutdownHook(Thread {
-        SingleInstanceGuard.release()
+        instanceGuard.close()
     })
 
     AppUiSetup.setSystemProperties()
@@ -82,36 +104,43 @@ fun main() = runBlocking {
         appData       = appData,
         loggerFactory = logFactory,
         settingsRepo  = settingsRepo,
-        initialConfig = initialConfig
+        initialConfig = initialConfig,
+        performStartupReconciliation = !configLoadTimedOut && settingsRepo.lastRecovery == null
     )
     AppUiSetup.apply(initialConfig, deps.themeManager)
 
-    // Starting with defaults when settings existed is not a detail to leave in a log file. From
-    // the user's side the app looks freshly installed, and the natural response — setting
-    // everything up again — overwrites the file that still holds the original.
-    settingsRepo.lastRecovery?.let { recovery ->
-        logger.error("Configuration recovery: ${recovery.reason}")
-        deps.notificationBus.post(
-            AppNotification(
-                type = NotificationType.ERROR,
-                code = NotificationCode.Custom(
-                    title = "Settings could not be loaded",
-                    body = recovery.reason
-                )
-            )
-        )
-    }
-    if (configLoadTimedOut) {
-        deps.notificationBus.post(
-            AppNotification(
+    // Уведомления отправляются после готовности окна: ранний replay мог истечь за время запуска.
+    val startupNotifications = buildList<AppNotification> {
+        settingsRepo.lastRecovery?.let { recovery ->
+            logger.error("Configuration recovery: ${recovery.reason}")
+            add(AppNotification(
+                    type = NotificationType.ERROR,
+                    code = NotificationCode.Custom(
+                        title = "Settings could not be loaded",
+                        body = recovery.reason
+                    )
+                ))
+        }
+        if (configLoadTimedOut) {
+            add(AppNotification(
+                    type = NotificationType.WARNING,
+                    code = NotificationCode.Custom(
+                        title = "Settings took too long to load",
+                        body = "${AppConstants.APP_NAME} started with default settings so it would not hang. " +
+                            "Your saved settings are still on disk — restarting may load them."
+                    )
+                ))
+        }
+        deps.startupWarning?.let { warning ->
+            logger.warn("Автозапуск Windows: $warning")
+            add(AppNotification(
                 type = NotificationType.WARNING,
                 code = NotificationCode.Custom(
-                    title = "Settings took too long to load",
-                    body = "${AppConstants.APP_NAME} started with default settings so it would not hang. " +
-                        "Your saved settings are still on disk — restarting may load them."
+                    title = "Автозапуск Windows",
+                    body = warning
                 )
-            )
-        )
+            ))
+        }
     }
 
     // Only when the user has not chosen. Keying this off "en" meant an explicit choice of English
@@ -160,6 +189,16 @@ fun main() = runBlocking {
             }
         )
         logger.info("Main window launched")
+        // Конструктор отдельно ставит сборку и pack() окна в очередь EDT.
+        SwingUtilities.invokeLater {
+            frameReady = true
+            showExistingWindow()
+            if (startupNotifications.isNotEmpty()) deps.appScope.launch {
+                startupNotifications.forEach {
+                    deps.notificationBus.post(it.copy(timestamp = System.currentTimeMillis()))
+                }
+            }
+        }
     }
 
     logger.info("Loading plugins...")

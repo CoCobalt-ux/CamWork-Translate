@@ -120,10 +120,11 @@ class SwapLanguagesUseCaseTest {
     }
 
     @Test
-    fun `пассивное окно меняет показанную пару и очищает временные языки`() {
+    fun `пассивное окно меняет только свою пару и сохраняет AUTO основного окна`() {
         val initial = state(source = LanguageCode.AUTO, target = LanguageCode.ENGLISH).copy(
             inputText = "Привет",
             translatedText = "Hello",
+            isQuickTranslateDialogPassive = true,
             quickTranslateSourceLanguageOverride = LanguageCode.RUSSIAN,
             quickTranslateTargetLanguageOverride = LanguageCode.ENGLISH
         )
@@ -137,13 +138,39 @@ class SwapLanguagesUseCaseTest {
             context = SwapLanguagesContext.QUICK_TRANSLATE
         )
 
-        assertEquals(LanguageCode.ENGLISH, updated?.sourceLanguage)
-        assertEquals(LanguageCode.RUSSIAN, updated?.targetLanguage)
+        assertEquals(LanguageCode.AUTO, updated?.sourceLanguage)
+        assertEquals(LanguageCode.ENGLISH, updated?.targetLanguage)
         assertEquals("Hello", updated?.inputText)
-        assertEquals(null, updated?.quickTranslateSourceLanguageOverride)
-        assertEquals(null, updated?.quickTranslateTargetLanguageOverride)
+        assertEquals(LanguageCode.ENGLISH, updated?.quickTranslateSourceLanguageOverride)
+        assertEquals(LanguageCode.RUSSIAN, updated?.quickTranslateTargetLanguageOverride)
         assertEquals(1, translations)
         assertTrue(initial.canSwapLanguages(SwapLanguagesContext.QUICK_TRANSLATE))
+    }
+
+    @Test
+    fun `пассивный AUTO без своей metadata не использует старое определение основного окна`() {
+        val initial = state(LanguageCode.AUTO, LanguageCode.RUSSIAN).copy(
+            isQuickTranslateDialogPassive = true,
+            inputText = "123", detectedSourceLanguage = LanguageCode.ENGLISH
+        )
+        var updates = 0
+        useCase(initial, { updates++ }, {}, SwapLanguagesContext.QUICK_TRANSLATE)
+        assertEquals(LanguageCode.AUTO, initial.resolvedQuickTranslateSourceLanguage)
+        assertEquals(null, initial.resolvedQuickTranslateDetectedSourceLanguage)
+        assertFalse(initial.canSwapLanguages(SwapLanguagesContext.QUICK_TRANSLATE))
+        assertEquals(0, updates)
+    }
+
+    @Test
+    fun `обмен обычного popup использует язык показанного результата после fallback`() {
+        val initial = state(LanguageCode.AUTO, LanguageCode.ENGLISH).copy(
+            inputText = "Hello", translatedText = "Привет", detectedSourceLanguage = LanguageCode.ENGLISH,
+            translatedTargetLanguage = LanguageCode.RUSSIAN
+        )
+        var updated: MainState? = null
+        useCase(initial, { updated = it }, {}, SwapLanguagesContext.QUICK_TRANSLATE)
+        assertEquals(LanguageCode.RUSSIAN, updated?.sourceLanguage)
+        assertEquals(LanguageCode.ENGLISH, updated?.targetLanguage)
     }
 
     private fun state(source: LanguageCode, target: LanguageCode): MainState =

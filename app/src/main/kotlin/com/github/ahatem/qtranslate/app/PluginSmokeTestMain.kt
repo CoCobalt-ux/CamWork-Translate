@@ -35,7 +35,9 @@ fun main(args: Array<String>) = runBlocking {
     settingsRepository.updateConfiguration(configuration)
     // Этот тест намеренно упражняет каждый bundled plugin, включая отключённые в продукте.
     settingsRepository.saveDisabledPluginIds(emptySet())
-    val dependencies = buildDependencies(appData, loggerFactory, settingsRepository, configuration)
+    val dependencies = buildDependencies(
+        appData, loggerFactory, settingsRepository, configuration, manageSystemStartup = false
+    )
     val results = mutableListOf<SmokeResult>()
     val successfulManagedTranslations = linkedSetOf<String>()
 

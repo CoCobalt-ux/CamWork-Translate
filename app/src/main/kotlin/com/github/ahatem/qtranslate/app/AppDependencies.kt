@@ -34,6 +34,8 @@ import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
 import com.github.ahatem.qtranslate.core.updater.Updater
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager
+import com.github.ahatem.qtranslate.ui.swing.main.StartupConfigurationPersistence
+import com.github.ahatem.qtranslate.ui.swing.main.StartupReconciliation
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -74,7 +76,9 @@ class AppDependencies(
     /** The application's own secrets, distinct from any plugin's. */
     val appSecrets: AppSecretStore,
     /** Where languages, themes and icon sets are read from. */
-    val appDataDirectory: File
+    val appDataDirectory: File,
+    /** Отображается после готовности интерфейса, чтобы сообщение не истекло в очереди запуска. */
+    val startupWarning: String? = null
 )
 
 /**
@@ -104,7 +108,9 @@ suspend fun buildDependencies(
     appData: File,
     loggerFactory: LoggerFactory,
     settingsRepo: SettingsRepository,
-    initialConfig: Configuration
+    initialConfig: Configuration,
+    performStartupReconciliation: Boolean = true,
+    manageSystemStartup: Boolean = true
 ): AppDependencies {
 
     // ---- 1. Coroutine scope ----
@@ -162,18 +168,25 @@ suspend fun buildDependencies(
 
     // ---- 4. Settings store + reactive config ----
 
+    val startupPersistence = if (manageSystemStartup) {
+        StartupConfigurationPersistence(settingsRepo, initialConfig)
+    } else null
+    val startup = if (performStartupReconciliation && startupPersistence != null) {
+        startupPersistence.reconcileAtLaunch()
+    } else StartupReconciliation(initialConfig, warning = null)
+
     val settingsStore = SettingsStore(
-        settingsRepository   = settingsRepo,
+        settingsRepository   = startupPersistence ?: settingsRepo,
         logger               = loggerFactory.getLogger("SettingsStore"),
         scope                = appScope,
-        initialConfiguration = initialConfig
+        initialConfiguration = startup.configuration
     )
 
     // Use workingConfiguration so in-progress edits are reflected in real time
     // (e.g. instant translation picks up a newly toggled setting before save).
     val configState: StateFlow<Configuration> = settingsStore.state
         .map { it.workingConfiguration }
-        .stateIn(appScope, SharingStarted.Eagerly, initialConfig)
+        .stateIn(appScope, SharingStarted.Eagerly, startup.configuration)
 
     // ---- 5. Domain services ----
 
@@ -307,6 +320,7 @@ suspend fun buildDependencies(
         iconManager         = iconManager,
         themeManager        = themeManager,
         localizationManager = localizationManager,
-        notificationBus     = notificationBus
+        notificationBus     = notificationBus,
+        startupWarning      = startup.warning
     )
 }

@@ -86,10 +86,99 @@ Name: "{userdesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; WorkingDir: "
 
 ; HKCU, не HKLM — установщик работает без прав администратора (PrivilegesRequired=lowest),
 ; и автозапуск должен включаться только для того пользователя Windows, который ставил
-; программу. Значение автоматически удаляется деинсталлятором Inno Setup при снятии Flags:
-; uninsdeletevalue, поэтому отдельная секция [UninstallRun] для этого не нужна.
+; программу. Удаление выполняет код ниже с проверкой владельца: другая переносимая копия
+; могла позднее записать своё значение с тем же именем.
 [Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExeName}"""; Tasks: startupicon; Flags: uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExeName}"""; Tasks: startupicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Запустить {#AppName}"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  StartupRunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
+var
+  ForeignStartupSaved: Boolean;
+  ForeignStartupCommand: String;
+  ForeignStartupType: Cardinal;
+
+function OpenStartupUserKey(DesiredAccess: Cardinal; var Key: THandle): LongInt;
+  external 'RegOpenCurrentUser@advapi32.dll stdcall';
+function QueryStartupValueType(Key: THandle; SubKey, ValueName: String;
+  Flags: Cardinal; var ValueType: Cardinal; Data: THandle; var DataSize: Cardinal): LongInt;
+  external 'RegGetValueW@advapi32.dll stdcall';
+function CloseStartupUserKey(Key: THandle): LongInt;
+  external 'RegCloseKey@advapi32.dll stdcall';
+
+function StartupValueType(var ValueType: Cardinal): Boolean;
+var
+  Key: THandle;
+  DataSize: Cardinal;
+begin
+  Result := False;
+  if OpenStartupUserKey($0001, Key) <> 0 then
+    Exit;
+  try
+    DataSize := 0;
+    { RRF_NOEXPAND: сохраняем исходный тип, не разворачивая переменные окружения. }
+    Result := (QueryStartupValueType(Key, StartupRunKey, '{#AppName}',
+      $1000FFFF, ValueType, 0, DataSize) = 0) and ((ValueType = 1) or (ValueType = 2));
+  finally
+    CloseStartupUserKey(Key);
+  end;
+end;
+
+function IsOwnStartupCommand(const Command: String): Boolean;
+var
+  Launcher: String;
+begin
+  Launcher := ExpandConstant('{app}\{#AppExeName}');
+  Result := (CompareText(Trim(Command), '"' + Launcher + '"') = 0) or
+    (CompareText(Trim(Command), Launcher) = 0);
+end;
+
+procedure RemoveOwnStartupEntry;
+var
+  Command: String;
+begin
+  if RegQueryStringValue(HKCU, StartupRunKey, '{#AppName}', Command) then
+    if IsOwnStartupCommand(Command) then
+      if not RegDeleteValue(HKCU, StartupRunKey, '{#AppName}') then
+        Log('Не удалось удалить собственную запись автозапуска.');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and not WizardIsTaskSelected('startupicon') then
+    RemoveOwnStartupEntry;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Command: String;
+  Restored: Boolean;
+begin
+  if CurUninstallStep = usUninstall then begin
+    ForeignStartupSaved := False;
+    if RegQueryStringValue(HKCU, StartupRunKey, '{#AppName}', Command) then begin
+      if IsOwnStartupCommand(Command) then
+        RemoveOwnStartupEntry
+      else if StartupValueType(ForeignStartupType) then begin
+        ForeignStartupCommand := Command;
+        ForeignStartupSaved := True;
+      end;
+    end;
+  end else if (CurUninstallStep = usPostUninstall) and ForeignStartupSaved then begin
+    { Старые версии добавляли uninsdeletevalue в накопленный uninstall log.
+      После их очистки возвращаем только исчезнувшее чужое значение, с прежним типом. }
+    if not RegValueExists(HKCU, StartupRunKey, '{#AppName}') then begin
+      if ForeignStartupType = 2 then
+        Restored := RegWriteExpandStringValue(HKCU, StartupRunKey, '{#AppName}', ForeignStartupCommand)
+      else
+        Restored := RegWriteStringValue(HKCU, StartupRunKey, '{#AppName}', ForeignStartupCommand);
+      if not Restored then
+        Log('Не удалось восстановить запись автозапуска другой копии.');
+    end;
+  end;
+end;

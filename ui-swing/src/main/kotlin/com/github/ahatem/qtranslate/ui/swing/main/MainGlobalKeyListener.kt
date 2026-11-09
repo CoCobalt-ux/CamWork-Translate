@@ -1,21 +1,22 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
 import com.github.ahatem.qtranslate.api.core.Logger
+import com.github.ahatem.qtranslate.core.settings.data.Configuration
+import com.github.ahatem.qtranslate.core.shared.logging.recordFailure
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyBinding
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyScope
-import com.github.kwhat.jnativehook.GlobalScreen
-import com.github.kwhat.jnativehook.NativeHookException
 import com.github.kwhat.jnativehook.keyboard.NativeKeyEvent
 import com.github.kwhat.jnativehook.keyboard.NativeKeyListener
 import com.github.kwhat.jnativehook.mouse.NativeMouseEvent
 import com.github.kwhat.jnativehook.mouse.NativeMouseInputListener
-import com.tulskiy.keymaster.common.Provider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.awt.Point
@@ -87,7 +88,7 @@ private fun createSelectionTapGesture(binding: HotkeyBinding?): ShiftTapTranslat
  *   pastes result back via [onReplaceWithTranslation].
  * - [HotkeyAction.CYCLE_TARGET_LANGUAGE] — default LOCAL, cycles the target language.
  */
-class MainGlobalKeyListener(
+class MainGlobalKeyListener internal constructor(
     private val scope: CoroutineScope,
     private val logger: Logger,
     private val onShowApp: (String) -> Unit,
@@ -112,14 +113,21 @@ class MainGlobalKeyListener(
     /** Вызывается сразу при отпускании короткого Shift, ещё до чтения clipboard. */
     private val onShiftTapStarted: (Long) -> Unit = {},
     /** Инвалидирует ожидающий перевод/вставку до открытия системного screenshot UI. */
-    private val onSystemScreenCaptureStarted: () -> Unit = {}
+    private val onSystemScreenCaptureStarted: () -> Unit = {},
+    private val inputBackend: GlobalInputBackend = SystemGlobalInputBackend(),
+    private val recoveryIntervalMillis: Long = 2_000L,
+    private val captureSource: SelectionCaptureSource? = null,
+    surfaceReader: SelectionSurfaceReader? = null
 ) {
 
-    private var provider: Provider? = null
-    private var nativeHookRegistered = false
+    private val runtimeState = HotkeyRuntimeState()
+    private var providerReady = false
+    private var bindingsDirty = true
+    private val failedBindings = linkedMapOf<HotkeyAction, HotkeyBinding>()
+    private var recoveryJob: Job? = null
     private val sequenceListener = CustomSequenceListener()
     private val selectionMouseListener = SelectionMouseListener()
-    private val selectionSurfaceDetector = WindowsSelectionSurfaceDetector()
+    private val selectionSurfaceReader = surfaceReader ?: BoundedSelectionSurfaceReader(logger)
     @Volatile
     private var shiftTapGesture = createSelectionTapGesture(
         HotkeyBinding.DEFAULT_SELECTION_TRANSLATION
@@ -137,8 +145,7 @@ class MainGlobalKeyListener(
     private val syntheticCopyModifierGate = SyntheticCopyModifierGate()
     private var selectionCaptureJob: Job? = null
     private val hotkeysEnabled = AtomicBoolean(true)
-    // AtomicBoolean.compareAndSet prevents double-initialization if initialize()
-    // is called concurrently (e.g. from two rapid lifecycle events).
+    // Состояние читается также нативными callbacks; lifecycle-вызовы сериализуются монитором.
     private val initialized = AtomicBoolean(false)
     private val autoSelectionTranslateEnabled = AtomicBoolean(true)
     private val shiftTapTranslateEnabled = AtomicBoolean(true)
@@ -146,42 +153,86 @@ class MainGlobalKeyListener(
 
     @Volatile private var bindings: List<HotkeyBinding> = HotkeyBinding.DEFAULTS
 
+    @Synchronized
     fun initialize() {
-        if (!initialized.compareAndSet(false, true)) return
-        try {
-            initJKeyMaster()
-            initJNativeHook()
-        } catch (e: Exception) {
-            initialized.set(false)   // allow retry if initialization itself failed
-            logger.error("Hotkey initialization failed", e)
+        require(recoveryIntervalMillis > 0)
+        initialized.set(true)
+        applyEffectiveHotkeys()
+        if (recoveryJob?.isActive != true) {
+            recoveryJob = scope.launch {
+                while (isActive) {
+                    delay(recoveryIntervalMillis)
+                    synchronized(this@MainGlobalKeyListener) {
+                        if (initialized.get()) reconcileInputBackend()
+                    }
+                }
+            }
         }
     }
 
+    /** Применяется только сохранённая конфигурация; пауза recorder хранится отдельно. */
+    @Synchronized
+    fun applyConfiguration(config: Configuration) {
+        configureBindings(config.hotkeys)
+        runtimeState.configure(config.isGlobalHotkeysEnabled)
+        autoSelectionTranslateEnabled.set(config.isAutoSelectionTranslateEnabled)
+        val shiftEnabled = config.isShiftTapTranslateEnabled &&
+            config.shiftTapTranslationMode != com.github.ahatem.qtranslate.core.settings.data.ShiftTapTranslationMode.DISABLED
+        shiftTapTranslateEnabled.set(shiftEnabled)
+        if (!shiftEnabled) shiftTapGesture.reset()
+        applyEffectiveHotkeys()
+    }
+
+    @Synchronized
     fun updateBindings(newBindings: List<HotkeyBinding>) {
-        bindings = newBindings
+        configureBindings(newBindings)
+        if (initialized.get()) reconcileInputBackend()
+    }
+
+    private fun configureBindings(newBindings: List<HotkeyBinding>) {
+        if (bindings == newBindings) return
+        bindings = newBindings.toList()
         val previousGesture = shiftTapGesture
         shiftTapGesture = createSelectionTapGesture(
             newBindings.find { it.action == HotkeyAction.REPLACE_WITH_TRANSLATION }
         )
         previousGesture.reset()
-        if (!initialized.get()) return
-        try {
-            provider?.reset()
-            registerGlobalHotkeys()
-        } catch (e: Exception) {
-            logger.error("Failed to update hotkey bindings", e)
-        }
+        bindingsDirty = true
     }
 
+    @Synchronized
     fun setHotkeysEnabled(enabled: Boolean) {
-        if (!initialized.get()) return
-        if (hotkeysEnabled.getAndSet(enabled) == enabled) return
-        if (!enabled) {
-            shiftTapGesture.reset()
-            systemScreenCaptureGuard.reset()
-            clipboardInterceptionGuard.invalidateForScreenCapture()
+        runtimeState.configure(enabled)
+        applyEffectiveHotkeys()
+    }
+
+    @Synchronized
+    fun suspendHotkeys() {
+        runtimeState.suspend()
+        applyEffectiveHotkeys()
+    }
+
+    @Synchronized
+    fun resumeHotkeys() {
+        runtimeState.resume()
+        applyEffectiveHotkeys()
+    }
+
+    private fun applyEffectiveHotkeys() {
+        val enabled = runtimeState.isEnabled
+        if (hotkeysEnabled.getAndSet(enabled) != enabled) {
+            bindingsDirty = true
+            if (!enabled) resetTransientInputState()
         }
-        if (enabled) enableHotkeys() else disableHotkeys()
+        if (initialized.get()) reconcileInputBackend()
+    }
+
+    private fun resetTransientInputState() {
+        selectionCaptureJob?.cancel()
+        shiftTapGesture.reset()
+        systemScreenCaptureGuard.reset()
+        syntheticCopyModifierGate.reset()
+        clipboardInterceptionGuard.invalidateForScreenCapture()
     }
 
     /**
@@ -211,71 +262,105 @@ class MainGlobalKeyListener(
     fun getLocalBindings(): List<HotkeyBinding> =
         bindings.filter { it.scope == HotkeyScope.LOCAL && it.isEnabled && it.hasBinding }
 
+    @Synchronized
     fun shutdown() {
-        if (!initialized.get()) return
-        selectionCaptureJob?.cancel()
-        clipboardInterceptionGuard.invalidateForScreenCapture()
-        try {
-            provider?.reset()
-            provider?.stop()
-            provider = null
-            if (nativeHookRegistered) {
-                GlobalScreen.removeNativeKeyListener(sequenceListener)
-                GlobalScreen.removeNativeMouseListener(selectionMouseListener)
-                GlobalScreen.removeNativeMouseMotionListener(selectionMouseListener)
-                GlobalScreen.unregisterNativeHook()
-                nativeHookRegistered = false
+        initialized.set(false)
+        recoveryJob?.cancel()
+        recoveryJob = null
+        resetTransientInputState()
+        attemptInputOperation("закрытие горячих клавиш") { inputBackend.shutdownHotkeys() }
+        attemptInputOperation("закрытие наблюдения за выделением") {
+            inputBackend.shutdownNativeHook(safeSequenceListener, safeSelectionMouseListener)
+        }
+        providerReady = false
+        bindingsDirty = true
+        failedBindings.clear()
+        (selectionSurfaceReader as? AutoCloseable)?.close()
+    }
+
+    private fun reconcileInputBackend() {
+        // Не связываем мышь с доступностью Keymaster: отказ одной комбинации не отключает выделение.
+        attemptInputOperation("восстановление наблюдения за выделением") {
+            if (!inputBackend.isNativeHookRegistered()) resetTransientInputState()
+            inputBackend.ensureNativeHook(safeSequenceListener, safeSelectionMouseListener)
+        }
+        if (!providerReady && hotkeysEnabled.get()) {
+            providerReady = attemptInputOperation("инициализация горячих клавиш") { inputBackend.initializeHotkeys() }
+            if (providerReady) bindingsDirty = true
+        }
+        if (!providerReady) return
+        if (bindingsDirty) {
+            if (!attemptInputOperation("применение горячих клавиш") { inputBackend.resetHotkeys() }) {
+                providerReady = false
+                attemptInputOperation("освобождение отказавшего сервиса клавиш") { inputBackend.shutdownHotkeys() }
+                return
             }
-        } catch (e: Exception) {
-            logger.error("Hotkey manager shutdown error", e)
-        } finally {
-            syntheticCopyModifierGate.reset()
-            initialized.set(false)
+            failedBindings.clear()
+            bindingsDirty = false
+            if (hotkeysEnabled.get()) {
+                bindings.filter { it.scope == HotkeyScope.GLOBAL && it.isEnabled && it.hasBinding }
+                    .filterNot(HotkeyBinding::isModifierOnlySelectionBinding)
+                    .forEach(::registerBinding)
+            }
+        } else if (hotkeysEnabled.get() && failedBindings.isNotEmpty()) {
+            failedBindings.values.toList().forEach(::registerBinding)
         }
     }
 
-    private fun initJKeyMaster() {
-        provider = Provider.getCurrentProvider(false)
-            ?: throw Exception("Hotkey provider unavailable")
-        registerGlobalHotkeys()
-    }
-
-    /**
-     * Registers only [HotkeyScope.GLOBAL] bindings with jKeymaster.
-     * LOCAL bindings are handled by MainAppFrame via Swing InputMap.
-     *
-     * Each binding is wrapped in its own try-catch so a single failure
-     * (e.g. OS refuses to grant a reserved key combination) does not
-     * silently abort registration of the remaining bindings.
-     */
-    private fun registerGlobalHotkeys() {
-        val p = provider ?: return
-
-        bindings
-            .filter { it.scope == HotkeyScope.GLOBAL && it.isEnabled && it.hasBinding }
-            // A lone Shift is handled by the guarded native tap gesture. Asking Keymaster to
-            // register it either fails or turns the modifier into a system-wide grab.
-            .filter { !it.isModifierOnlySelectionBinding() }
-            .forEach { binding ->
-                val keyStroke = binding.toKeyStroke() ?: return@forEach
-                val action = binding.action
-                runCatching {
-                    p.register(keyStroke) {
-                        if (!hotkeysEnabled.get()) return@register
-                        dispatchAction(action)
-                    }
-                    logger.debug("Registered global hotkey ${action.name}: $keyStroke")
-                }.onFailure { ex ->
-                    logger.warn(
-                        "Failed to register global hotkey ${action.name} ($keyStroke): ${ex.message}"
-                    )
+    private fun registerBinding(binding: HotkeyBinding) {
+        val keyStroke = binding.toKeyStroke() ?: return
+        val registered = attemptInputOperation("регистрация ${binding.action.name}") {
+            inputBackend.registerHotkey(keyStroke) {
+                if (hotkeysEnabled.get()) {
+                    attemptInputOperation("действие глобальной клавиши") { dispatchAction(binding.action) }
                 }
             }
+        }
+        if (registered) failedBindings.remove(binding.action) else failedBindings[binding.action] = binding
+    }
+
+    private fun attemptInputOperation(operation: String, action: () -> Unit): Boolean = try {
+        action()
+        true
+    } catch (error: Exception) {
+        logger.recordFailure(operation, error)
+        false
+    } catch (error: LinkageError) {
+        logger.recordFailure(operation, error)
+        false
+    }
+
+    private val safeSequenceListener = object : NativeKeyListener {
+        override fun nativeKeyPressed(event: NativeKeyEvent) {
+            attemptInputOperation("нажатие клавиши") { sequenceListener.nativeKeyPressed(event) }
+        }
+        override fun nativeKeyReleased(event: NativeKeyEvent) {
+            attemptInputOperation("отпускание клавиши") { sequenceListener.nativeKeyReleased(event) }
+        }
+        override fun nativeKeyTyped(event: NativeKeyEvent) {
+            attemptInputOperation("ввод символа") { sequenceListener.nativeKeyTyped(event) }
+        }
+    }
+
+    private val safeSelectionMouseListener = object : NativeMouseInputListener {
+        override fun nativeMousePressed(event: NativeMouseEvent) {
+            attemptInputOperation("нажатие мыши") { selectionMouseListener.nativeMousePressed(event) }
+        }
+        override fun nativeMouseReleased(event: NativeMouseEvent) {
+            attemptInputOperation("отпускание мыши") { selectionMouseListener.nativeMouseReleased(event) }
+        }
+        override fun nativeMouseClicked(event: NativeMouseEvent) {
+            attemptInputOperation("выделение кликом") { selectionMouseListener.nativeMouseClicked(event) }
+        }
+        override fun nativeMouseDragged(event: NativeMouseEvent) {
+            attemptInputOperation("выделение перетаскиванием") { selectionMouseListener.nativeMouseDragged(event) }
+        }
+        override fun nativeMouseMoved(event: NativeMouseEvent) = Unit
     }
 
     /**
      * Dispatches an action from either a global hotkey or a local InputMap trigger.
-     * Called from both [registerGlobalHotkeys] and MainAppFrame's local key handler.
+     * Вызывается системной комбинацией или локальным обработчиком MainAppFrame.
      */
     fun dispatchAction(action: HotkeyAction) {
         when (action) {
@@ -310,30 +395,6 @@ class MainGlobalKeyListener(
             HotkeyAction.OPEN_SETTINGS,
             HotkeyAction.SHOW_HISTORY,
             HotkeyAction.TRANSLATE_DOCUMENT -> Unit
-        }
-    }
-
-    private fun enableHotkeys() {
-        try { provider?.reset(); registerGlobalHotkeys() }
-        catch (e: Exception) { logger.error("Enable hotkeys failed", e) }
-    }
-
-    private fun disableHotkeys() {
-        try { provider?.reset() }
-        catch (e: Exception) { logger.error("Disable hotkeys failed", e) }
-    }
-
-    private fun initJNativeHook() {
-        try {
-            if (!nativeHookRegistered) {
-                GlobalScreen.registerNativeHook()
-                nativeHookRegistered = true
-            }
-            GlobalScreen.addNativeKeyListener(sequenceListener)
-            GlobalScreen.addNativeMouseListener(selectionMouseListener)
-            GlobalScreen.addNativeMouseMotionListener(selectionMouseListener)
-        } catch (ex: NativeHookException) {
-            throw Exception("Native hook registration failed", ex)
         }
     }
 
@@ -526,55 +587,63 @@ class MainGlobalKeyListener(
         if (!shouldInspectMouseSelection()) return
         selectionCaptureJob?.cancel()
         selectionCaptureJob = scope.launch {
-            val requestId = requestSequence.incrementAndGet()
-            val debounce = if (isAutoSelectionActive()) {
-                AUTO_SELECTION_DEBOUNCE_MS
-            } else {
-                SELECTION_SETTLE_DELAY_MS
+            try {
+                val requestId = requestSequence.incrementAndGet()
+                val debounce = if (isAutoSelectionActive()) {
+                    AUTO_SELECTION_DEBOUNCE_MS
+                } else {
+                    SELECTION_SETTLE_DELAY_MS
+                }
+                delay(debounce)
+                if (systemScreenCaptureGuard.isSuppressed()) return@launch
+
+                var selectedText = ""
+                var clipboardEvidence: ClipboardSelectionEvidence? = null
+                handleSelectedText(
+                    callback = { selectedText = it },
+                    onClipboardEvidence = { clipboardEvidence = it },
+                    preCopyDelayMs = 0,
+                    requestId = requestId,
+                    origin = "auto_selection"
+                )
+                // handleSelectedText уже вышел из clipboard mutex и восстановил пользовательский
+                // clipboard. Потенциально медленный UI Automation никогда не продлевает перехват.
+                if (selectedText.isBlank()) return@launch
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (systemScreenCaptureGuard.isSuppressed()) return@launch
+
+                // UI Automation ожидает native desktop coordinates, а Swing/JWindow — AWT user
+                // coordinates. На HiDPI это разные системы, поэтому точки намеренно не смешиваются.
+                val detection = selectionSurfaceReader.inspect(nativePointer, clipboardEvidence)
+                val surface = detection.surface
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                if (systemScreenCaptureGuard.isSuppressed()) return@launch
+
+                val presentation = resolveSelectionPresentation(
+                    surface = surface,
+                    isAutoOverlayEnabled = isAutoSelectionActive()
+                )
+                logger.info(
+                        "Selection presentation: surface=$surface, presentation=$presentation, " +
+                        "auto=${isAutoSelectionActive()}, accessibility=${detection.accessibility}, " +
+                        "win32=${detection.win32}, clipboard=${detection.clipboard}, " +
+                        "accessibilityError=${detection.accessibilityError}, " +
+                        "win32Error=${detection.win32Error}"
+                )
+                deliverSelectionPresentation(
+                    text = selectedText,
+                    pointer = awtPointer,
+                    presentation = presentation,
+                    onMiniButton = onSelectionDetected,
+                    onAutoOverlay = { text -> onAutoTranslateSelection(text, requestId) }
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                logger.recordFailure("захват и показ выделения", error)
+            } catch (error: LinkageError) {
+                logger.recordFailure("нативный захват выделения", error)
             }
-            delay(debounce)
-            if (systemScreenCaptureGuard.isSuppressed()) return@launch
-
-            var selectedText = ""
-            var clipboardEvidence: ClipboardSelectionEvidence? = null
-            handleSelectedText(
-                callback = { selectedText = it },
-                onClipboardEvidence = { clipboardEvidence = it },
-                preCopyDelayMs = 0,
-                requestId = requestId,
-                origin = "auto_selection"
-            )
-            // handleSelectedText уже вышел из clipboard mutex и восстановил пользовательский
-            // clipboard. Потенциально медленный UI Automation никогда не продлевает перехват.
-            if (selectedText.isBlank()) return@launch
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (systemScreenCaptureGuard.isSuppressed()) return@launch
-
-            // UI Automation ожидает native desktop coordinates, а Swing/JWindow — AWT user
-            // coordinates. На HiDPI это разные системы, поэтому точки намеренно не смешиваются.
-            val detection = selectionSurfaceDetector.inspect(nativePointer, clipboardEvidence)
-            val surface = detection.surface
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (systemScreenCaptureGuard.isSuppressed()) return@launch
-
-            val presentation = resolveSelectionPresentation(
-                surface = surface,
-                isAutoOverlayEnabled = isAutoSelectionActive()
-            )
-            logger.info(
-                    "Selection presentation: surface=$surface, presentation=$presentation, " +
-                    "auto=${isAutoSelectionActive()}, accessibility=${detection.accessibility}, " +
-                    "win32=${detection.win32}, clipboard=${detection.clipboard}, " +
-                    "accessibilityError=${detection.accessibilityError}, " +
-                    "win32Error=${detection.win32Error}"
-            )
-            deliverSelectionPresentation(
-                text = selectedText,
-                pointer = awtPointer,
-                presentation = presentation,
-                onMiniButton = onSelectionDetected,
-                onAutoOverlay = { text -> onAutoTranslateSelection(text, requestId) }
-            )
         }
     }
 
@@ -621,6 +690,16 @@ class MainGlobalKeyListener(
         clipboardInterceptionGuard.track { lease ->
             clipboardMutex.withLock {
                 if (!clipboardInterceptionGuard.isCurrent(lease) || systemScreenCaptureGuard.isSuppressed()) {
+                    return@withLock
+                }
+
+                captureSource?.let { source ->
+                    val captured = source.capture()
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    if (clipboardInterceptionGuard.isCurrent(lease) && !systemScreenCaptureGuard.isSuppressed()) {
+                        onClipboardEvidence(captured.evidence)
+                        callback(captured.text)
+                    }
                     return@withLock
                 }
 

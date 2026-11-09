@@ -44,40 +44,38 @@ class SwapLanguagesUseCase {
             SwapLanguagesContext.MAIN -> currentState.translatedTargetLanguage
                 .takeIf { currentState.translatedText.isNotBlank() } ?: currentState.targetLanguage
             SwapLanguagesContext.QUICK_TRANSLATE ->
-                currentState.quickTranslateTargetLanguageOverride ?: currentState.targetLanguage
+                currentState.resolvedQuickTranslateTargetLanguage
         }
         val effectiveSource = when (context) {
             SwapLanguagesContext.MAIN -> currentState.sourceLanguage
                 .takeIf { it != LanguageCode.AUTO }
                 ?: currentState.detectedSourceLanguage
             SwapLanguagesContext.QUICK_TRANSLATE -> {
-                val quickSource = currentState.quickTranslateSourceLanguageOverride
-                    ?: currentState.sourceLanguage
+                val quickSource = currentState.resolvedQuickTranslateSourceLanguage
                 quickSource.takeIf { it != LanguageCode.AUTO }
-                    ?: currentState.quickTranslateDetectedLanguageOverride
-                    ?: currentState.detectedSourceLanguage.takeIf {
-                        currentState.quickTranslateSourceLanguageOverride == null
-                    }
+                    ?: currentState.resolvedQuickTranslateDetectedSourceLanguage
             }
         } ?: return
         if (effectiveTarget == LanguageCode.AUTO) return
 
         val nextInputText = currentState.translatedText.ifBlank { currentState.inputText }
+        val isPassiveSwap = context == SwapLanguagesContext.QUICK_TRANSLATE &&
+            currentState.isQuickTranslateDialogPassive
 
         onStateUpdate(
             currentState.copy(
-                sourceLanguage         = effectiveTarget,
-                targetLanguage         = effectiveSource,
+                sourceLanguage         = if (isPassiveSwap) currentState.sourceLanguage else effectiveTarget,
+                targetLanguage         = if (isPassiveSwap) currentState.targetLanguage else effectiveSource,
                 inputText              = nextInputText,
                 translatedText         = "",
                 translatedTargetLanguage = null,
                 translationHistoryId   = null,
                 extraOutputText        = "",
-                detectedSourceLanguage = null,
-                quickTranslateSourceLanguageOverride = if (
+                detectedSourceLanguage = if (isPassiveSwap) currentState.detectedSourceLanguage else null,
+                quickTranslateSourceLanguageOverride = if (isPassiveSwap) effectiveTarget else if (
                     context == SwapLanguagesContext.QUICK_TRANSLATE
                 ) null else currentState.quickTranslateSourceLanguageOverride,
-                quickTranslateTargetLanguageOverride = if (
+                quickTranslateTargetLanguageOverride = if (isPassiveSwap) effectiveSource else if (
                     context == SwapLanguagesContext.QUICK_TRANSLATE
                 ) null else currentState.quickTranslateTargetLanguageOverride,
                 quickTranslateDetectedLanguageOverride = if (
@@ -98,15 +96,14 @@ fun MainState.canSwapLanguages(context: SwapLanguagesContext = SwapLanguagesCont
         (quickTranslateSourceLanguageOverride != null || quickTranslateTargetLanguageOverride != null)
     ) return false
     val target = if (context == SwapLanguagesContext.QUICK_TRANSLATE) {
-        quickTranslateTargetLanguageOverride ?: targetLanguage
+        resolvedQuickTranslateTargetLanguage
     } else {
         targetLanguage
     }
     val source = if (context == SwapLanguagesContext.QUICK_TRANSLATE) {
-        val quickSource = quickTranslateSourceLanguageOverride ?: sourceLanguage
+        val quickSource = resolvedQuickTranslateSourceLanguage
         quickSource.takeIf { it != LanguageCode.AUTO }
-            ?: quickTranslateDetectedLanguageOverride
-            ?: detectedSourceLanguage.takeIf { quickTranslateSourceLanguageOverride == null }
+            ?: resolvedQuickTranslateDetectedSourceLanguage
     } else {
         sourceLanguage.takeIf { it != LanguageCode.AUTO } ?: detectedSourceLanguage
     }
