@@ -572,7 +572,7 @@ class MainAppFrame(
         onShiftTapStarted = { requestId -> showSelectionTranslationProgress(requestId) },
         onSelectionCaptureFailed = { failure, requestId, isShift ->
             runOnUi {
-                if (!isShift || shiftProgressRequestId == requestId) {
+                if (!isShift || shiftProgressRequestId == null || shiftProgressRequestId == requestId) {
                     shiftProgressRequestId = null
                     val message = when (failure) {
                         SelectionCaptureFailure.NO_TEXT -> localizer.getString("shift_overlay.no_selection")

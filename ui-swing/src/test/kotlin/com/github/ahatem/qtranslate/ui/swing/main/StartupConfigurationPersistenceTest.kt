@@ -99,7 +99,13 @@ class StartupConfigurationPersistenceTest {
             val disk = StartupMemoryPersistence(initial)
             val persistence = StartupConfigurationPersistence(disk, initial, fixture.startup)
             val result = persistence.reconcileAtLaunch()
-            assertEquals(initial.copy(launchOnSystemStartup = true), result.configuration)
+            assertEquals(
+                initial.copy(
+                    launchOnSystemStartup = true,
+                    launchOnSystemStartupLauncherPath = fixture.launcher.canonicalPath
+                ),
+                result.configuration
+            )
             assertEquals(result.configuration, disk.configuration.value)
             assertNull(result.warning)
             assertEquals(0, fixture.registry.writes)
