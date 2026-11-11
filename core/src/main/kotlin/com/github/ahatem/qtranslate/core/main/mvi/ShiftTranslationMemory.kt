@@ -10,8 +10,7 @@ import java.security.MessageDigest
 internal class ShiftTranslationMemory {
     private data class Replacement(
         val translatedFingerprint: String,
-        val detectedSourceLanguage: LanguageCode,
-        val configuredModelLanguage: LanguageCode
+        val originalLanguage: LanguageCode
     )
 
     private data class PassiveOverlay(
@@ -20,50 +19,25 @@ internal class ShiftTranslationMemory {
         val shownAtMillis: Long
     )
 
-    private var lastReplacement: Replacement? = null
+    @Volatile private var lastReplacement: Replacement? = null
     private var lastPassiveOverlay: PassiveOverlay? = null
 
     fun rememberReplacement(
         translatedText: String,
-        detectedSourceLanguage: LanguageCode,
-        configuredModelLanguage: LanguageCode
+        originalLanguage: LanguageCode
     ) {
         lastReplacement = Replacement(
             translatedFingerprint = fingerprint(translatedText),
-            detectedSourceLanguage = detectedSourceLanguage,
-            configuredModelLanguage = configuredModelLanguage
+            originalLanguage = originalLanguage
         )
     }
 
-    /**
-     * Иностранный текст переводится на язык модели, уточнённый последним исходящим переводом.
-     *
-     * Например, при настройке RU Google может определить исходный кириллический текст как UK.
-     * Тогда и точный результат, и следующий произвольный английский текст должны вернуться в UK.
-     * Если пользователь после этого явно поменял язык модели в настройках, новая настройка имеет
-     * приоритет для произвольного текста; точный предыдущий результат всё ещё возвращается в свой
-     * реальный исходный язык.
-     */
-    /**
-     * @param allowDetectionGuess разрешает подставить язык, определённый в прошлом исходящем
-     *   переводе, вместо [fallback]. Догадка снимается, когда пользователь сам выбрал язык
-     *   входящих переводов: определение ошибается на коротком тексте — русский регулярно
-     *   опознаётся как украинский — и одна такая ошибка иначе закреплялась за всеми дальнейшими
-     *   входящими переводами, перебивая явный выбор.
-     */
-    fun reverseTargetFor(
-        selectedText: String,
-        fallback: LanguageCode,
-        allowDetectionGuess: Boolean = true
-    ): LanguageCode {
+    /** Язык предыдущего перевода относится только к его собственному результату. */
+    fun reverseTargetFor(selectedText: String, fallback: LanguageCode): LanguageCode {
         val replacement = lastReplacement ?: return fallback
-        return when {
-            replacement.translatedFingerprint == fingerprint(selectedText) ->
-                replacement.detectedSourceLanguage
-            allowDetectionGuess && replacement.configuredModelLanguage == fallback ->
-                replacement.detectedSourceLanguage
-            else -> fallback
-        }
+        return if (replacement.translatedFingerprint == fingerprint(selectedText)) {
+            replacement.originalLanguage
+        } else fallback
     }
 
     fun rememberPassiveOverlay(sourceText: String, targetLanguage: LanguageCode, nowMillis: Long) {

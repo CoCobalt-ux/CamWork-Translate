@@ -487,7 +487,7 @@ class MainAppFrame(
         logger = logger,
         onShowApp = { text ->
             mainStore.dispatch(MainIntent.UpdateInputText(text))
-            mainStore.dispatch(MainIntent.Translate(text))
+            mainStore.dispatch(MainIntent.Translate(fromSelection = true))
             runOnUi { showAndFocus() }
         },
         onShowQuickTranslate = { text ->

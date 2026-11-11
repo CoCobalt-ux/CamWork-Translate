@@ -271,6 +271,67 @@ class MainStoreRecoveryTest {
     }
 
     @Test
+    fun `быстрое окно переводит английское выделение на русский с первого запроса`() = runBlocking {
+        withFixture { fixture ->
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.ENGLISH))
+            fixture.store.dispatch(MainIntent.ShowQuickTranslate("Could you help me?"))
+            val pending = fixture.translator.next()
+            assertEquals(LanguageCode.AUTO, pending.request.sourceLanguage)
+            assertEquals(LanguageCode.RUSSIAN, pending.request.targetLanguage)
+            pending.succeed("Не могли бы вы мне помочь?", LanguageCode.ENGLISH)
+            val state = fixture.awaitState { it.translatedText == "Не могли бы вы мне помочь?" && !it.isLoading }
+            assertEquals(LanguageCode.RUSSIAN, state.resolvedQuickTranslateTargetLanguage)
+            assertEquals(LanguageCode.AUTO, state.sourceLanguage)
+            assertEquals(LanguageCode.ENGLISH, state.targetLanguage)
+        }
+    }
+
+    @Test
+    fun `ручной перевод в Авто меняет цель совпавшего языка только для запроса`() = runBlocking {
+        withFixture { fixture ->
+            val text = "Could you help me?"
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.ENGLISH))
+            fixture.translate(text)
+            val first = fixture.translator.next()
+            assertEquals(LanguageCode.ENGLISH, first.request.targetLanguage)
+            first.succeed(text, LanguageCode.ENGLISH)
+            val second = fixture.translator.next()
+            assertEquals(LanguageCode.RUSSIAN, second.request.targetLanguage)
+            second.succeed("Помогите мне, пожалуйста", LanguageCode.ENGLISH)
+            val state = fixture.awaitState { it.translatedText == "Помогите мне, пожалуйста" && !it.isLoading }
+            assertEquals(LanguageCode.RUSSIAN, state.translatedTargetLanguage)
+            assertEquals(LanguageCode.AUTO, state.sourceLanguage)
+            assertEquals(LanguageCode.ENGLISH, state.targetLanguage)
+        }
+    }
+
+    @Test
+    fun `новое выделение в чате использует русский после исходящей замены с определённым украинским`() = runBlocking {
+        withFixture(consumeEvents = false) { fixture ->
+            fixture.store.dispatch(MainIntent.SelectTargetLanguage(LanguageCode.ENGLISH))
+            fixture.store.dispatch(
+                MainIntent.TranslateSelectionAndReplaceFromButton(
+                    selectedText = "Добрий вечір",
+                    capturedAtMillis = System.currentTimeMillis(),
+                    interactionGeneration = 1L
+                )
+            )
+            val outbound = fixture.translator.next()
+            assertEquals(LanguageCode.ENGLISH, outbound.request.targetLanguage)
+            outbound.succeed("Good evening", LanguageCode.UKRAINIAN)
+            withTimeout(10_000) { fixture.store.events.filterIsInstance<MainEvent.PasteTranslation>().first() }
+
+            fixture.store.dispatch(MainIntent.TranslateSelectionFromButton("How are you doing?"))
+            val incoming = fixture.translator.next()
+            assertEquals(LanguageCode.RUSSIAN, incoming.request.targetLanguage)
+            incoming.succeed("Как у вас дела?", LanguageCode.ENGLISH)
+            val state = fixture.awaitState { it.translatedText == "Как у вас дела?" && it.isQuickTranslateDialogPassive }
+            assertEquals(LanguageCode.RUSSIAN, state.resolvedQuickTranslateTargetLanguage)
+            assertEquals(LanguageCode.ENGLISH, state.targetLanguage)
+        }
+    }
+
+    @Test
     fun `правило сохраняет фактическую цель без изменения пользовательского выбора`() = runBlocking {
         withFixture(rules = listOf(TranslationRule("en", "de"))) { fixture ->
             fixture.translate("Hello")
