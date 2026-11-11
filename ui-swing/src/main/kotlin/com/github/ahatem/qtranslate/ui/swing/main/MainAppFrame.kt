@@ -13,6 +13,7 @@ import com.github.ahatem.qtranslate.core.main.mvi.MainEvent
 import com.github.ahatem.qtranslate.core.main.mvi.MainIntent
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
 import com.github.ahatem.qtranslate.core.main.mvi.MainStore
+import com.github.ahatem.qtranslate.core.main.mvi.PasteFeedback
 import com.github.ahatem.qtranslate.core.main.mvi.SelectionTranslationFailureReason
 import com.github.ahatem.qtranslate.core.main.domain.usecase.canSwapLanguages
 import com.github.ahatem.qtranslate.core.main.domain.usecase.SwapLanguagesContext
@@ -132,6 +133,7 @@ class MainAppFrame(
     private var pendingTraySingleClick: javax.swing.Timer? = null
     private var pasteTranslationJob: Job? = null
     private val selectionInteractionGuard = SelectionInteractionGuard()
+    private var shiftProgressRequestId: Long? = null
 
     private val aboutDialog by lazy { InfoDialog(this) }
     private val updateDialog by lazy { UpdateDialog(this) }
@@ -433,8 +435,9 @@ class MainAppFrame(
         }
     )
 
-    private fun showSelectionTranslationProgress() {
+    private fun showSelectionTranslationProgress(shiftRequestId: Long? = null) {
         runOnUi {
+            shiftProgressRequestId = shiftRequestId
             loadingIndicator.showTranslating(
                 message = localizer.getString("shift_overlay.translating"),
                 timeoutMessage = localizer.getString("shift_overlay.too_slow")
@@ -549,12 +552,7 @@ class MainAppFrame(
         onAutoTranslateSelection = { text, requestId ->
             // Внутри CamWork уже есть обычная кнопка Translate; auto-overlay нужен внешним окнам.
             if (!isForegroundWindowOwnedByThisProcess()) {
-                runOnUi {
-                    loadingIndicator.showTranslating(
-                        message = localizer.getString("shift_overlay.translating"),
-                        timeoutMessage = localizer.getString("shift_overlay.too_slow")
-                    )
-                }
+                showSelectionTranslationProgress()
                 mainStore.dispatch(
                     MainIntent.AutoTranslateSelection(selectedText = text, requestId = requestId)
                 )
@@ -583,14 +581,7 @@ class MainAppFrame(
             invalidatePendingSelectionReplacement()
             runOnUi { selectionTranslateButton.dismiss() }
         },
-        onShiftTapStarted = { _ ->
-            runOnUi {
-                loadingIndicator.showTranslating(
-                    message = localizer.getString("shift_overlay.translating"),
-                    timeoutMessage = localizer.getString("shift_overlay.too_slow")
-                )
-            }
-        },
+        onShiftTapStarted = { requestId -> showSelectionTranslationProgress(requestId) },
         onSystemScreenCaptureStarted = {
             mainStore.dispatch(MainIntent.CancelSelectionTranslations)
             pasteTranslationJob?.cancel(CancellationException("System screen capture started"))
@@ -866,6 +857,7 @@ class MainAppFrame(
                         // is looking.
                         val popupPending = popupRequested && !quickTranslateDialog.isVisible
                         val shouldShow = isLoading && (isReplacing || popupPending)
+                        shiftProgressRequestId = null
                         loadingIndicator.render(
                             LoadingIndicatorState(
                                 isVisible = shouldShow,
@@ -948,12 +940,20 @@ class MainAppFrame(
                             text = event.translatedText,
                             expiresAtMillis = event.expiresAtMillis,
                             interactionGeneration = event.interactionGeneration,
-                            onSuccess = {
+                            onPasteSent = {
                                 logger.info(
-                                    "Selection paste completed: requestId=${event.requestId}, " +
+                                    "Отправлена команда вставки: requestId=${event.requestId}, " +
                                         "length=${event.translatedText.length}"
                                 )
-                                if (event.showShiftFeedback) runOnUi {
+                                if (event.feedback == PasteFeedback.ERROR_ONLY) runOnUi {
+                                    if (shiftProgressRequestId == event.requestId) {
+                                        shiftProgressRequestId = null
+                                        loadingIndicator.dismiss(immediately = true)
+                                    }
+                                }
+                            },
+                            onPasteSettled = {
+                                if (event.feedback == PasteFeedback.CONFIRMATION_AND_ERROR) runOnUi {
                                     loadingIndicator.showSuccess(
                                         localizer.getString("shift_overlay.replaced")
                                     )
@@ -964,7 +964,7 @@ class MainAppFrame(
                                     "Selection paste failed: requestId=${event.requestId}, " +
                                         "reason=${SelectionTranslationFailureReason.PASTE}"
                                 )
-                                if (event.showShiftFeedback) runOnUi {
+                                if (event.feedback != PasteFeedback.NONE) runOnUi {
                                     loadingIndicator.showError(
                                         localizer.getString("shift_overlay.paste_failed")
                                     )
@@ -1324,7 +1324,8 @@ class MainAppFrame(
         text: String,
         expiresAtMillis: Long = Long.MAX_VALUE,
         interactionGeneration: Long? = null,
-        onSuccess: () -> Unit = {},
+        onPasteSent: () -> Unit,
+        onPasteSettled: () -> Unit,
         onFailure: (Throwable) -> Unit = {}
     ) {
         val previousPasteJob = pasteTranslationJob
@@ -1359,7 +1360,6 @@ class MainAppFrame(
             val originalClipboard = runCatching { clipboard.getContents(null) }.getOrNull()
             var clipboardOverridden = false
             var translationClipboardGeneration: Long? = null
-            var pasteSent = false
             try {
                 if (globalKeyListener.isSystemScreenCaptureSuppressed()) return@launch
                 clipboard.setContents(StringSelection(text), null)
@@ -1381,7 +1381,7 @@ class MainAppFrame(
                 ) return@launch
                 robot.sendShortcutSafely(pasteModifier, KeyEvent.VK_V)
                 robot.waitForIdle()
-                pasteSent = true
+                onPasteSent()
                 // Большинство Windows-приложений считывают clipboard асинхронно после WM_PASTE.
                 delay(CLIPBOARD_PASTE_SETTLE_MS)
             } catch (cancellation: CancellationException) {
@@ -1416,7 +1416,7 @@ class MainAppFrame(
                     }
                 }
             }
-            if (pasteSent) onSuccess()
+            onPasteSettled()
         }
     }
 

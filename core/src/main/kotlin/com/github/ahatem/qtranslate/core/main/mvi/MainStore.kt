@@ -1354,7 +1354,11 @@ class MainStore(
                             translatedText = translatedText
                         ),
                         expiresAtMillis = expiresAt,
-                        showShiftFeedback = true,
+                        feedback = if (trigger == SelectionTranslationTrigger.SHIFT) {
+                            PasteFeedback.ERROR_ONLY
+                        } else {
+                            PasteFeedback.CONFIRMATION_AND_ERROR
+                        },
                         requestId = ticket.requestId,
                         interactionGeneration = interactionGeneration
                     )

@@ -252,7 +252,7 @@ class MainStoreRecoveryTest {
 
     @Test
     fun `главное окно и Shift не стирают записи друг друга`() = runBlocking {
-        withFixture { fixture ->
+        withFixture(consumeEvents = false) { fixture ->
             fixture.translate("Текст главного окна")
             val main = fixture.translator.next()
             fixture.store.dispatch(MainIntent.TranslateShiftSelection("Текст выделения", requestId = 7_000_000))
@@ -260,6 +260,10 @@ class MainStoreRecoveryTest {
             main.succeed("Main window text")
             fixture.awaitState { it.translatedText == "Main window text" }
             selection.succeed("Selection text")
+            val paste = withTimeout(10_000) { fixture.store.events.filterIsInstance<MainEvent.PasteTranslation>().first() }
+            assertEquals("Selection text", paste.translatedText)
+            assertEquals(7_000_000L, paste.requestId)
+            assertEquals(PasteFeedback.ERROR_ONLY, paste.feedback)
             fixture.awaitState { it.history.size == 3 }
             assertEquals(setOf("Старая запись", "Текст главного окна", "Текст выделения"),
                 fixture.reloadHistoryFromDisk().map { it.inputText }.toSet())
