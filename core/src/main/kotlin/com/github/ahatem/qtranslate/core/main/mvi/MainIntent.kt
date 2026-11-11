@@ -46,8 +46,9 @@ sealed interface MainIntent : UiIntent {
     /**
      * User requested a translation.
      * @property text Optional text override. If `null`, uses [MainState.inputText].
+     * @property fromSelection Перевод запущен для выделения в другом окне.
      */
-    data class Translate(val text: String? = null) : MainIntent
+    data class Translate(val text: String? = null, val fromSelection: Boolean = false) : MainIntent
 
     /**
      * The extra panel's type or option changed, so only its content needs recomputing.

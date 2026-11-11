@@ -10,6 +10,7 @@ import com.github.ahatem.qtranslate.core.settings.data.ActiveService
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.michaelbull.result.Err
 import com.github.michaelbull.result.Result
+import com.github.michaelbull.result.fold
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.ceil
@@ -36,16 +37,19 @@ internal class TranslatorFailover(
     suspend fun translate(
         active: ActiveService<Translator>,
         request: TranslationRequest,
-        totalTimeoutMillis: Long = DEFAULT_TOTAL_DEADLINE_MS
+        totalTimeoutMillis: Long = DEFAULT_TOTAL_DEADLINE_MS,
+        interactive: Boolean = false
     ): TranslationExecution {
         val chain = buildChain(active, request)
+        val shortInteractive = interactive && request.text.length <= INTERACTIVE_MAX_CHARACTERS && chain.size > 1
         val deadlineMillis = monotonicMillis() + totalTimeoutMillis.coerceAtLeast(1L)
         var lastExecution: TranslationExecution? = null
 
         chain.forEachIndexed { index, candidate ->
             if (index > 0) {
+                val failure = lastExecution?.result?.fold(success = { null }, failure = { it.toTranslationFailureKind() })
                 onEvent(
-                    "${lastExecution?.translator?.name ?: active.service.name} недоступен; " +
+                    "${lastExecution?.translator?.name ?: active.service.name} недоступен (причина=$failure); " +
                         "перевод автоматически передан ${candidate.service.name}"
                 )
             }
@@ -58,12 +62,13 @@ internal class TranslatorFailover(
                     Err(ServiceError.TimeoutError("Общий deadline перевода исчерпан."))
                 )
             }
-            val desiredTimeoutMillis = timeoutMillis(candidate.service.key, request.text.length)
-                ?: remainingMillis
+            val desiredTimeoutMillis = if (shortInteractive) INTERACTIVE_ATTEMPT_TIMEOUT_MS
+                else timeoutMillis(candidate.service.key, request.text.length) ?: remainingMillis
             val attemptTimeoutMillis = allocateAttemptTimeout(
                 desiredTimeoutMillis = desiredTimeoutMillis,
                 remainingMillis = remainingMillis,
-                laterCandidates = chain.drop(index + 1)
+                laterCandidates = chain.drop(index + 1),
+                shortInteractive = shortInteractive
             )
             val result = execute(candidate, request, attemptTimeoutMillis)
             val execution = TranslationExecution(candidate.service, candidate.id, result)
@@ -132,12 +137,14 @@ internal class TranslatorFailover(
     private fun allocateAttemptTimeout(
         desiredTimeoutMillis: Long,
         remainingMillis: Long,
-        laterCandidates: List<ActiveService<Translator>>
+        laterCandidates: List<ActiveService<Translator>>,
+        shortInteractive: Boolean
     ): Long {
         if (laterCandidates.isEmpty()) return minOf(desiredTimeoutMillis, remainingMillis).coerceAtLeast(1L)
 
         val desiredReserve = laterCandidates.sumOf { candidate ->
-            minimumAttemptMillis(candidate.service.key) + DEADLINE_HANDOFF_GUARD_MS
+            val attempt = if (shortInteractive) INTERACTIVE_ATTEMPT_TIMEOUT_MS else minimumAttemptMillis(candidate.service.key)
+            attempt + DEADLINE_HANDOFF_GUARD_MS
         }
         val reserve = desiredReserve.coerceAtMost((remainingMillis - 1L).coerceAtLeast(0L))
         return minOf(desiredTimeoutMillis, remainingMillis - reserve).coerceAtLeast(1L)
@@ -211,6 +218,8 @@ internal class TranslatorFailover(
         internal const val DEFAULT_TOTAL_DEADLINE_MS = 30_000L
         internal const val DEADLINE_HANDOFF_GUARD_MS = 100L
         internal const val CUSTOM_PROVIDER_MINIMUM_CHANCE_MS = 5_000L
+        internal const val INTERACTIVE_MAX_CHARACTERS = 800
+        internal const val INTERACTIVE_ATTEMPT_TIMEOUT_MS = 3_000L
 
         private val PROVIDER_ORDER = listOf(
             GOOGLE_TRANSLATOR_KEY,

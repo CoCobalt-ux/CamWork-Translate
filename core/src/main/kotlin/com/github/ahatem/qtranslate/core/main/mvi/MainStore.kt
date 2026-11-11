@@ -327,7 +327,11 @@ class MainStore(
             is MainIntent.Translate -> {
                 instantTranslationCoordinator.markCurrentAsExplicit()
                 val revision = mainRevision.get()
-                scope.launch { if (mainRevision.get() == revision) translateText(intent.text) }
+                scope.launch {
+                    if (mainRevision.get() == revision) {
+                        translateText(intent.text, fromSelection = intent.fromSelection)
+                    }
+                }
             }
 
             MainIntent.RefreshExtraOutput -> scope.launch { refreshExtraOutput() }
@@ -661,28 +665,44 @@ class MainStore(
         }
 
         // Let TranslateTextUseCase own isLoading — it sets it at the start of the job.
-        translateText()
+        translateText(fromSelection = true)
     }
 
     private suspend fun translateText(
         textOverride: String? = null,
-        sameLanguageFallbackTarget: LanguageCode? = null
+        sameLanguageFallbackTarget: LanguageCode? = null,
+        fromSelection: Boolean = false
     ) {
         val revision = mainRevision.get()
         val requestState = _state.value
         if (textOverride != null && textOverride != requestState.inputText) return
+        val config = settingsState.value
+        val modelLanguage = configuredModelLanguage(config)
+        val incomingLanguage = configuredIncomingTargetLanguage(config)
+        val target = if (fromSelection && requestState.sourceLanguage == LanguageCode.AUTO) {
+            when (ShiftSelectionDirectionDetector.detect(requestState.inputText, modelLanguage)) {
+                ShiftSelectionDirection.MODEL_LANGUAGE ->
+                    resolveShiftOutboundTarget(requestState, config, modelLanguage) ?: requestState.targetLanguage
+                ShiftSelectionDirection.FOREIGN_LANGUAGE ->
+                    incomingLanguage ?: shiftTranslationMemory.reverseTargetFor(requestState.inputText, modelLanguage)
+                ShiftSelectionDirection.AMBIGUOUS -> requestState.targetLanguage
+            }
+        } else requestState.targetLanguage
+        val fallback = sameLanguageFallbackTarget ?: incomingLanguage?.takeUnless {
+            AutomaticTranslationTargetPolicy.sameBaseLanguage(it, target)
+        } ?: modelLanguage
         try {
             translateTextUseCase(
-            getState    = { _state.value },
-            updateState = { transform -> _state.update(transform) },
-            onStatusUpdate = ::updateStatusBar,
-            textOverride = textOverride,
-            sameLanguageFallbackTarget = sameLanguageFallbackTarget,
-            isRequestCurrent = {
-                mainRevision.get() == revision && _state.value.inputText == requestState.inputText &&
-                    _state.value.sourceLanguage == requestState.sourceLanguage &&
-                    _state.value.targetLanguage == requestState.targetLanguage
-            }
+                getState = { requestState.copy(targetLanguage = target) },
+                updateState = { transform -> _state.update(transform) },
+                onStatusUpdate = ::updateStatusBar,
+                textOverride = textOverride,
+                sameLanguageFallbackTarget = fallback,
+                isRequestCurrent = {
+                    mainRevision.get() == revision && _state.value.inputText == requestState.inputText &&
+                        _state.value.sourceLanguage == requestState.sourceLanguage &&
+                        _state.value.targetLanguage == requestState.targetLanguage
+                }
             )
         } catch (cancelled: CancellationException) {
             if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelled
@@ -982,11 +1002,14 @@ class MainStore(
      * Язык, выбранный пользователем для входящих переводов, или `null`, если выбора не было и
      * направление следует языку модели.
      */
-    private fun configuredIncomingTargetLanguage(): LanguageCode? {
-        val tag = settingsState.value.incomingTargetLanguage.takeIf { it.isNotBlank() }
-            ?: return null
-        return runCatching { LanguageCode(tag) }.getOrNull()
-    }
+    private fun configuredIncomingTargetLanguage(config: Configuration): LanguageCode? =
+        config.incomingTargetLanguage.takeIf { it.isNotBlank() }
+            ?.let { runCatching { LanguageCode(it) }.getOrNull() }
+            ?.takeUnless { it == LanguageCode.AUTO }
+
+    private fun configuredModelLanguage(config: Configuration): LanguageCode =
+        runCatching { LanguageCode(config.modelLanguage) }.getOrNull()
+            ?.takeUnless { it == LanguageCode.AUTO } ?: LanguageCode.RUSSIAN
 
     private suspend fun handleQuickTranslatePassiveLanguageChange(
         sourceLanguage: LanguageCode?,
@@ -1208,8 +1231,7 @@ class MainStore(
             return
         }
 
-        val modelLanguage = runCatching { LanguageCode(config.modelLanguage) }
-            .getOrDefault(LanguageCode.RUSSIAN)
+        val modelLanguage = configuredModelLanguage(config)
         val direction = ShiftSelectionDirectionDetector.detect(selectedText, modelLanguage)
         val action = resolveSelectionTranslationAction(trigger, mode, direction)
         if (action == SelectionTranslationAction.IGNORE) {
@@ -1248,12 +1270,14 @@ class MainStore(
                 return
             }
         } else {
-            val chosenIncoming = configuredIncomingTargetLanguage()
-            shiftTranslationMemory.reverseTargetFor(
-                selectedText = selectedText,
-                fallback = chosenIncoming ?: modelLanguage,
-                allowDetectionGuess = chosenIncoming == null
-            )
+            configuredIncomingTargetLanguage(config)
+                ?: shiftTranslationMemory.reverseTargetFor(selectedText, modelLanguage)
+        }
+        val fallbackTarget = when {
+            !AutomaticTranslationTargetPolicy.sameBaseLanguage(targetLanguage, modelLanguage) -> modelLanguage
+            trigger != SelectionTranslationTrigger.AUTO_SELECTION && direction == ShiftSelectionDirection.AMBIGUOUS ->
+                resolveShiftOutboundTarget(baseState, config, modelLanguage)
+            else -> null
         }
 
         val wasRecentlyShown = !shouldReplace && shiftTranslationMemory.wasRecentlyShown(
@@ -1296,6 +1320,7 @@ class MainStore(
                     includeExtraOutput = false,
                     // Входящий Shift обязан переводить в язык модели независимо от правил окна.
                     applyTranslationRules = false,
+                    sameLanguageFallbackTarget = fallbackTarget,
                     lane = trigger.translationLane,
                     requestContext = TranslationRequestContext(
                         requestId = ticket.requestId,
@@ -1338,14 +1363,15 @@ class MainStore(
                 true
             },
             onReplace = { translatedText ->
-                // Память исходного RU/UK нужна только после исходящего перевода. Обратный
-                // EN→RU не должен перезаписать её определённым английским языком.
                 if (direction == ShiftSelectionDirection.MODEL_LANGUAGE) {
-                    shiftTranslationMemory.rememberReplacement(
-                        translatedText = translatedText,
-                        detectedSourceLanguage = backgroundState.detectedSourceLanguage ?: modelLanguage,
-                        configuredModelLanguage = modelLanguage
-                    )
+                    val actualTarget = backgroundState.translatedTargetLanguage ?: targetLanguage
+                    val originalLanguage = backgroundState.detectedSourceLanguage?.takeIf {
+                        it == modelLanguage || ShiftSelectionDirectionDetector.detect(selectedText, it) ==
+                            ShiftSelectionDirection.MODEL_LANGUAGE
+                    } ?: modelLanguage
+                    if (!AutomaticTranslationTargetPolicy.sameBaseLanguage(originalLanguage, actualTarget)) {
+                        shiftTranslationMemory.rememberReplacement(translatedText, originalLanguage)
+                    }
                 }
                 _eventChannel.send(
                     MainEvent.PasteTranslation(
@@ -1365,19 +1391,20 @@ class MainStore(
                 )
             },
             onPassiveOverlay = { translatedText ->
+                val actualTarget = backgroundState.translatedTargetLanguage ?: targetLanguage
                 passiveTranslationRevision.incrementAndGet()
                 _state.update {
                     it.copy(
                         inputText = selectedText,
                         translatedText = translatedText,
-                        translatedTargetLanguage = targetLanguage,
+                        translatedTargetLanguage = actualTarget,
                         extraOutputText = "",
                         isLoading = false,
                         isExtraOutputLoading = false,
                         isQuickTranslateDialogPinned = false,
                         isQuickTranslateDialogPassive = true,
                         quickTranslateSourceLanguageOverride = sourceLanguage,
-                        quickTranslateTargetLanguageOverride = targetLanguage,
+                        quickTranslateTargetLanguageOverride = actualTarget,
                         quickTranslateDetectedLanguageOverride = backgroundState.detectedSourceLanguage,
                         isQuickTranslateDialogVisible = true,
                         quickTranslateTriggerCount = it.quickTranslateTriggerCount + 1

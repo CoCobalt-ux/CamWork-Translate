@@ -89,7 +89,6 @@ class TranslateTextUseCase(
                 ensureCurrent()
                 publish { copy(isLoading = true, extraOutputText = "", isExtraOutputLoading = false) }
                 onStatusUpdate(StatusCode.Translating, NotificationType.INFO, false)
-                logger.info("Начат перевод: requestId=${context.requestId}, origin=${context.origin}, символов=${text.length}")
 
                 val config = settingsState.value
                 val rules = if (applyTranslationRules) config.translationRules else emptyList()
@@ -100,7 +99,13 @@ class TranslateTextUseCase(
                 }
                 var actualTarget = initialTarget
                 effectiveTarget = actualTarget
-                var execution = execute(active, TranslationRequest(text, state.sourceLanguage, actualTarget))
+                logger.info(
+                    "Начат перевод: requestId=${context.requestId}, origin=${context.origin}, " +
+                        "source=${state.sourceLanguage.tag}, target=${actualTarget.tag}, символов=${text.length}"
+                )
+                var execution = execute(
+                    active, TranslationRequest(text, state.sourceLanguage, actualTarget), interactive = true
+                )
                 ensureCurrent()
                 if (execution == null) {
                     completion = "timeout"
@@ -115,9 +120,11 @@ class TranslateTextUseCase(
                         detectedLanguage?.let { detected ->
                             val rule = rules.firstOrNull { it.sourceLanguage == detected.tag }
                             if (rule != null) LanguageCode(rule.targetLanguage).takeIf { it != initialTarget }
-                            else AutomaticTranslationTargetPolicy.fallbackForSameDetectedLanguage(
+                            else if (detected == initialTarget || response.translatedText.trim() == text.trim()) {
+                                AutomaticTranslationTargetPolicy.fallbackForSameDetectedLanguage(
                                     detected, initialTarget, sameLanguageFallbackTarget
                                 )
+                            } else null
                         }
                     },
                     failure = { null }
@@ -127,7 +134,8 @@ class TranslateTextUseCase(
                     effectiveTarget = actualTarget
                     execution = execute(
                         ActiveService(execution.translatorId, execution.translator),
-                        TranslationRequest(text, state.sourceLanguage, actualTarget)
+                        TranslationRequest(text, state.sourceLanguage, actualTarget),
+                        interactive = true
                     )
                     ensureCurrent()
                 }
@@ -233,9 +241,15 @@ class TranslateTextUseCase(
         }
     }
 
-    private suspend fun execute(active: ActiveService<Translator>, request: TranslationRequest): TranslationExecution? =
+    private suspend fun execute(
+        active: ActiveService<Translator>,
+        request: TranslationRequest,
+        interactive: Boolean = false
+    ): TranslationExecution? =
         withTimeoutOrNull(AppConstants.TRANSLATION_TIMEOUT_MS) {
-            translatorFailover.translate(active, request, totalTimeoutMillis = AppConstants.TRANSLATION_TIMEOUT_MS)
+            translatorFailover.translate(
+                active, request, totalTimeoutMillis = AppConstants.TRANSLATION_TIMEOUT_MS, interactive = interactive
+            )
         }
 
     suspend fun refreshExtraOutput(

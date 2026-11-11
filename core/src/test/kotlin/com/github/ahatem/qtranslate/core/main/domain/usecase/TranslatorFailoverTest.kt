@@ -116,6 +116,36 @@ class TranslatorFailoverTest {
     }
 
     @Test
+    fun `короткая фраза доходит до резерва при двух зависших сервисах`() = runTest {
+        val google = FakeTranslator(
+            key = TranslatorFailover.GOOGLE_TRANSLATOR_KEY,
+            result = Ok(TranslationResponse("Поздний Google")),
+            delayMillis = Long.MAX_VALUE
+        )
+        val bing = FakeTranslator(
+            key = TranslatorFailover.BING_TRANSLATOR_KEY,
+            result = Ok(TranslationResponse("Поздний Bing")),
+            delayMillis = Long.MAX_VALUE
+        )
+        val deepL = FakeTranslator(
+            key = TranslatorFailover.DEEPL_TRANSLATOR_KEY,
+            result = Ok(TranslationResponse("Готовый перевод")),
+            delayMillis = 1_000
+        )
+        val manager = manager(google, bing, deepL)
+        val execution = TranslatorFailover(manager, monotonicMillis = { testScheduler.currentTime }).translate(
+            active = manager.getActive<Translator>(ServiceRole.TRANSLATOR)!!,
+            request = request(),
+            interactive = true
+        )
+
+        assertEquals("deepl", execution.translatorId)
+        assertEquals("Готовый перевод", execution.result.success().translatedText)
+        assertEquals(7_000L, testScheduler.currentTime)
+        assertEquals(listOf(1, 1, 1), listOf(google.calls, bing.calls, deepL.calls))
+    }
+
+    @Test
     fun `длинный Google получает увеличенный deadline перед переходом к Bing`() = runTest {
         val google = FakeTranslator(
             key = TranslatorFailover.GOOGLE_TRANSLATOR_KEY,
@@ -131,7 +161,8 @@ class TranslatorFailoverTest {
 
         val execution = TranslatorFailover(manager).translate(
             manager.getActive<Translator>(ServiceRole.TRANSLATOR)!!,
-            longRequest
+            longRequest,
+            interactive = true
         )
 
         val expectedGoogleDeadline = TranslatorFailover.GOOGLE_BASE_TIMEOUT_MS +

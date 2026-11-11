@@ -12,8 +12,7 @@ class ShiftTranslationMemoryTest {
         val memory = ShiftTranslationMemory()
         memory.rememberReplacement(
             "Good morning!",
-            detectedSourceLanguage = LanguageCode.UKRAINIAN,
-            configuredModelLanguage = LanguageCode.RUSSIAN
+            originalLanguage = LanguageCode.UKRAINIAN
         )
 
         assertEquals(
@@ -23,38 +22,16 @@ class ShiftTranslationMemoryTest {
     }
 
     @Test
-    fun `произвольный английский текст возвращается в определённый украинский`() {
+    fun `новое английское сообщение переводится на язык модели после украинского исходящего`() {
         val memory = ShiftTranslationMemory()
         memory.rememberReplacement(
             "Good morning!",
-            detectedSourceLanguage = LanguageCode.UKRAINIAN,
-            configuredModelLanguage = LanguageCode.RUSSIAN
-        )
-
-        assertEquals(
-            LanguageCode.UKRAINIAN,
-            memory.reverseTargetFor("How are you?", LanguageCode.RUSSIAN)
-        )
-    }
-
-    @Test
-    fun `выбранный язык входящих переводов не перебивается ошибочным определением`() {
-        val memory = ShiftTranslationMemory()
-        // Google регулярно принимает короткий русский за украинский. Раньше одна такая ошибка
-        // закреплялась и уводила все последующие входящие переводы в украинский.
-        memory.rememberReplacement(
-            "Good morning!",
-            detectedSourceLanguage = LanguageCode.UKRAINIAN,
-            configuredModelLanguage = LanguageCode.RUSSIAN
+            originalLanguage = LanguageCode.UKRAINIAN
         )
 
         assertEquals(
             LanguageCode.RUSSIAN,
-            memory.reverseTargetFor(
-                selectedText = "How are you?",
-                fallback = LanguageCode.RUSSIAN,
-                allowDetectionGuess = false
-            )
+            memory.reverseTargetFor("How are you?", LanguageCode.RUSSIAN)
         )
     }
 
@@ -63,8 +40,7 @@ class ShiftTranslationMemoryTest {
         val memory = ShiftTranslationMemory()
         memory.rememberReplacement(
             "Good morning!",
-            detectedSourceLanguage = LanguageCode.RUSSIAN,
-            configuredModelLanguage = LanguageCode.RUSSIAN
+            originalLanguage = LanguageCode.RUSSIAN
         )
 
         assertEquals(

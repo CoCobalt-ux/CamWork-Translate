@@ -18,6 +18,6 @@ internal object AutomaticTranslationTargetPolicy {
         return fallback
     }
 
-    private fun sameBaseLanguage(first: LanguageCode, second: LanguageCode): Boolean =
+    fun sameBaseLanguage(first: LanguageCode, second: LanguageCode): Boolean =
         first.tag.substringBefore('-').equals(second.tag.substringBefore('-'), ignoreCase = true)
 }
