@@ -1,7 +1,7 @@
 {
   "id": "google-services",
   "name": "Google Services",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "author": "Ahmed Hatem",
   "description": "Provides Translation, Text-to-Speech, and OCR using Google APIs.",
   "minApiVersion": "2.1.0",

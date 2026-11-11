@@ -162,7 +162,7 @@ sealed interface MainIntent : UiIntent {
      * User triggered quick translate (e.g. via global hotkey with text selected).
      * @property selectedText The text that was selected at the time of the hotkey press.
      */
-    data class ShowQuickTranslate(val selectedText: String) : MainIntent
+    data class ShowQuickTranslate(val selectedText: String, val requestId: Long = 0L) : MainIntent
 
     /**
      * Короткий Shift после выделения: направление определяется локально, без второго

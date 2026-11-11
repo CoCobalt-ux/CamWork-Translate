@@ -12,6 +12,7 @@ import com.sun.jna.platform.win32.WinReg
 import com.sun.jna.Pointer
 import com.sun.jna.ptr.IntByReference
 import java.io.File
+import java.nio.file.Files
 
 /** Автозапуск относится к текущему пользователю; решение Windows об отключении не переписывается. */
 internal object SystemStartupRegistration : StartupRegistration by WindowsStartupRegistration(
@@ -43,7 +44,8 @@ internal data class StartupInspection(
     val enabled: Boolean = false,
     val registeredForThisLauncher: Boolean = false,
     val registeredElsewhere: Boolean = false,
-    val failure: StartupFailure? = null
+    val failure: StartupFailure? = null,
+    val launcherPath: String? = null
 )
 
 internal data class StartupCommand(val value: String, val expandable: Boolean = false)
@@ -51,13 +53,14 @@ internal data class StartupCommand(val value: String, val expandable: Boolean = 
 internal data class StartupMutation(
     val previousCommand: StartupCommand?,
     val appliedCommand: StartupCommand?,
-    val changed: Boolean
+    val changed: Boolean,
+    val launcherPath: String? = null
 )
 
 internal interface StartupRegistration {
     fun availabilityFailure(): StartupFailure?
     fun inspect(): StartupInspection
-    fun change(enabled: Boolean): Result<StartupMutation, StartupFailure>
+    fun change(enabled: Boolean, confirmedPreviousLauncher: String? = null): Result<StartupMutation, StartupFailure>
     fun rollback(mutation: StartupMutation): StartupFailure?
 }
 
@@ -93,7 +96,8 @@ internal class WindowsStartupRegistration(
                 StartupInspection(
                     enabled = failure == null,
                     registeredForThisLauncher = true,
-                    failure = failure
+                    failure = failure,
+                    launcherPath = currentLauncher.canonicalPath.takeIf { failure == null }
                 )
             }
         } catch (_: Exception) {
@@ -101,7 +105,10 @@ internal class WindowsStartupRegistration(
         }
     }
 
-    override fun change(enabled: Boolean): Result<StartupMutation, StartupFailure> {
+    override fun change(
+        enabled: Boolean,
+        confirmedPreviousLauncher: String?
+    ): Result<StartupMutation, StartupFailure> {
         availabilityFailure()?.let { failure ->
             // Отсутствующий нативный launcher не даёт права стирать запись установленной копии.
             return if (enabled) Err(failure) else Ok(StartupMutation(null, null, changed = false))
@@ -110,6 +117,11 @@ internal class WindowsStartupRegistration(
         return try {
             val currentLauncher = launcher() ?: return Err(StartupFailure.NO_LAUNCHER)
             val previous = registry.readCommand()
+            if (confirmedPreviousLauncher != null &&
+                (previous == null || !isStaleLauncher(previous, currentLauncher, confirmedPreviousLauncher))
+            ) {
+                return Ok(StartupMutation(previous, previous, changed = false))
+            }
             val desired = if (enabled) {
                 approvalFailure()?.let { return Err(it) }
                 StartupCommand("\"${currentLauncher.canonicalPath}\"").also {
@@ -122,9 +134,15 @@ internal class WindowsStartupRegistration(
                 }
                 null
             }
-            val prepared = StartupMutation(previous, desired, previous != desired)
+            val prepared = StartupMutation(
+                previous, desired, previous != desired,
+                launcherPath = currentLauncher.canonicalPath.takeIf { enabled }
+            )
             mutation = prepared
             if (prepared.changed) {
+                if (confirmedPreviousLauncher != null && registry.readCommand() != previous) {
+                    return Err(StartupFailure.VERIFICATION_FAILED)
+                }
                 writeOrDelete(desired)
             }
             val failure = when {
@@ -175,17 +193,28 @@ internal class WindowsStartupRegistration(
         }
     }
 
-    private fun belongsTo(command: String, currentLauncher: File): Boolean {
+    private fun isStaleLauncher(command: StartupCommand, currentLauncher: File, confirmedPath: String): Boolean {
+        val previousLauncher = executableIn(command.value) ?: return false
+        return !command.expandable && previousLauncher.isAbsolute &&
+            previousLauncher.name.equals(currentLauncher.name, ignoreCase = true) &&
+            previousLauncher.canonicalPath.equals(confirmedPath, ignoreCase = true) &&
+            !belongsTo(command.value, currentLauncher) && Files.notExists(previousLauncher.toPath())
+    }
+
+    private fun belongsTo(command: String, currentLauncher: File): Boolean =
+        executableIn(command)?.canonicalPath?.equals(currentLauncher.canonicalPath, ignoreCase = true) == true
+
+    private fun executableIn(command: String): File? {
         val trimmed = command.trim()
         val executable = if (trimmed.startsWith('"')) {
             val end = trimmed.indexOf('"', startIndex = 1)
-            if (end <= 1) return false
+            if (end <= 1) return null
             trimmed.substring(1, end)
         } else {
             // Старые записи без кавычек принимаются только целиком либо как простой путь без пробелов.
             if (File(trimmed).isFile) trimmed else trimmed.substringBefore(' ')
         }
-        return File(executable).canonicalPath.equals(currentLauncher.canonicalPath, ignoreCase = true)
+        return executable.takeIf(String::isNotBlank)?.let(::File)
     }
 }
 

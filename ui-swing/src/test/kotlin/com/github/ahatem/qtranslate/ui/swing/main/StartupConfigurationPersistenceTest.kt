@@ -99,7 +99,13 @@ class StartupConfigurationPersistenceTest {
             val disk = StartupMemoryPersistence(initial)
             val persistence = StartupConfigurationPersistence(disk, initial, fixture.startup)
             val result = persistence.reconcileAtLaunch()
-            assertEquals(initial.copy(launchOnSystemStartup = true), result.configuration)
+            assertEquals(
+                initial.copy(
+                    launchOnSystemStartup = true,
+                    launchOnSystemStartupLauncherPath = fixture.launcher.canonicalPath
+                ),
+                result.configuration
+            )
             assertEquals(result.configuration, disk.configuration.value)
             assertNull(result.warning)
             assertEquals(0, fixture.registry.writes)
@@ -140,6 +146,48 @@ class StartupConfigurationPersistenceTest {
             assertFalse(disk.configuration.value.launchOnSystemStartup)
             fixture.registry.approval = startupApproval(2)
             assertTrue(persistence.updateConfiguration(result.configuration.copy(launchOnSystemStartup = true)).isOk)
+        }
+    }
+
+    @Test
+    fun `при переносе восстанавливается ранее подтверждённый отсутствующий launcher`() = runBlocking {
+        StartupTestFixture().use { fixture ->
+            val oldLauncher = fixture.launcher.parentFile.resolve("старая версия").resolve(fixture.launcher.name)
+            fixture.registry.command = StartupCommand("\"${oldLauncher.canonicalPath}\"")
+            val saved = Configuration.DEFAULT.copy(
+                launchOnSystemStartup = true,
+                launchOnSystemStartupLauncherPath = oldLauncher.canonicalPath
+            )
+            val disk = StartupMemoryPersistence(saved)
+            val persistence = StartupConfigurationPersistence(disk, saved, fixture.startup)
+            val result = persistence.reconcileAtLaunch()
+
+            assertTrue(result.configuration.launchOnSystemStartup)
+            assertEquals(fixture.launcher.canonicalPath, result.configuration.launchOnSystemStartupLauncherPath)
+            assertEquals(fixture.command, fixture.registry.command)
+            assertEquals(1, fixture.registry.writes)
+            assertEquals(null, result.warning)
+        }
+    }
+
+    @Test
+    fun `запрет Windows блокирует ремонт подтверждённой записи`() = runBlocking {
+        StartupTestFixture().use { fixture ->
+            val oldLauncher = fixture.launcher.parentFile.resolve("старая версия").resolve(fixture.launcher.name)
+            val oldCommand = StartupCommand("\"${oldLauncher.canonicalPath}\"")
+            fixture.registry.command = oldCommand
+            fixture.registry.approval = ByteArray(12).apply { this[0] = 3 }
+            val saved = Configuration.DEFAULT.copy(
+                launchOnSystemStartup = true,
+                launchOnSystemStartupLauncherPath = oldLauncher.canonicalPath
+            )
+            val persistence = StartupConfigurationPersistence(StartupMemoryPersistence(saved), saved, fixture.startup)
+
+            val result = persistence.reconcileAtLaunch()
+            assertFalse(result.configuration.launchOnSystemStartup)
+            assertEquals(StartupFailure.DISABLED_BY_WINDOWS.message, result.warning)
+            assertEquals(oldCommand, fixture.registry.command)
+            assertEquals(0, fixture.registry.writes)
         }
     }
 

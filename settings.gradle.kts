@@ -20,6 +20,7 @@ include("app")
 
 include("plugins:common")
 include("plugins:google-services")
+include("plugins:system-services")
 include("plugins:bing-services")
 include("plugins:ai-services")
 include("plugins:mozhi-services")

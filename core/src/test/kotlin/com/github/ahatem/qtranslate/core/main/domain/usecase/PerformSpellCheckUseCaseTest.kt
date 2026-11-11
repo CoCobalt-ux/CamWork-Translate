@@ -1,9 +1,11 @@
 package com.github.ahatem.qtranslate.core.main.domain.usecase
 
 import com.github.ahatem.qtranslate.api.core.Logger
+import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.api.plugin.Service
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
+import com.github.ahatem.qtranslate.api.plugin.ServiceRole
 import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.api.spellchecker.Correction
 import com.github.ahatem.qtranslate.api.spellchecker.SpellCheckRequest
@@ -100,18 +102,56 @@ class PerformSpellCheckUseCaseTest {
         assertEquals(listOf(Notice(StatusCode.SpellCheckRateLimited(30), NotificationType.INFO)), fixture.notices)
     }
 
-    private class Fixture(checker: Checker) {
+    @Test
+    fun `системный словарь получает определённый язык а при отсутствии словаря соблюдается пауза сети`() = runTest {
+        val systemId = "system-services:default:system-spell-checker"
+        val googleId = "google-services:default:google-spell-checker"
+        val russian = LanguageCode("ru")
+        val system = Checker(SupportedLanguages.Specific(setOf(russian))) { request ->
+            assertEquals(russian, request.language)
+            Ok(SpellCheckResponse(request.text, emptyList()))
+        }
+        val online = Checker { Err(ServiceError.RateLimitError("Лимит", retryAfterSeconds = 30)) }
+        val defaults = Configuration.DEFAULT
+        val preset = requireNotNull(defaults.getActivePreset())
+        val config = defaults.copy(
+            servicePresets = listOf(preset.copy(
+                selectedServices = preset.selectedServices + (ServiceRole.SPELL_CHECKER to systemId)
+            ))
+        )
+        val fixture = Fixture(system, config)
+        fixture.services.value = mapOf(systemId to system, googleId to online)
+
+        fixture.check("Тест", detected = russian)
+        assertEquals(1, system.calls)
+        assertEquals(0, online.calls)
+        repeat(2) { fixture.check("Hello", source = LanguageCode("en")) }
+        assertEquals(1, system.calls)
+        assertEquals(1, online.calls)
+        assertEquals(listOf(Notice(StatusCode.SpellCheckRateLimited(30), NotificationType.INFO)), fixture.notices)
+    }
+
+    private class Fixture(checker: Checker, config: Configuration = Configuration.DEFAULT) {
         var now = 0L
         val services = MutableStateFlow<Map<String, Service>>(mapOf("основной" to checker))
         val notices = mutableListOf<Notice>()
         private val useCase = PerformSpellCheckUseCase(
-            ActiveServiceManager(services, MutableStateFlow(Configuration.DEFAULT)),
+            ActiveServiceManager(services, MutableStateFlow(config)),
             SilentLoggerFactory,
             clockMillis = { now }
         )
 
-        suspend fun check(text: String, requestedByUser: Boolean = false): List<Correction> =
-            useCase(MainState(inputText = text), text, requestedByUser) { code, type, _ ->
+        suspend fun check(
+            text: String,
+            requestedByUser: Boolean = false,
+            source: LanguageCode = LanguageCode.AUTO,
+            detected: LanguageCode? = null
+        ): List<Correction> =
+            useCase(
+                MainState(inputText = text, sourceLanguage = source, detectedSourceLanguage = detected),
+                text,
+                requestedByUser
+            ) { code, type, _ ->
                 notices.add(Notice(code, type))
             }
     }
@@ -119,12 +159,12 @@ class PerformSpellCheckUseCaseTest {
     private data class Notice(val code: StatusCode, val type: NotificationType)
 
     private class Checker(
+        override val supportedLanguages: SupportedLanguages = SupportedLanguages.All,
         var reply: suspend (SpellCheckRequest) -> Result<SpellCheckResponse, ServiceError>
     ) : SpellChecker {
         override val key = "test-checker"
         override val name = "Тестовый сервис орфографии"
         override val version = "1"
-        override val supportedLanguages = SupportedLanguages.All
         var calls = 0
             private set
 

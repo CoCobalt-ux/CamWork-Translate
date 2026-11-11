@@ -46,11 +46,22 @@ class StartupConfigurationPersistence internal constructor(
     suspend fun reconcileAtLaunch(): StartupReconciliation = withContext(Dispatchers.IO) {
         mutex.withLock {
             val saved = initialConfiguration
-            val inspection = startup.inspect()
-            // Отсутствующую запись нельзя отличить от явного отключения вне приложения.
-            // При запуске читаем Windows; создаём Run только по новому подтверждению пользователя.
-            val failure = inspection.failure ?: StartupFailure.MISSING_ENTRY
-            val resolved = saved.copy(launchOnSystemStartup = inspection.enabled)
+            var inspection = startup.inspect()
+            var repairFailure: StartupFailure? = null
+            val previousLauncher = saved.launchOnSystemStartupLauncherPath
+            if (saved.launchOnSystemStartup && inspection.registeredElsewhere && previousLauncher != null) {
+                startup.change(enabled = true, confirmedPreviousLauncher = previousLauncher).fold(
+                    success = { if (it.changed) inspection = startup.inspect() },
+                    failure = { repairFailure = it }
+                )
+            }
+            // Удалённая запись Run может означать решение пользователя. Восстанавливаем
+            // только существующую запись CamWork с путём к отсутствующему файлу.
+            val failure = repairFailure ?: inspection.failure ?: StartupFailure.MISSING_ENTRY
+            val resolved = saved.copy(
+                launchOnSystemStartup = inspection.enabled,
+                launchOnSystemStartupLauncherPath = inspection.launcherPath
+            )
             var warning = if (saved.launchOnSystemStartup && !inspection.enabled) failure?.message else null
             if (resolved != saved) {
                 // Это синхронизация фактического состояния, а не просьба удалить отключённую Run-запись.
@@ -98,10 +109,11 @@ class StartupConfigurationPersistence internal constructor(
                 // Закрытие диалога не должно разорвать запись конфигурации после изменения Windows.
                 withContext(NonCancellable) {
                     try {
-                        val persisted = persistBounded(config)
+                        val verified = config.copy(launchOnSystemStartupLauncherPath = mutation.launcherPath)
+                        val persisted = persistBounded(verified)
                         persisted.fold(
                             success = {
-                                initialConfiguration = config
+                                initialConfiguration = verified
                                 reconciledStartup.value = null
                                 Ok(Unit)
                             },
