@@ -72,32 +72,25 @@ class SettingsStore(
     // Repository observation
     // -------------------------------------------------------------------------
 
-    /**
-     * Observes configuration changes from the repository and syncs the store state.
-     *
-     * The working copy is only updated when the user has no unsaved changes ([isDirty] = false).
-     * This handles external updates (e.g. config file edited outside the app, or another
-     * coroutine updating the repository directly).
-     */
+    /** Обновляет сохранённую конфигурацию и сохраняет незаписанный черновик пользователя. */
     private fun observeRepositoryChanges() {
         scope.launch {
             settingsRepository.configuration
                 .distinctUntilChanged()
                 .collect { persisted ->
-                    val normalized = persisted.normalizeHotkeyScopes()
-                    _state.update { current ->
-                        current.copy(
-                            originalConfiguration = normalized,
-                            workingConfiguration = if (!current.isDirty) {
-                                logger.debug("Syncing working config from repository")
-                                normalized
-                            } else {
-                                logger.debug("Preserving working config — user has unsaved changes")
-                                current.workingConfiguration
-                            },
-                            isDirty = if (!current.isDirty) false
-                            else current.workingConfiguration != normalized
-                        )
+                    saveMutex.withLock {
+                        if (persisted.normalizeHotkeyScopes() == _state.value.originalConfiguration) return@withLock
+
+                        // Событие может прийти после более новой записи. Читаем свежий снимок между сохранениями.
+                        val latest = settingsRepository.configuration.first().normalizeHotkeyScopes()
+                        _state.update { current ->
+                            val working = if (current.isDirty) current.workingConfiguration else latest
+                            current.copy(
+                                originalConfiguration = latest,
+                                workingConfiguration = working,
+                                isDirty = working != latest
+                            )
+                        }
                     }
                 }
         }
