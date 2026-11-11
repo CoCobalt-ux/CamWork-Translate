@@ -321,7 +321,7 @@ class MainStore(
             is MainIntent.TranslateDocument -> startDocumentTranslation(intent)
             MainIntent.CancelDocumentTranslation -> cancelDocumentTranslation()
             MainIntent.PerformSpellCheck -> scope.launch {
-                handleSpellCheck(_state.value.inputText, isEnabled = true)
+                handleSpellCheck(_state.value.inputText, isEnabled = true, requestedByUser = true)
             }
 
             is MainIntent.Translate -> {
@@ -738,22 +738,31 @@ class MainStore(
         )
     }
 
-    private suspend fun handleSpellCheck(text: String, isEnabled: Boolean) {
+    private suspend fun handleSpellCheck(text: String, isEnabled: Boolean, requestedByUser: Boolean = false) {
+        val requestState = _state.value
+        if (requestState.inputText != text) return
         val revision = spellRevision.incrementAndGet()
-        val source = _state.value.sourceLanguage
+        fun MainState.isCurrentCheck(): Boolean =
+            spellRevision.get() == revision && inputText == text && sourceLanguage == requestState.sourceLanguage &&
+                (requestedByUser || settingsState.value.isSpellCheckingEnabled == isEnabled)
+
         val corrections = try {
             if (isEnabled && text.isNotBlank()) performSpellCheckUseCase(
-                currentState = _state.value, text = text, onStatusUpdate = ::updateStatusBar
-            ) else emptyList()
+                currentState = requestState, text = text, requestedByUser = requestedByUser
+            ) { code, type, isTemporary ->
+                if (_state.value.isCurrentCheck()) updateStatusBar(code, type, isTemporary)
+            } else emptyList()
         } catch (cancelled: CancellationException) {
             if (!kotlinx.coroutines.currentCoroutineContext().isActive) throw cancelled
             emptyList()
         } catch (error: Exception) {
-            updateStatusBar(StatusCode.SpellCheckFailed(error.shortSummary()), NotificationType.WARNING, true)
+            if (_state.value.isCurrentCheck()) {
+                updateStatusBar(StatusCode.SpellCheckFailed(error.shortSummary()), NotificationType.WARNING, true)
+            }
             emptyList()
         }
-        if (spellRevision.get() == revision) _state.update {
-            if (it.inputText == text && it.sourceLanguage == source) it.copy(spellCheckCorrections = corrections) else it
+        _state.update {
+            if (it.isCurrentCheck()) it.copy(spellCheckCorrections = corrections) else it
         }
     }
 

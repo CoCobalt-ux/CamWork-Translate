@@ -75,8 +75,16 @@ class SingleInstanceGuardTest {
             assertTrue(Files.exists(endpoint), "Аварийное завершение должно оставить старый endpoint для проверки восстановления")
 
             SingleInstanceGuard(directory, legacyPort = null, ipcTimeoutMillis = 150).use { replacement ->
-                val result = assertIs<InstanceStartResult.Acquired>(replacement.acquire {})
-                assertTrue(result.focusAvailable)
+                awaitCondition(5, { "ОС не освободила блокировку завершённого владельца" }) {
+                    when (val result = replacement.acquire {}) {
+                        is InstanceStartResult.Acquired -> {
+                            assertTrue(result.focusAvailable)
+                            true
+                        }
+                        is InstanceStartResult.AlreadyRunning -> false
+                        is InstanceStartResult.Failed -> throw result.error
+                    }
+                }
                 assertNotEquals(staleEndpoint, Files.readString(endpoint), "Новый владелец должен публиковать новый endpoint/nonce")
             }
         } finally {
@@ -468,7 +476,9 @@ class SingleInstanceGuardTest {
                 resolvedRoot.fileName.toString().startsWith("camwork-single-instance-test-")) {
                 "Отказ от рекурсивной очистки неожиданного пути $resolvedRoot"
             }
-            assertTrue(resolvedRoot.toFile().deleteRecursively(), "Не удалён собственный временный каталог теста $resolvedRoot")
+            awaitCondition(5, { "Не удалён собственный временный каталог теста $resolvedRoot" }) {
+                resolvedRoot.toFile().deleteRecursively()
+            }
         }
     }
 }

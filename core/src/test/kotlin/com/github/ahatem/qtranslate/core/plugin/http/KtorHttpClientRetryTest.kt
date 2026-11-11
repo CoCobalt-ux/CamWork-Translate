@@ -109,6 +109,27 @@ class KtorHttpClientRetryTest {
     }
 
     @Test
+    fun `Retry After в формате даты отсчитывается от даты ответа`() = runTest {
+        val calls = AtomicInteger()
+        val engine = MockEngine {
+            calls.incrementAndGet()
+            respond(
+                content = "body",
+                status = HttpStatusCode.TooManyRequests,
+                headers = headersOf(
+                    HttpHeaders.Date to listOf("Wed, 11 Nov 2026 12:00:00 GMT"),
+                    HttpHeaders.RetryAfter to listOf("Wed, 11 Nov 2026 12:02:00 GMT")
+                )
+            )
+        }
+        val result = clientOn(engine).use { it.get("https://example.invalid/spell") }
+        val error = result.fold(success = { error("Ожидался HTTP 429") }, failure = { it })
+
+        assertEquals(1, calls.get())
+        assertEquals(120, assertIs<ServiceError.RateLimitError>(error).retryAfterSeconds)
+    }
+
+    @Test
     fun `повтор 429 можно явно включить для неинтерактивного клиента`() = runTest {
         val calls = AtomicInteger()
         val engine = countingEngine(HttpStatusCode.TooManyRequests, calls)

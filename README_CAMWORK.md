@@ -1,4 +1,4 @@
-# CamWork Translate 1.2.11
+# CamWork Translate 1.2.12
 
 Быстрый настольный переводчик для моделей CamWork на Windows 10/11.
 

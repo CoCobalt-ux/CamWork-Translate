@@ -31,6 +31,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.Closeable
 import java.net.SocketTimeoutException
+import java.time.Instant
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import java.util.Base64
 
 /**
@@ -360,9 +364,25 @@ internal class KtorHttpClient(
         if (ownsEngine) engine.close()
     }
 
-    /** Поддерживает числовую форму Retry-After; HTTP-date остаётся без подсказки. */
-    private fun HttpResponse.retryAfterSeconds(): Int? =
-        headers[HttpHeaders.RetryAfter]?.trim()?.toIntOrNull()
+    private fun HttpResponse.retryAfterSeconds(): Int? {
+        val value = headers[HttpHeaders.RetryAfter]?.trim() ?: return null
+        value.toLongOrNull()?.let { seconds ->
+            return seconds.takeIf { it >= 0 }?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
+        }
+
+        val retryAt = parseHttpDate(value) ?: return null
+        // Дата ответа задаёт точку отсчёта, если часы пользователя и сервера расходятся.
+        val reference = headers[HttpHeaders.Date]?.let(::parseHttpDate)
+            ?: Instant.ofEpochMilli(responseTime.timestamp)
+        val millis = (retryAt.toEpochMilli() - reference.toEpochMilli()).coerceAtLeast(0L)
+        return ((millis + 999L) / 1_000L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    private fun parseHttpDate(value: String): Instant? = try {
+        ZonedDateTime.parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
+    } catch (_: DateTimeParseException) {
+        null
+    }
 
     /** Классифицирует транспортный сбой, не перенося URL, query/body или Throwable в логи. */
     private fun <T> transportFailure(
