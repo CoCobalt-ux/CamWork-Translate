@@ -377,8 +377,8 @@ internal class GoogleEndpointRouter(
     }
 
     companion object {
-        internal const val TRANSLATE_T_ENDPOINT = "https://clients5.google.com/translate_a/t"
-        internal const val CHROME_SINGLE_ENDPOINT = "https://clients5.google.com/translate_a/single"
+        internal const val TRANSLATE_T_ENDPOINT = "https://translate.googleapis.com/translate_a/t"
+        internal const val CHROME_SINGLE_ENDPOINT = "https://translate.googleapis.com/translate_a/single"
         internal const val BATCH_EXECUTE_ENDPOINT =
             "https://translate.google.com/_/TranslateWebserverUi/data/batchexecute"
 

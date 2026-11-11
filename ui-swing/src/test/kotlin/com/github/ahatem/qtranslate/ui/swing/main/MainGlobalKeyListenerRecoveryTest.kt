@@ -278,6 +278,22 @@ class MainGlobalKeyListenerRecoveryTest {
         assertFalse(fixture.backend.nativeRegistered)
     }
 
+    @Test
+    fun `горячая клавиша сообщает сбой захвата и открывает следующий перевод`() = runTest {
+        var capturedText = ""
+        val fixture = fixture(capture = { SelectionCaptureSnapshot(capturedText) })
+
+        fixture.listener.dispatchAction(HotkeyAction.SHOW_QUICK_TRANSLATE)
+        runCurrent()
+        assertEquals(listOf(SelectionCaptureFailure.NO_TEXT to 1L), fixture.captureFailures)
+        assertTrue(fixture.quickTranslations.isEmpty())
+
+        capturedText = "Новое выделение"
+        fixture.listener.dispatchAction(HotkeyAction.SHOW_QUICK_TRANSLATE)
+        runCurrent()
+        assertEquals(listOf("Новое выделение" to 2L), fixture.quickTranslations)
+    }
+
     private fun TestScope.fixture(
         capture: suspend () -> SelectionCaptureSnapshot = { SelectionCaptureSnapshot("Выделенный текст") },
         onPointerPressed: (Point) -> Unit = {}
@@ -285,11 +301,14 @@ class MainGlobalKeyListenerRecoveryTest {
         val fixture = Fixture()
         fixture.listener = MainGlobalKeyListener(
             scope = backgroundScope, logger = fixture.logger,
-            onShowApp = {}, onShowQuickTranslate = {}, onShiftTapTranslate = { _, _ -> },
+            onShowApp = {},
+            onShowQuickTranslate = { text, id -> fixture.quickTranslations += text to id },
+            onShiftTapTranslate = { _, _ -> },
             onListenToText = {}, onOpenSnippingTool = {}, onReplaceWithTranslation = {}, onCycleTargetLanguage = {},
             onSelectionDetected = { text, _ -> fixture.buttons += text },
             onAutoTranslateSelection = { text, _ -> fixture.overlays += text },
             onPointerPressed = onPointerPressed,
+            onSelectionCaptureFailed = { reason, id, _ -> fixture.captureFailures += reason to id },
             inputBackend = fixture.backend, recoveryIntervalMillis = 1_000,
             captureSource = SelectionCaptureSource { capture() },
             surfaceReader = SelectionSurfaceReader { _, _ -> SelectionSurfaceDetection(SelectionSurface.READ_ONLY, null, null) }
@@ -302,6 +321,8 @@ class MainGlobalKeyListenerRecoveryTest {
         val logger = TestLogger()
         val buttons = mutableListOf<String>()
         val overlays = mutableListOf<String>()
+        val quickTranslations = mutableListOf<Pair<String, Long>>()
+        val captureFailures = mutableListOf<Pair<SelectionCaptureFailure, Long>>()
         lateinit var listener: MainGlobalKeyListener
     }
 

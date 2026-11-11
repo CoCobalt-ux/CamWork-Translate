@@ -23,14 +23,9 @@ import java.awt.Point
 import java.awt.Robot
 import java.awt.Toolkit
 import java.awt.MouseInfo
-import java.awt.datatransfer.Clipboard
-import java.awt.datatransfer.DataFlavor
-import java.awt.datatransfer.StringSelection
-import java.awt.datatransfer.Transferable
 import java.awt.event.KeyEvent
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
-import java.util.UUID
 
 /**
  * A lone Shift cannot be registered reliably through Keymaster on every platform. It is
@@ -92,7 +87,7 @@ class MainGlobalKeyListener internal constructor(
     private val scope: CoroutineScope,
     private val logger: Logger,
     private val onShowApp: (String) -> Unit,
-    private val onShowQuickTranslate: (String) -> Unit,
+    private val onShowQuickTranslate: (String, Long) -> Unit,
     /** Единый двунаправленный сценарий настраиваемого quick-selection hotkey. */
     private val onShiftTapTranslate: (String, Long) -> Unit,
     private val onListenToText: (String) -> Unit,
@@ -112,6 +107,7 @@ class MainGlobalKeyListener internal constructor(
     private val onKeyPressed: () -> Unit = {},
     /** Вызывается сразу при отпускании короткого Shift, ещё до чтения clipboard. */
     private val onShiftTapStarted: (Long) -> Unit = {},
+    private val onSelectionCaptureFailed: (SelectionCaptureFailure, Long, Boolean) -> Unit = { _, _, _ -> },
     /** Инвалидирует ожидающий перевод/вставку до открытия системного screenshot UI. */
     private val onSystemScreenCaptureStarted: () -> Unit = {},
     private val inputBackend: GlobalInputBackend = SystemGlobalInputBackend(),
@@ -143,7 +139,8 @@ class MainGlobalKeyListener internal constructor(
     private val clipboardMutex = Mutex()
     private val clipboardInterceptionGuard = ClipboardInterceptionGuard()
     private val syntheticCopyModifierGate = SyntheticCopyModifierGate()
-    private var selectionCaptureJob: Job? = null
+    @Volatile private var selectionCaptureJob: Job? = null
+    @Volatile private var manualSelectionCaptureJob: Job? = null
     private val hotkeysEnabled = AtomicBoolean(true)
     // Состояние читается также нативными callbacks; lifecycle-вызовы сериализуются монитором.
     private val initialized = AtomicBoolean(false)
@@ -229,6 +226,7 @@ class MainGlobalKeyListener internal constructor(
 
     private fun resetTransientInputState() {
         selectionCaptureJob?.cancel()
+        manualSelectionCaptureJob?.cancel()
         shiftTapGesture.reset()
         systemScreenCaptureGuard.reset()
         syntheticCopyModifierGate.reset()
@@ -365,7 +363,7 @@ class MainGlobalKeyListener internal constructor(
     fun dispatchAction(action: HotkeyAction) {
         when (action) {
             HotkeyAction.SHOW_QUICK_TRANSLATE ->
-                scope.launch { handleSelectedText(onShowQuickTranslate) }
+                requestManualSelection("quick_popup", onShowQuickTranslate)
             HotkeyAction.LISTEN_TO_TEXT ->
                 scope.launch { handleSelectedText(onListenToText) }
             HotkeyAction.OPEN_OCR ->
@@ -597,24 +595,17 @@ class MainGlobalKeyListener internal constructor(
                 delay(debounce)
                 if (systemScreenCaptureGuard.isSuppressed()) return@launch
 
-                var selectedText = ""
-                var clipboardEvidence: ClipboardSelectionEvidence? = null
-                handleSelectedText(
-                    callback = { selectedText = it },
-                    onClipboardEvidence = { clipboardEvidence = it },
-                    preCopyDelayMs = 0,
-                    requestId = requestId,
-                    origin = "auto_selection"
-                )
-                // handleSelectedText уже вышел из clipboard mutex и восстановил пользовательский
+                val captured = readSelection(requestId, "auto_selection") as? SelectionCaptureResult.Captured
+                    ?: return@launch
+                val selectedText = captured.snapshot.text
+                // Чтение уже вышло из clipboard mutex и восстановило пользовательский
                 // clipboard. Потенциально медленный UI Automation никогда не продлевает перехват.
-                if (selectedText.isBlank()) return@launch
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (systemScreenCaptureGuard.isSuppressed()) return@launch
 
                 // UI Automation ожидает native desktop coordinates, а Swing/JWindow — AWT user
                 // coordinates. На HiDPI это разные системы, поэтому точки намеренно не смешиваются.
-                val detection = selectionSurfaceReader.inspect(nativePointer, clipboardEvidence)
+                val detection = selectionSurfaceReader.inspect(nativePointer, captured.snapshot.evidence)
                 val surface = detection.surface
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 if (systemScreenCaptureGuard.isSuppressed()) return@launch
@@ -624,7 +615,7 @@ class MainGlobalKeyListener internal constructor(
                     isAutoOverlayEnabled = isAutoSelectionActive()
                 )
                 logger.info(
-                        "Selection presentation: surface=$surface, presentation=$presentation, " +
+                        "Selection presentation: requestId=$requestId, surface=$surface, presentation=$presentation, " +
                         "auto=${isAutoSelectionActive()}, accessibility=${detection.accessibility}, " +
                         "win32=${detection.win32}, clipboard=${detection.clipboard}, " +
                         "accessibilityError=${detection.accessibilityError}, " +
@@ -659,17 +650,26 @@ class MainGlobalKeyListener internal constructor(
     /** Обычная комбинация и безопасный modifier-tap запускают один и тот же MVI-сценарий. */
     private fun triggerConfiguredSelectionTranslation() {
         if (!hotkeysEnabled.get() || !shiftTapTranslateEnabled.get()) return
-        // Явный hotkey имеет приоритет над отложенным auto-overlay того же выделения.
+        requestManualSelection("shift", onShiftTapTranslate, isShift = true)
+    }
+
+    @Synchronized
+    private fun requestManualSelection(
+        origin: String,
+        onCaptured: (String, Long) -> Unit,
+        isShift: Boolean = false
+    ) {
         selectionCaptureJob?.cancel()
+        manualSelectionCaptureJob?.cancel()
         val requestId = requestSequence.incrementAndGet()
-        logger.info("Selection request started: requestId=$requestId, origin=shift")
-        onShiftTapStarted(requestId)
-        scope.launch {
-            handleSelectedText(
-                callback = { text -> onShiftTapTranslate(text, requestId) },
-                requestId = requestId,
-                origin = "shift"
-            )
+        logger.info("Selection request started: requestId=$requestId, origin=$origin")
+        if (isShift) onShiftTapStarted(requestId)
+        manualSelectionCaptureJob = scope.launch {
+            when (val result = readSelection(requestId, origin)) {
+                is SelectionCaptureResult.Captured -> onCaptured(result.snapshot.text, requestId)
+                is SelectionCaptureResult.Failed -> onSelectionCaptureFailed(result.reason, requestId, isShift)
+                null -> Unit
+            }
         }
     }
 
@@ -678,187 +678,74 @@ class MainGlobalKeyListener internal constructor(
     /** При включённом global master capture нужен для любой клетки surface×tray матрицы. */
     private fun shouldInspectMouseSelection(): Boolean = hotkeysEnabled.get()
 
-    private suspend fun handleSelectedText(
-        callback: (String) -> Unit,
-        onClipboardEvidence: (ClipboardSelectionEvidence?) -> Unit = {},
-        preCopyDelayMs: Long = HOTKEY_RELEASE_SETTLE_DELAY_MS,
-        requestId: Long = requestSequence.incrementAndGet(),
-        origin: String = "hotkey"
-    ) {
-        val startedAtNanos = System.nanoTime()
-        logger.debug("Selection capture started: requestId=$requestId, origin=$origin")
-        clipboardInterceptionGuard.track { lease ->
-            clipboardMutex.withLock {
-                if (!clipboardInterceptionGuard.isCurrent(lease) || systemScreenCaptureGuard.isSuppressed()) {
-                    return@withLock
-                }
-
-                captureSource?.let { source ->
-                    val captured = source.capture()
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if (clipboardInterceptionGuard.isCurrent(lease) && !systemScreenCaptureGuard.isSuppressed()) {
-                        onClipboardEvidence(captured.evidence)
-                        callback(captured.text)
-                    }
-                    return@withLock
-                }
-
-                val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-                var original: Transferable? = null
-                var ownedClipboardText: String? = null
-                var ownedClipboardGeneration: Long? = null
-
-                try {
-                    // Global hotkey callbacks can arrive while Ctrl/Cmd is still physically held.
-                    // Give the originating key sequence time to finish before synthesizing Copy.
-                    if (preCopyDelayMs > 0) delay(preCopyDelayMs)
-
-                    if (!awaitSafeSyntheticShortcutWindow()) {
-                        logger.warn(
-                            "Selection capture failed: requestId=$requestId, origin=$origin, " +
-                                "reason=modifier_held"
-                        )
-                        callback("")
-                        return@withLock
-                    }
-
-                    // Снимок берётся после ожидания физического Ctrl/Cmd. Если пользователь
-                    // успел выполнить Ctrl+C, именно новый результат будет восстановлен, а не
-                    // старое содержимое, прочитанное до отпускания клавиш.
-                    original = runCatching { clipboard.getContents(null) }.getOrNull()
-
-                    var text: String? = null
-                    var clipboardEvidence: ClipboardSelectionEvidence? = null
-                    for ((attemptIndex, backoffMs) in longArrayOf(50, 90, 140).withIndex()) {
-                        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                        if (!clipboardInterceptionGuard.isCurrent(lease) ||
-                            systemScreenCaptureGuard.isSuppressed()
-                        ) break
-
-                        if (!awaitSafeSyntheticShortcutWindow()) {
-                            logger.warn(
-                                "Selection capture attempt failed: requestId=$requestId, " +
-                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
-                                    "reason=modifier_held"
-                            )
-                            break
-                        }
-
-                        val sentinel = "qtranslate-copy-${UUID.randomUUID()}"
-                        val sentinelWritten = runCatching {
-                            clipboard.setContents(StringSelection(sentinel), null)
-                        }.isSuccess
-                        if (!sentinelWritten) {
-                            logger.warn(
-                                "Selection capture attempt failed: requestId=$requestId, " +
-                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
-                                    "reason=clipboard_busy"
-                            )
-                            delay(backoffMs)
-                            continue
-                        }
-                        val generationAfterSentinel = currentSystemClipboardGeneration()
-                        ownedClipboardText = sentinel.takeIf { sentinelWritten }
-                        ownedClipboardGeneration = generationAfterSentinel
-
-                        if (!simulateCopy()) {
-                            logger.warn(
-                                "Selection capture attempt failed: requestId=$requestId, " +
-                                    "origin=$origin, attempt=${attemptIndex + 1}, " +
-                                    "reason=copy_simulation"
-                            )
-                            break
-                        }
-                        delay(backoffMs)
-
-                        val generationAfterCopy = currentSystemClipboardGeneration()
-                        val candidate = readClipboardText(clipboard)
-                        if (!candidate.isNullOrEmpty() && candidate != sentinel) {
-                            // Exactly one write should have landed since the sentinel: the copy
-                            // this code synthesized. More than one means the user pressed Ctrl+C
-                            // themselves while the clipboard was borrowed, and their text is what
-                            // is on it now. Comparing the text cannot tell the two apart — copying
-                            // the same selection by hand produces the identical string — so the
-                            // ownership claim is dropped instead, which leaves the `finally` below
-                            // with nothing to restore and their copy intact. Restoring the earlier
-                            // snapshot over it is what handed them back stale text on paste.
-                            val onlyOurCopyLanded = generationAfterSentinel == null ||
-                                generationAfterCopy == null ||
-                                generationAfterCopy == generationAfterSentinel + 1
-                            if (!onlyOurCopyLanded) {
-                                logger.debug(
-                                    "Clipboard restore skipped: requestId=$requestId, " +
-                                        "origin=$origin, reason=foreign_write"
-                                )
-                            }
-                            ownedClipboardText = candidate.takeIf { onlyOurCopyLanded }
-                            ownedClipboardGeneration = generationAfterCopy.takeIf { onlyOurCopyLanded }
-                            text = candidate.trim()
-                            clipboardEvidence = inspectClipboardSelectionEvidence(
-                                runCatching { clipboard.getContents(null) }.getOrNull()
-                            )
-                            logger.info(
-                                "Selection capture completed: requestId=$requestId, origin=$origin, " +
-                                    "attempt=${attemptIndex + 1}, length=${text.length}, " +
-                                    "latencyMs=${(System.nanoTime() - startedAtNanos) / NANOS_PER_MILLISECOND}"
-                            )
-                            break
-                        } else {
-                            logger.debug(
-                                "Selection capture attempt empty: requestId=$requestId, " +
-                                    "origin=$origin, attempt=${attemptIndex + 1}"
-                            )
-                        }
-                    }
-
-                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                    if (clipboardInterceptionGuard.isCurrent(lease) &&
-                        !systemScreenCaptureGuard.isSuppressed()
-                    ) {
-                        onClipboardEvidence(clipboardEvidence)
-                        callback(text.orEmpty())
-                        if (text.isNullOrBlank()) {
-                            logger.warn(
-                                "Selection capture failed: requestId=$requestId, origin=$origin, " +
-                                    "reason=empty_selection, attempts=3, " +
-                                    "latencyMs=${(System.nanoTime() - startedAtNanos) / NANOS_PER_MILLISECOND}"
-                            )
-                        }
-                    }
-                } finally {
-                    val expected = ownedClipboardText
-                    val originalSnapshot = original
-                    if (originalSnapshot != null && expected != null) {
-                        clipboardInterceptionGuard.restoreIfAllowed(
-                            lease = lease,
-                            ownsCurrentClipboard = {
-                                ownsTemporaryClipboard(
-                                    expectedText = expected,
-                                    currentText = readClipboardText(clipboard),
-                                    expectedGeneration = ownedClipboardGeneration,
-                                    currentGeneration = currentSystemClipboardGeneration()
-                                )
-                            },
-                            restore = { runCatching { clipboard.setContents(originalSnapshot, null) } }
-                        )
-                    }
-                }
-            }
+    private suspend fun handleSelectedText(callback: (String) -> Unit) {
+        when (val result = readSelection(requestSequence.incrementAndGet(), "hotkey")) {
+            is SelectionCaptureResult.Captured -> callback(result.snapshot.text)
+            is SelectionCaptureResult.Failed -> callback("")
+            null -> Unit
         }
     }
 
-    private fun readClipboardText(clipboard: Clipboard): String? = runCatching {
-        if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
-            clipboard.getData(DataFlavor.stringFlavor).toString()
-        } else {
-            null
+    private suspend fun readSelection(requestId: Long, origin: String): SelectionCaptureResult? {
+        val startedAt = System.nanoTime()
+        logger.debug("Selection capture started: requestId=$requestId, origin=$origin")
+        val result = try {
+            clipboardInterceptionGuard.track { lease ->
+                clipboardMutex.withLock {
+                    if (!clipboardInterceptionGuard.isCurrent(lease) || systemScreenCaptureGuard.isSuppressed()) {
+                        return@withLock null
+                    }
+                    val captured = captureSource?.let { source ->
+                        val snapshot = source.capture()
+                        if (snapshot.text.isBlank()) SelectionCaptureResult.Failed(SelectionCaptureFailure.NO_TEXT)
+                        else SelectionCaptureResult.Captured(snapshot)
+                    } ?: if (awaitSafeSyntheticShortcutWindow()) {
+                        ClipboardSelectionCapture(
+                            clipboard = Toolkit.getDefaultToolkit().systemClipboard,
+                            simulateCopy = ::simulateCopy,
+                            onRestoreFailure = {
+                                logger.warn("Clipboard restore failed: requestId=$requestId, origin=$origin")
+                            }
+                        ).capture(clipboardInterceptionGuard, lease)
+                    } else {
+                        SelectionCaptureResult.Failed(SelectionCaptureFailure.MODIFIER_HELD)
+                    }
+                    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                    captured.takeIf {
+                        clipboardInterceptionGuard.isCurrent(lease) && !systemScreenCaptureGuard.isSuppressed()
+                    }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            logger.recordFailure("чтение выделения", error)
+            SelectionCaptureResult.Failed(SelectionCaptureFailure.CLIPBOARD_UNAVAILABLE)
+        } catch (error: LinkageError) {
+            logger.recordFailure("нативное чтение выделения", error)
+            SelectionCaptureResult.Failed(SelectionCaptureFailure.CLIPBOARD_UNAVAILABLE)
         }
-    }.getOrNull()
+        val latencyMs = (System.nanoTime() - startedAt) / NANOS_PER_MILLISECOND
+        when (result) {
+            is SelectionCaptureResult.Captured -> logger.info(
+                "Selection capture completed: requestId=$requestId, origin=$origin, " +
+                    "length=${result.snapshot.text.length}, latencyMs=$latencyMs"
+            )
+            is SelectionCaptureResult.Failed -> {
+                val message = "Selection capture failed: requestId=$requestId, origin=$origin, " +
+                    "reason=${result.reason.name.lowercase()}, latencyMs=$latencyMs"
+                if (origin == "auto_selection") logger.debug(message) else logger.warn(message)
+            }
+            null -> Unit
+        }
+        return result
+    }
 
     private fun abortClipboardInterceptionForScreenCapture() {
         // Сначала инвалидируем право `finally` на restore, и только затем отменяем Job.
         clipboardInterceptionGuard.invalidateForScreenCapture()
         selectionCaptureJob?.cancel()
+        manualSelectionCaptureJob?.cancel()
     }
 
     /**
@@ -884,8 +771,7 @@ class MainGlobalKeyListener internal constructor(
 
         return runCatching {
             val robot = Robot()
-            // Пауза между Ctrl и C расширяла окно гонки с физическим Shift. Очередь Robot
-            // сохраняет порядок событий и без неё, а чтение clipboard имеет отдельный backoff.
+            // Готовность результата подтверждает буфер. Очередь Swing здесь ждать не нужно.
             robot.autoDelay = 0
             val copyModifier = if (System.getProperty("os.name").startsWith("Mac", ignoreCase = true)) {
                 KeyEvent.VK_META
@@ -893,7 +779,6 @@ class MainGlobalKeyListener internal constructor(
                 KeyEvent.VK_CONTROL
             }
             robot.sendShortcutSafely(copyModifier, KeyEvent.VK_C)
-            robot.waitForIdle()
             true
         }.onFailure {
             logger.warn("Copy simulation failed: ${it.message}")
@@ -909,9 +794,6 @@ class MainGlobalKeyListener internal constructor(
 
         /** Небольшая пауза отличает завершённое выделение от продолжающегося движения мыши. */
         const val AUTO_SELECTION_DEBOUNCE_MS = 220L
-
-        /** Даёт физически отпустить Ctrl/Meta/Shift перед синтезированным Ctrl+C. */
-        const val HOTKEY_RELEASE_SETTLE_DELAY_MS = 80L
 
         /** Максимальное ожидание удерживаемого модификатора перед безопасным отказом. */
         const val COPY_MODIFIER_RELEASE_TIMEOUT_MS = 650L

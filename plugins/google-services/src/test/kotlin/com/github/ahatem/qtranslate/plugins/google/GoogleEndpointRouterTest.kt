@@ -60,8 +60,24 @@ class GoogleEndpointRouterTest {
 
         assertEquals("Hello", response.translatedText)
         assertEquals("ru", response.detectedLanguage?.tag)
-        assertEquals(listOf(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT), http.calls.map(Call::url))
+        assertEquals(listOf("https://translate.googleapis.com/translate_a/t"), http.calls.map(Call::url))
         assertEquals("dict-chrome-ex", http.calls.single().queryParams["client"])
+    }
+
+    @Test
+    fun `отказ DNS первого маршрута возвращает перевод с резерва в том же запросе`() = runTest {
+        val http = ScriptedHttpClient().apply {
+            enqueue(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, Err(ServiceError.NetworkError("DNS")))
+            enqueue(GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT, Ok(batchResponse()))
+        }
+        val router = router(http, clockMillis = { testScheduler.currentTime })
+
+        val response = router.translate("Привет мир", "auto", "en").success()
+        assertEquals("Hello World", response.translatedText)
+        assertEquals(
+            listOf(GoogleEndpointRouter.TRANSLATE_T_ENDPOINT, GoogleEndpointRouter.BATCH_EXECUTE_ENDPOINT),
+            http.calls.map(Call::url)
+        )
     }
 
     @Test

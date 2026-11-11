@@ -665,13 +665,18 @@ class MainStore(
         }
 
         // Let TranslateTextUseCase own isLoading — it sets it at the start of the job.
-        translateText(fromSelection = true)
+        translateText(
+            fromSelection = true,
+            requestContext = intent.requestId.takeIf { it > 0L }
+                ?.let { TranslationRequestContext(it, "quick_popup") }
+        )
     }
 
     private suspend fun translateText(
         textOverride: String? = null,
         sameLanguageFallbackTarget: LanguageCode? = null,
-        fromSelection: Boolean = false
+        fromSelection: Boolean = false,
+        requestContext: TranslationRequestContext? = null
     ) {
         val revision = mainRevision.get()
         val requestState = _state.value
@@ -698,6 +703,7 @@ class MainStore(
                 onStatusUpdate = ::updateStatusBar,
                 textOverride = textOverride,
                 sameLanguageFallbackTarget = fallback,
+                requestContext = requestContext,
                 isRequestCurrent = {
                     mainRevision.get() == revision && _state.value.inputText == requestState.inputText &&
                         _state.value.sourceLanguage == requestState.sourceLanguage &&

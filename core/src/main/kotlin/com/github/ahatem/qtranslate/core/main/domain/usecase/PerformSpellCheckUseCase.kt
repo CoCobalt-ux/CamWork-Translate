@@ -1,13 +1,19 @@
 package com.github.ahatem.qtranslate.core.main.domain.usecase
 
 import com.github.ahatem.qtranslate.api.core.Logger
+import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.api.plugin.NotificationType
 import com.github.ahatem.qtranslate.api.plugin.ServiceError
 import com.github.ahatem.qtranslate.api.plugin.ServiceRole
+import com.github.ahatem.qtranslate.api.plugin.SupportedLanguages
 import com.github.ahatem.qtranslate.api.spellchecker.Correction
 import com.github.ahatem.qtranslate.api.spellchecker.SpellCheckRequest
 import com.github.ahatem.qtranslate.api.spellchecker.SpellChecker
 import com.github.ahatem.qtranslate.core.main.mvi.MainState
+import com.github.ahatem.qtranslate.core.main.mvi.ShiftSelectionDirection
+import com.github.ahatem.qtranslate.core.main.mvi.ShiftSelectionDirectionDetector
+import com.github.ahatem.qtranslate.core.plugin.registry.ServiceId
+import com.github.ahatem.qtranslate.core.settings.data.ActiveService
 import com.github.ahatem.qtranslate.core.settings.data.ActiveServiceManager
 import com.github.ahatem.qtranslate.core.shared.StatusCode
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
@@ -16,6 +22,7 @@ import com.github.michaelbull.result.fold
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 
 class PerformSpellCheckUseCase(
     private val activeServiceManager: ActiveServiceManager,
@@ -29,6 +36,8 @@ class PerformSpellCheckUseCase(
     private companion object {
         const val SPELL_CHECK_TIMEOUT_MS = 10_000L
         const val DEFAULT_RATE_LIMIT_SECONDS = 60
+        val SYSTEM_SPELL_CHECKER = ServiceId.of("system-services", ServiceId.DEFAULT_INSTANCE, "system-spell-checker")
+        val GOOGLE_SPELL_CHECKER = ServiceId.of("google-services", ServiceId.DEFAULT_INSTANCE, "google-spell-checker")
     }
 
     /** Фоновые проверки пропускаются во время паузы без повторного уведомления. */
@@ -41,7 +50,7 @@ class PerformSpellCheckUseCase(
         if (text.isBlank()) return emptyList()
 
         val outcome = requestMutex.withLock {
-            check(SpellCheckRequest(text, currentState.sourceLanguage), requestedByUser)
+            check(currentState, SpellCheckRequest(text, currentState.sourceLanguage), requestedByUser)
         }
         outcome.status?.let { status ->
             val type = if (status is StatusCode.SpellCheckRateLimited) NotificationType.INFO else NotificationType.WARNING
@@ -50,8 +59,39 @@ class PerformSpellCheckUseCase(
         return outcome.corrections
     }
 
-    private suspend fun check(request: SpellCheckRequest, requestedByUser: Boolean): Outcome {
+    private suspend fun check(state: MainState, request: SpellCheckRequest, requestedByUser: Boolean): Outcome {
         val active = activeServiceManager.getActive<SpellChecker>(ServiceRole.SPELL_CHECKER) ?: return Outcome()
+        if (active.id == SYSTEM_SPELL_CHECKER) {
+            val supported = (active.service.supportedLanguages as? SupportedLanguages.Specific)?.languages.orEmpty()
+            val hint = request.language.takeUnless { it == LanguageCode.AUTO }
+                ?: state.detectedSourceLanguage
+                ?: Locale.getDefault().language.takeIf(String::isNotBlank)?.let(::LanguageCode)
+                    ?.takeUnless {
+                        ShiftSelectionDirectionDetector.detect(request.text, it) == ShiftSelectionDirection.FOREIGN_LANGUAGE
+                    }
+            val language = hint?.let { candidate ->
+                supported.firstOrNull { it.tag.equals(candidate.tag, ignoreCase = true) }
+                    ?: supported.firstOrNull { it.tag.equals(candidate.tag.substringBefore('-'), ignoreCase = true) }
+            }
+            if (language != null) {
+                checkService(active, request.copy(language = language), requestedByUser, local = true)?.let { return it }
+            }
+            val online = activeServiceManager.getAvailable<SpellChecker>(ServiceRole.SPELL_CHECKER)
+                .filterNot { it.id == SYSTEM_SPELL_CHECKER }
+            val fallback = online.firstOrNull { it.id == GOOGLE_SPELL_CHECKER } ?: online.firstOrNull()
+            return fallback?.let { checkService(it, request, requestedByUser) } ?: Outcome(
+                status = if (requestedByUser) StatusCode.SpellCheckFailed("Системный словарь недоступен") else null
+            )
+        }
+        return checkService(active, request, requestedByUser) ?: Outcome()
+    }
+
+    private suspend fun checkService(
+        active: ActiveService<SpellChecker>,
+        request: SpellCheckRequest,
+        requestedByUser: Boolean,
+        local: Boolean = false
+    ): Outcome? {
         val previousPause = pausedUntil[active.id]
         val remaining = previousPause?.minus(clockMillis()) ?: 0L
         if (remaining > 0) {
@@ -63,7 +103,7 @@ class PerformSpellCheckUseCase(
         val result = withTimeoutOrNull(SPELL_CHECK_TIMEOUT_MS) { active.service.check(request) }
         if (result == null) {
             logger.warn("Истекло время проверки орфографии: сервис=${active.id}")
-            return Outcome(status = StatusCode.SpellCheckTimeout)
+            return if (local) null else Outcome(status = StatusCode.SpellCheckTimeout)
         }
 
         return result.fold(
@@ -72,7 +112,10 @@ class PerformSpellCheckUseCase(
                 Outcome(corrections = response.corrections)
             },
             failure = { error ->
-                if (error is ServiceError.RateLimitError) {
+                if (local) {
+                    logger.warn("Системная орфография недоступна: тип=${error::class.simpleName}")
+                    null
+                } else if (error is ServiceError.RateLimitError) {
                     val seconds = error.retryAfterSeconds?.takeIf { it > 0 } ?: DEFAULT_RATE_LIMIT_SECONDS
                     pausedUntil[active.id] = clockMillis() + seconds * 1_000L
                     if (previousPause == null) {

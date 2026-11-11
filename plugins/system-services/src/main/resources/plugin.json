@@ -1,0 +1,9 @@
+{
+  "id": "system-services",
+  "name": "System Spell Checker",
+  "version": "1.0.0",
+  "author": "QTranslate / CamWork Translate",
+  "description": "Offline spell checking using installed Windows dictionaries.",
+  "minApiVersion": "2.1.0",
+  "icon": "assets/system-spell-icon.svg"
+}

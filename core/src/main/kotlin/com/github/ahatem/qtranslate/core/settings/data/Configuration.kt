@@ -302,6 +302,7 @@ data class Configuration(
 
     // ---- General Behaviour ----
     val launchOnSystemStartup: Boolean = false,
+    val launchOnSystemStartupLauncherPath: String? = null,
     val autoCheckForUpdates: Boolean = false,
     val isGlobalHotkeysEnabled: Boolean = true,
     val isShiftTapTranslateEnabled: Boolean = true,

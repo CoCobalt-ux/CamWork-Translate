@@ -490,26 +490,14 @@ class MainAppFrame(
             mainStore.dispatch(MainIntent.Translate(fromSelection = true))
             runOnUi { showAndFocus() }
         },
-        onShowQuickTranslate = { text ->
-            appScope.launch { mainStore.dispatch(MainIntent.ShowQuickTranslate(text)) }
+        onShowQuickTranslate = { text, requestId ->
+            logger.info("Selection presentation: requestId=$requestId, presentation=quick_popup")
+            mainStore.dispatch(MainIntent.ShowQuickTranslate(text, requestId))
         },
         onShiftTapTranslate = { text, requestId ->
-            if (text.isBlank()) {
-                // На macOS пустое выделение почти всегда означает не отсутствие текста, а
-                // отсутствие разрешения: синтетический Cmd+C до чужого окна не доходит, и буфер
-                // остаётся прежним. Сообщение про «нет выделенного текста» отправляло искать
-                // несуществующую ошибку.
-                val missingPermission = !MacAccessibilityPermission.isGranted()
-                mainStore.dispatch(MainIntent.ReportShiftCaptureFailure(requestId))
-                if (missingPermission) runOnUi {
-                    MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
-                }
-            } else {
-                // Только MVI-intent: окно приложения не показывается и фокус остаётся в источнике.
-                mainStore.dispatch(
-                    MainIntent.TranslateShiftSelection(selectedText = text, requestId = requestId)
-                )
-            }
+            mainStore.dispatch(
+                MainIntent.TranslateShiftSelection(selectedText = text, requestId = requestId)
+            )
         },
         onListenToText = { text ->
             mainStore.dispatch(MainIntent.ListenToText(TextSource.Input, text))
@@ -582,6 +570,24 @@ class MainAppFrame(
             runOnUi { selectionTranslateButton.dismiss() }
         },
         onShiftTapStarted = { requestId -> showSelectionTranslationProgress(requestId) },
+        onSelectionCaptureFailed = { failure, requestId, isShift ->
+            runOnUi {
+                if (!isShift || shiftProgressRequestId == requestId) {
+                    shiftProgressRequestId = null
+                    val message = when (failure) {
+                        SelectionCaptureFailure.NO_TEXT -> localizer.getString("shift_overlay.no_selection")
+                        SelectionCaptureFailure.CLIPBOARD_UNAVAILABLE -> localizer.getString("shift_overlay.clipboard_unavailable")
+                        SelectionCaptureFailure.MODIFIER_HELD -> localizer.getString("shift_overlay.modifier_held")
+                        SelectionCaptureFailure.COPY_UNCONFIRMED,
+                        SelectionCaptureFailure.COPY_FAILED -> localizer.getString("shift_overlay.capture_failed")
+                    }
+                    loadingIndicator.showError(message)
+                    if (failure != SelectionCaptureFailure.MODIFIER_HELD && !MacAccessibilityPermission.isGranted()) {
+                        MacAccessibilityPermissionDialog.showIfNeeded(this, localizer)
+                    }
+                }
+            }
+        },
         onSystemScreenCaptureStarted = {
             mainStore.dispatch(MainIntent.CancelSelectionTranslations)
             pasteTranslationJob?.cancel(CancellationException("System screen capture started"))
@@ -771,69 +777,63 @@ class MainAppFrame(
             }
         }
 
-        // Main content and QuickTranslate dialog rendering
-        appScope.launch(handler) {
-            mainStore.state.combine(settingsStore.state) { m, s -> m to s }
-                .distinctUntilChanged()
-                .collect { (mainState, settingsState) ->
-                    val configuredTranslatorId = settingsState.workingConfiguration
-                        .getActivePreset()
-                        ?.selectedServices
-                        ?.get(ServiceRole.TRANSLATOR)
-                    if (configuredTranslatorId == MAIN_MENU_AI_TRANSLATOR_ID) {
-                        val replacementId = mainState
-                            .getAvailableServicesFor(ServiceRole.TRANSLATOR)
-                            .forMainTranslatorMenu()
-                            .preferredMainTranslatorId()
-                        if (replacementId != null) {
-                            settingsStore.dispatch(
-                                SettingsIntent.UpdateServiceInActivePreset(
-                                    ServiceRole.TRANSLATOR,
-                                    replacementId
-                                )
-                            )
-                            return@collect
-                        }
-                    }
-                    withContext(Dispatchers.Swing) {
-                        try {
-                            // Filter available languages by pinned list (Yan's request).
-                            // If pinnedLanguages is empty, show all languages.
-                            val filteredState = run {
-                                val pinned = settingsState.workingConfiguration.pinnedLanguages
-                                if (pinned.isEmpty()) mainState
-                                else mainState.copy(
-                                    availableLanguages = mainState.availableLanguages.filter {
-                                        it.tag == "auto" || it.tag in pinned
-                                    }
-                                )
-                            }
-                            mainContentView.render(filteredState, settingsState)
-
-                            if (mainState.isQuickTranslateDialogVisible || quickTranslateDialog.isVisible) {
-                                val dialogState = mapToQuickTranslateState(
-                                    mainState,
-                                    settingsState.workingConfiguration
-                                )
-                                quickTranslateDialog.render(dialogState)
-                            }
-
-                            if (mainState.isQuickDictionaryVisible || quickDictionaryDialog.isVisible) {
-                                quickDictionaryDialog.render(
-                                    buildQuickDictionaryDialogState(mainState, settingsState.workingConfiguration)
-                                )
-                            }
-
-                            if (mainState.isImageSearchVisible || imageSearchDialog.isVisible) {
-                                imageSearchDialog.render(
-                                    buildImageSearchDialogState(mainState, settingsState.workingConfiguration)
-                                )
-                            }
-                        } catch (e: Exception) {
-                            logger.error("Failed to render UI", e)
-                        }
-                    }
+        // Отрисовка читает состояние в очереди событий Swing вместе с вводом редактора.
+        appScope.observeMainWindowState(mainStore.state, settingsStore.state, handler) { mainState, settingsState ->
+            val configuredTranslatorId = settingsState.workingConfiguration
+                .getActivePreset()
+                ?.selectedServices
+                ?.get(ServiceRole.TRANSLATOR)
+            if (configuredTranslatorId == MAIN_MENU_AI_TRANSLATOR_ID) {
+                val replacementId = mainState
+                    .getAvailableServicesFor(ServiceRole.TRANSLATOR)
+                    .forMainTranslatorMenu()
+                    .preferredMainTranslatorId()
+                if (replacementId != null) {
+                    settingsStore.dispatch(
+                        SettingsIntent.UpdateServiceInActivePreset(
+                            ServiceRole.TRANSLATOR,
+                            replacementId
+                        )
+                    )
+                    return@observeMainWindowState
                 }
+            }
+            try {
+                // Filter available languages by pinned list (Yan's request).
+                // If pinnedLanguages is empty, show all languages.
+                val filteredState = run {
+                    val pinned = settingsState.workingConfiguration.pinnedLanguages
+                    if (pinned.isEmpty()) mainState
+                    else mainState.copy(
+                        availableLanguages = mainState.availableLanguages.filter {
+                            it.tag == "auto" || it.tag in pinned
+                        }
+                    )
+                }
+                mainContentView.render(filteredState, settingsState)
+
+                if (mainState.isQuickTranslateDialogVisible || quickTranslateDialog.isVisible) {
+                    val dialogState = mapToQuickTranslateState(
+                        mainState,
+                        settingsState.workingConfiguration
+                    )
+                    quickTranslateDialog.render(dialogState)
+                }
+
+                if (mainState.isQuickDictionaryVisible || quickDictionaryDialog.isVisible) {
+                    quickDictionaryDialog.render(
+                        buildQuickDictionaryDialogState(mainState, settingsState.workingConfiguration)
+                    )
+                }
+
+                if (mainState.isImageSearchVisible || imageSearchDialog.isVisible) {
+                    imageSearchDialog.render(
+                        buildImageSearchDialogState(mainState, settingsState.workingConfiguration)
+                    )
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to render UI", e)
+            }
         }
 
         // Loading indicator — show when:
@@ -977,6 +977,10 @@ class MainAppFrame(
                             "Selection request failed: requestId=${event.requestId}, " +
                                 "reason=${event.reason}"
                         )
+                        if (shiftProgressRequestId != null && shiftProgressRequestId != event.requestId) {
+                            return@withContext
+                        }
+                        shiftProgressRequestId = null
                         if (event.reason == SelectionTranslationFailureReason.CANCELLED) {
                             loadingIndicator.dismiss()
                         } else {

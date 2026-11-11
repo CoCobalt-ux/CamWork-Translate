@@ -15,8 +15,11 @@ internal fun currentSystemClipboardGeneration(): Long? {
 
     return runCatching {
         ClipboardSequenceUser32.INSTANCE.GetClipboardSequenceNumber().toLong() and UNSIGNED_INT_MASK
-    }.getOrNull()
+    }.getOrNull()?.takeIf { it != 0L }
 }
+
+internal fun nextClipboardGeneration(generation: Long?): Long? =
+    generation?.let { (it + 1L) and UNSIGNED_INT_MASK }
 
 internal fun ownsTemporaryClipboard(
     expectedText: String,

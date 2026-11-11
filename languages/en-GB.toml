@@ -31,6 +31,9 @@ clear_all = "Clear All"
 auto_detect = "Auto-Detect"
 
 [shift_overlay]
+no_selection = "Select text to translate"
+clipboard_unavailable = "Clipboard unavailable. Try translating again"
+modifier_held = "Release the keys and try translating again"
 replace_selection = "Translate and replace selected text"
 translating = "Translating…"
 replaced = "Translation inserted"
