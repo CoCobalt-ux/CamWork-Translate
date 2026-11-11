@@ -678,6 +678,7 @@ rewrite_ready = "Rewrite ready."
 rewrite_failed = "Rewrite failed: %s"
 # Spell Check
 spell_check_timeout = "Spell check timed out."
+spell_check_rate_limited = "The spell checker is limiting requests. Spell check is paused for %s seconds."
 spell_check_failed = "Spell check failed: %s"
 # Updates
 already_up_to_date = "You are using the latest version (%s)."

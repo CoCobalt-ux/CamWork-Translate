@@ -652,6 +652,7 @@ rewrite_ready = "Перефразирование выполнено."
 rewrite_failed = "Ошибка перефразирования: %s"
 # Spell Check
 spell_check_timeout = "Время проверки орфографии истекло."
+spell_check_rate_limited = "Сервис ограничил запросы. Проверка орфографии приостановлена на %s сек."
 spell_check_failed = "Ошибка проверки орфографии: %s"
 # Updates
 already_up_to_date = "Вы используете последнюю версию (%s)."

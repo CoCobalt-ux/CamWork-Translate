@@ -2600,6 +2600,7 @@ class MainAppFrame(
             StatusCode.RewriteReady                 -> localizer.getString("status_bar.rewrite_ready")
             is StatusCode.RewriteFailed             -> localizer.getString("status_bar.rewrite_failed", code.summary)
             StatusCode.SpellCheckTimeout            -> localizer.getString("status_bar.spell_check_timeout")
+            is StatusCode.SpellCheckRateLimited     -> localizer.getString("status_bar.spell_check_rate_limited", code.seconds)
             is StatusCode.SpellCheckFailed          -> localizer.getString("status_bar.spell_check_failed", code.summary)
             StatusCode.NoWordToLookup               -> localizer.getString("status_bar.no_word_to_lookup")
             StatusCode.NoDictionaryServiceActive    -> localizer.getString("status_bar.no_dictionary_active")

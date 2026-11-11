@@ -17,10 +17,7 @@ import com.github.ahatem.qtranslate.plugins.google.common.GoogleLanguageMapper
 import com.github.ahatem.qtranslate.plugins.google.common.TranslateResponse
 import com.github.michaelbull.result.*
 import com.github.michaelbull.result.coroutines.coroutineBinding
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import java.util.*
+import java.util.Collections
 
 class GoogleSpellCheckerService(
     private val pluginContext: PluginContext,
@@ -32,20 +29,23 @@ class GoogleSpellCheckerService(
 
     override val key: String = "google-spell-checker"
     override val name: String = "Google Spell Checker"
-    override val version: String = "1.0.0"
+    override val version: String = "1.0.1"
     override val iconPath: String = "assets/google-translate-icon.svg"
 
     private val parser = createJsonParser<TranslateResponse>(pluginContext)
 
+    private data class SentenceKey(val language: String, val text: String)
+
     private val cache = Collections.synchronizedMap(object :
-        LinkedHashMap<String, Result<SpellCheckResponse, ServiceError>>(200, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Result<SpellCheckResponse, ServiceError>>?): Boolean {
+        LinkedHashMap<SentenceKey, SpellCheckResponse>(200, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<SentenceKey, SpellCheckResponse>?): Boolean {
             return size > 200
         }
     })
 
     companion object {
         private const val TRANSLATE_PRIMARY = "https://translate.googleapis.com/translate_a/single"
+        private val sentenceSeparator = Regex("(?<=[.?!])\\s*")
     }
 
     override val supportedLanguages: SupportedLanguages = SupportedLanguages.Dynamic
@@ -53,55 +53,41 @@ class GoogleSpellCheckerService(
     override suspend fun fetchSupportedLanguages(): Result<Set<LanguageCode>, ServiceError> =
         languageMapper.getSupportedLanguages()
 
-    override suspend fun check(request: SpellCheckRequest): Result<SpellCheckResponse, ServiceError> = coroutineScope {
+    override suspend fun check(request: SpellCheckRequest): Result<SpellCheckResponse, ServiceError> {
         if (request.text.isBlank()) {
-            return@coroutineScope Ok(SpellCheckResponse(request.text, emptyList()))
+            return Ok(SpellCheckResponse(request.text, emptyList()))
         }
 
-        val sentences = request.text.split(Regex("(?<=[.?!])\\s*")).filter { it.isNotBlank() }
+        val language = languageMapper.toProviderCode(request.language)
+        val allCorrections = mutableListOf<Correction>()
+        val correctedSentences = mutableListOf<String>()
         var currentOffset = 0
 
-        val deferredResults = sentences.map { sentence ->
+        // Первый HTTP 429 останавливает отправку остальных предложений.
+        for (sentence in request.text.split(sentenceSeparator)) {
+            if (sentence.isBlank()) continue
             val sentenceOffset = request.text.indexOf(sentence, currentOffset)
             currentOffset = sentenceOffset + sentence.length
-            async {
-                val cachedResult = cache[sentence]
-                if (cachedResult != null) {
-                    return@async cachedResult to sentenceOffset
-                }
-
-                val result = checkSentence(sentence, request.language)
-                result.onOk {
-                    cache[sentence] = Ok(it)
-                }
-                result to sentenceOffset
+            val key = SentenceKey(language, sentence)
+            val response = cache[key] ?: checkSentence(sentence, language).fold(
+                success = {
+                    cache[key] = it
+                    it
+                },
+                failure = { return Err(it) }
+            )
+            correctedSentences.add(response.correctedText)
+            response.corrections.forEach { correction ->
+                allCorrections.add(
+                    correction.copy(
+                        startIndex = sentenceOffset + correction.startIndex,
+                        endIndex = sentenceOffset + correction.endIndex
+                    )
+                )
             }
         }
 
-        val resultsWithOffsets = deferredResults.awaitAll()
-
-        val allCorrections = mutableListOf<Correction>()
-        val correctedSentences = mutableListOf<String>()
-
-        for ((result, offset) in resultsWithOffsets) {
-            result.fold(
-                success = { value ->
-                    correctedSentences.add(value.correctedText)
-                    value.corrections.forEach { correction ->
-                        allCorrections.add(
-                            correction.copy(
-                                startIndex = offset + correction.startIndex,
-                                endIndex = offset + correction.endIndex
-                            )
-                        )
-                    }
-                },
-                failure = { return@coroutineScope result }
-            )
-
-        }
-
-        Ok(
+        return Ok(
             SpellCheckResponse(
                 correctedText = correctedSentences.joinToString(" "),
                 corrections = allCorrections
@@ -111,17 +97,16 @@ class GoogleSpellCheckerService(
 
     private suspend fun checkSentence(
         sentence: String,
-        language: LanguageCode
+        language: String
     ): Result<SpellCheckResponse, ServiceError> {
         return coroutineBinding {
-            val langTag = languageMapper.toProviderCode(language)
             val responseString = httpClient.get(
                 url = TRANSLATE_PRIMARY,
                 headers = apiConfig.createHeaders(),
                 queryParams = mapOf(
                     "client" to "gtx",
                     "dj" to 1,
-                    "sl" to langTag,
+                    "sl" to language,
                     "tl" to "zu",
                     "q" to sentence,
                     "dt" to "qc"

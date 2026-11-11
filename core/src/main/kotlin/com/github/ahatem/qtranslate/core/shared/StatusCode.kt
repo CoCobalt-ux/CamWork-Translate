@@ -66,6 +66,7 @@ sealed class StatusCode {
     // ---- Spell Check ----
 
     object SpellCheckTimeout : StatusCode()
+    data class SpellCheckRateLimited(val seconds: Long) : StatusCode()
     data class SpellCheckFailed(val summary: String) : StatusCode()
 
     // ---- Dictionary ----
