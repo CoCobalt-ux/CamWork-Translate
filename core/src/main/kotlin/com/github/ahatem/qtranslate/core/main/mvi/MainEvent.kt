@@ -7,6 +7,12 @@ import java.io.File
 import com.github.ahatem.qtranslate.core.main.domain.usecase.ImageTranslationFailureKind
 import com.github.ahatem.qtranslate.core.main.domain.usecase.TranslatedImageRegion
 
+enum class PasteFeedback {
+    NONE,
+    ERROR_ONLY,
+    CONFIRMATION_AND_ERROR
+}
+
 /**
  * One-shot events emitted by [MainStore] to be consumed exactly once by the UI.
  */
@@ -20,8 +26,7 @@ sealed interface MainEvent : UiEvent {
         val translatedText: String,
         /** После этого момента вставка небезопасна: пользователь мог сменить поле или выделение. */
         val expiresAtMillis: Long = Long.MAX_VALUE,
-        /** Только Shift-сценарий показывает подтверждение после фактической вставки. */
-        val showShiftFeedback: Boolean = false,
+        val feedback: PasteFeedback = PasteFeedback.NONE,
         /** Связывает захват, сетевой запрос и вставку, не записывая сам текст в журнал. */
         val requestId: Long = 0L,
         /** Поколение пользовательского ввода, зафиксированное до сетевого запроса. */
