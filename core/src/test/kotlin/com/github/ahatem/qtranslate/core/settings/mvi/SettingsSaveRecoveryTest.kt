@@ -12,7 +12,9 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -116,8 +118,45 @@ class SettingsSaveRecoveryTest {
         assertTrue(store.state.value.isDirty)
     }
 
-    private class FakePersistence : ConfigurationPersistence {
-        override val configuration = MutableStateFlow(Configuration.DEFAULT)
+    @Test
+    fun `запоздалая конфигурация не возвращает старый язык при следующем сохранении`() = runTest {
+        val initial = Configuration.DEFAULT.copy(preferredSourceLanguage = "de")
+        val persistence = FakePersistence(initial)
+        val oldSnapshot = CompletableDeferred<Unit>()
+        val subsequentSnapshots = CompletableDeferred<Unit>()
+        val delayed = object : ConfigurationPersistence by persistence {
+            override val configuration = flow {
+                val snapshot = persistence.configuration.value
+                if (snapshot == initial) {
+                    oldSnapshot.await()
+                    emit(snapshot)
+                    subsequentSnapshots.await()
+                }
+                emitAll(persistence.configuration)
+            }
+        }
+        val store = SettingsStore(delayed, logger, backgroundScope, initial)
+        runCurrent()
+        store.dispatch(SettingsIntent.UpdateDraft(initial.copy(preferredSourceLanguage = "auto")))
+        assertTrue(store.saveChanges().isOk)
+
+        oldSnapshot.complete(Unit)
+        runCurrent()
+        store.dispatch(SettingsIntent.ToggleSetting { it.copy(uiScale = 125) })
+        assertTrue(store.saveChanges().isOk)
+        assertEquals("auto", persistence.configuration.value.preferredSourceLanguage)
+        assertEquals(125, persistence.configuration.value.uiScale)
+
+        val external = persistence.configuration.value.copy(preferredSourceLanguage = "fr")
+        assertTrue(persistence.updateConfiguration(external).isOk)
+        subsequentSnapshots.complete(Unit)
+        runCurrent()
+        assertEquals(external, store.state.value.workingConfiguration)
+        assertFalse(store.state.value.isDirty)
+    }
+
+    private class FakePersistence(initial: Configuration = Configuration.DEFAULT) : ConfigurationPersistence {
+        override val configuration = MutableStateFlow(initial)
         var nextResult: Result<Unit, SettingsError> = Ok(Unit)
         var gate: CompletableDeferred<Unit>? = null
         var thrown: Exception? = null
